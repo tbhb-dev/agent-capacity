@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Tony Burns
+
+---
+# Every package belongs to a component. The entry point uses only Go's
+# standard library and has no internal package dependencies.
+version: 3
+
+allow:
+  depOnAnyVendor: false
+  deepScan: false
+
+components:
+  cmd: {in: cmd/*}
+
+# go-arch-lint requires a non-empty dependency list for each component.
+deps:
+  cmd:
+    mayDependOn: [cmd]

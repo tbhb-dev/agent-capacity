@@ -1,0 +1,89 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Tony Burns
+
+# Git hooks use the Bazel-pinned shims in .bazel_env/bin.
+# Use the hooks already configured for the clone.
+default_stages: [pre-commit]
+
+# Never touch Vale's synced style packages, build output, scratch work, agent
+# worktrees, or test fixtures (failure-proof fixtures are
+# deliberately malformed).
+exclude: ^(\.vale/(Google|write-good|proselint|ai-tells.*)/|\.bazel-.*/|bazel-.*/|tmp/|\.worktrees/|(.*/)?testdata/)
+
+repos:
+  - repo: builtin
+    hooks:
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: end-of-file-fixer
+      - id: fix-byte-order-marker
+      - id: mixed-line-ending
+      - id: trailing-whitespace
+
+  # Lint and format, on the staged files, with the same pins and configs as
+  # the Bazel gates.
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks (staged changes)
+        language: system
+        entry: .bazel_env/bin/gitleaks git --pre-commit --staged --redact --no-banner --config .gitleaks.toml
+        pass_filenames: false
+      # The commit message: secrets, then the Conventional Commits header.
+      # The existing commit-msg hook validates the message.
+      - id: gitleaks-commit-msg
+        name: gitleaks (commit message)
+        language: system
+        entry: bash -c '.bazel_env/bin/gitleaks stdin --redact --no-banner --config .gitleaks.toml < "$1"' --
+        stages: [commit-msg]
+        always_run: true
+      - id: conventional-commits
+        name: Conventional Commits
+        language: system
+        entry: .bazel_env/bin/cog verify --file
+        stages: [commit-msg]
+        always_run: true
+      - id: shfmt
+        name: shfmt
+        language: system
+        entry: .bazel_env/bin/shfmt -w
+        types_or: [shell, bats]
+      - id: shellcheck
+        name: shellcheck
+        language: system
+        entry: .bazel_env/bin/shellcheck -o check-extra-masked-returns
+        types_or: [shell, bats]
+      - id: buildifier
+        name: buildifier
+        language: system
+        entry: .bazel_env/bin/buildifier -mode=fix -lint=warn -warnings=all
+        types: [bazel]
+      - id: tombi-format
+        name: tombi format
+        language: system
+        entry: .bazel_env/bin/tombi format --offline
+        types: [toml]
+      - id: ryl
+        name: ryl
+        language: system
+        entry: .bazel_env/bin/ryl check --strict -c .ryl.toml
+        types: [yaml]
+      - id: rumdl
+        name: rumdl
+        language: system
+        entry: .bazel_env/bin/rumdl check
+        types: [markdown]
+      - id: actionlint
+        name: actionlint
+        language: system
+        # Its run: block checks need shellcheck, so it gets the pinned one.
+        entry: env "SHELLCHECK_OPTS=-o check-extra-masked-returns" .bazel_env/bin/actionlint
+        args: [-shellcheck, .bazel_env/bin/shellcheck]
+        files: ^\.github/workflows/
+      - id: editorconfig-checker
+        name: editorconfig-checker
+        language: system
+        entry: .bazel_env/bin/editorconfig-checker -config .editorconfig-checker.json

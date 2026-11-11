@@ -1,0 +1,198 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Tony Burns
+
+# golangci-lint configuration: every linter on, with a reason beside each one
+# switched off. Adapted from
+# https://github.com/maratori/golangci-lint-config.
+
+version: "2"
+
+issues:
+  max-same-issues: 50
+
+formatters:
+  enable:
+    - gci
+    - gofumpt
+    - goimports
+    - golines
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(go.tbhb.dev/agent-capacity)
+        - blank
+        - dot
+        - alias
+        - localmodule
+      custom-order: true
+    gofumpt:
+      module-path: go.tbhb.dev/agent-capacity
+      extra:
+        group-params: true
+        clothe-returns: true
+        balance-calls: true
+    goimports:
+      local-prefixes:
+        - go.tbhb.dev/agent-capacity
+    golines:
+      max-len: 120
+
+linters:
+  default: all
+  disable:
+    # Deprecated in favour of exhaustruct_v5, which is enabled below.
+    - exhaustruct
+    # Deprecated in favour of gomodguard_v2, which is enabled below.
+    - gomodguard
+    # Deprecated in favour of wsl_v5, which is enabled below.
+    - wsl
+
+  settings:
+    cyclop:
+      max-complexity: 15
+      package-average: 10.0
+
+    # depguard handles package-level path rules. Module-level bans live in
+    # gomodguard_v2 below.
+    depguard:
+      rules:
+        "non-test files":
+          files:
+            - "!$test"
+          deny:
+            - pkg: math/rand$
+              desc: "Use math/rand/v2 instead"
+        "non-main files":
+          files:
+            - "!**/cmd/*/main.go"
+          deny:
+            - pkg: log$
+              desc: "Use log/slog instead"
+
+    gomodguard_v2:
+      blocked:
+        - module: github.com/golang/protobuf
+          recommendations:
+            - google.golang.org/protobuf
+          reason: "Use google.golang.org/protobuf; golang/protobuf is the legacy import path"
+        - module: github.com/satori/go.uuid
+          recommendations:
+            - github.com/google/uuid
+          reason: "satori/go.uuid is unmaintained and has known race conditions"
+        - module: github.com/gofrs/uuid
+          recommendations:
+            - github.com/gofrs/uuid/v5
+          reason: "Use the v5+ module path; older paths predate generics fixes"
+
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+
+    exhaustive:
+      check:
+        - switch
+        - mapliteral
+
+    # Strict threshold: 30the default of 150 tokens only catches blatant copies.
+    dupl:
+      threshold: 30
+
+    # Third-party option structs are built with a few fields by design, and
+    # the pattern matches the full path, so each one used is listed here.
+    exhaustruct_v5:
+      ignore-patterns:
+        - 'github\.com/spf13/cobra\.Command$'
+        - 'runtime/debug\..+'
+
+    funlen:
+      lines: 100
+      statements: 50
+
+    gochecksumtype:
+      default-signifies-exhaustive: false
+
+    gocognit:
+      min-complexity: 15
+
+    gocritic:
+      settings:
+        captLocal:
+          paramsOnly: false
+        underef:
+          skipRecvDeref: false
+
+    goheader:
+      template: |-
+        SPDX-License-Identifier: Apache-2.0
+        Copyright Tony Burns
+
+    govet:
+      enable-all: true
+      settings:
+        shadow:
+          strict: true
+
+    mnd:
+      ignored-functions:
+        - args.Error
+        - flag.Arg
+        - flag.Duration.*
+        - flag.Float.*
+        - flag.Int.*
+        - flag.Uint.*
+        - os.Chmod
+        - os.Mkdir.*
+        - os.OpenFile
+        - os.WriteFile
+
+    nakedret:
+      max-func-lines: 0
+
+    nolintlint:
+      # golines is the only threshold lint whose violation is purely visual,
+      # so any explanation just restates the violation.
+      allow-no-explanation: [golines]
+      require-explanation: true
+      require-specific: true
+
+    perfsprint:
+      strconcat: false
+
+    reassign:
+      patterns:
+        - ".*"
+
+    sloglint:
+      no-global: all
+      context: scope
+
+    staticcheck:
+      checks:
+        - all
+        # ST1000: package docs are written where they carry signal, not as
+        # ritual.
+        - -ST1000
+        # ST1016: recvcheck already catches the load-bearing receiver bug
+        # class, and ST1016 churns during refactors without surfacing a defect.
+        - -ST1016
+        # QF1008: the explicit embedded-type selector is often more readable.
+        - -QF1008
+
+    testifylint:
+      expected-actual:
+        # Go convention here is got/want, so extend the default pattern.
+        pattern: ^(expected|want)
+      formatter:
+        check-format-string: true
+
+    usetesting:
+      os-temp-dir: true
+
+  exclusions:
+    warn-unused: true
+    presets:
+      - std-error-handling
+      - common-false-positives

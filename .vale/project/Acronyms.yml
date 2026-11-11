@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Tony Burns
+
+---
+extends: conditional
+message: "Spell out '%s', if it's unfamiliar to the audience."
+link: 'https://developers.google.com/style/abbreviations'
+level: suggestion
+ignorecase: false
+# Ensures that the existence of 'first' implies the existence of 'second'.
+first: '\b([A-Z]{3,5})\b'
+second: '(?:\b[A-Z][a-z]+ )+\(([A-Z]{3,5})\)'
+# ... with the exception of these:
+exceptions:
+  - API
+  - ASP
+  - AST
+  - AUD
+  - CIDR
+  - CLI
+  - CPU
+  - CRLF
+  - CSS
+  - CSV
+  - CVE
+  - DCO
+  - DEBUG
+  - DNS
+  - DOM
+  - DPI
+  - ENF
+  - EOL
+  - FAQ
+  - FIX
+  - GCC
+  - GDB
+  - GET
+  - GHSA
+  - GPT
+  - GPU
+  - GTK
+  - GUI
+  - HTML
+  - HTTP
+  - HTTPS
+  - IDE
+  - ING
+  - INV
+  - JAR
+  - JSON
+  - JSX
+  - LESS
+  - LLDB
+  - LLM
+  - LTS
+  - MAL
+  - NET
+  - NOTE
+  - NVDA
+  - OKF
+  - OSS
+  - OSSF
+  - OSV
+  - PATH
+  - PDF
+  - PHP
+  - POST
+  - RAM
+  - REB
+  - REPL
+  - REST
+  - REUSE
+  - RSA
+  - SARIF
+  - SCA
+  - SCM
+  - SCSS
+  - SDK
+  - SHA
+  - SPDX
+  - SQL
+  - SSH
+  - SSL
+  - SVG
+  - TBD
+  - TCP
+  - TLS
+  - TODO
+  - TOML
+  - UPD
+  - URI
+  - URL
+  - USB
+  - UTF
+  - UUID
+  - XML
+  - XSS
+  - YAML
+  - ZIP

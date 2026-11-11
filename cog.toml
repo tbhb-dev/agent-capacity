@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Tony Burns
+
+tag_prefix = "v"
+
+[changelog]
+path = "CHANGELOG.md"
+template = ".cog/changelog.tera"
+remote = "github.com"
+repository = "agent-capacity"
+owner = "tbhb-dev"
+
+[commit_types]
+chore = { omit_from_changelog = true }
+test = { omit_from_changelog = true }

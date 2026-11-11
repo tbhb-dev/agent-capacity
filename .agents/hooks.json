@@ -1,0 +1,60 @@
+{
+  "identity": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "tbhbdev alpha identity record antigravity"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tbhbdev alpha identity record antigravity",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "write_file|edit_file|write_to_file|replace_file_content|multi_replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tbhbdev alpha identity record antigravity",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  },
+  "pull-request": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tbhbdev alpha guard-gh-pr",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "write_file|edit_file|write_to_file|replace_file_content|multi_replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tbhbdev alpha pr hook antigravity",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

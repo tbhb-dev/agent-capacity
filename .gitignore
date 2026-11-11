@@ -1,0 +1,49 @@
+tmp/
+.worktrees/
+bin/
+dist/
+bazel-*
+.bazel-*
+.bazelrc.user
+# bazel_env's symlink into the output tree (bazel run //:bazel_env).
+.bazel_env
+coverage.*
+mise.local.toml
+.env*
+.DS_Store
+# Obsidian vault settings, from opening the repository as a vault.
+.obsidian/
+.claude/settings.local.json
+.claude/worktrees/
+
+# Python tooling
+.venv/
+__pycache__/
+.ruff_cache/
+.pytest_cache/
+.coverage*
+coverage.xml
+.hypothesis/
+
+# vale sync writes the synced style packages and templates under .vale/;
+# only the project's own style and vocabulary are tracked.
+.vale/*
+!.vale/project/
+!.vale/config/
+.vale/config/*
+!.vale/config/vocabularies/
+.vale/config/vocabularies/*
+!.vale/config/vocabularies/project/
+
+# mutation_changes: the changes file for diff-scope mutation runs
+.mutation/
+
+# Linter caches
+.rumdl_cache/
+.cspell/
+
+# Agents draft PRs here; the PR script lints it and opens the PR from it.
+.github/PULL_REQUEST_DRAFT.md
+
+# Keep the public MCP configuration tracked despite global ignore rules.
+!.mcp.json

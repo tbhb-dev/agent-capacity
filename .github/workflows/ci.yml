@@ -1,0 +1,178 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Tony Burns
+
+---
+# Main quality gate. Bazel pins every tool and owns every gate: the
+# hermetic checks are cached `bazel test` targets, so `bazel test //...`
+# runs them all, and the few that need the network, Git history or the
+# GitHub API run in the shared `repo` job. The shared setup, repository
+# checks and conclusion logic come from tbhb-dev/rules. A final `conclusion`
+# job gives branch protection one stable required check.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Bazel 9.x only, the version .bazelversion pins, on Linux (x86_64 and
+  # arm64), macOS (arm64) and Windows (x86_64). The checks that need the
+  # network or GitHub's API run on Linux only; they do not depend on the OS.
+  bazel:
+    name: "agent-capacity bazel (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, ubuntu-26.04-arm, macos-26, windows-2025]
+        include:
+          - os: ubuntu-26.04
+            release: release
+          - os: ubuntu-26.04-arm
+            release: release
+          - os: macos-26
+            release: release
+          # Bazel runs the workspace status command without a shell on
+          # Windows, so the release config there uses the batch script.
+          - os: windows-2025
+            release: release-windows
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Full history: the release build stamps the version through
+      # `git describe`.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Hardens the runner, sets up Bazel and fetches, with the platform
+      # workarounds, from tbhb-dev/rules.
+      - name: Set up Bazel for CI
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@431be578eed96a29d2467b9652feb5ac5c361ee6  # main
+        with:
+          disk-cache: ${{ github.workflow }}-${{ matrix.os }}
+          cache-save: ${{ github.event_name != 'pull_request' }}
+
+      # //... is every hermetic gate: the whole-tree lint tests (secrets in
+      # the working tree, YAML, TOML, Markdown, prose, EditorConfig,
+      # workflows, shell, CODEOWNERS paths), the format check, Starlark
+      # lint, nogo during the build, the Go and Python tests and linters,
+      # condition coverage, the docs bundle and REUSE checks, the import
+      # contracts, and the preset staleness test.
+      - name: Test
+        run: bazelisk test --config=ci //...
+
+      - name: Build the release binary
+        env:
+          RELEASE_CONFIG: ${{ matrix.release }}
+        run: bazelisk build "--config=${RELEASE_CONFIG}" //cmd/agent-capacity
+
+      # A failed run's test logs, so a failure that does not recur can still
+      # be read.
+      - name: Keep the test logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: testlogs-${{ matrix.os }}
+          path: |
+            .bazel-testlogs/**/test.log
+            .bazel-testlogs/**/test.xml
+          # The convenience links are dotfiles, which the action skips by default.
+          include-hidden-files: true
+          if-no-files-found: ignore
+
+  # The repository-level checks, in the shared workflow, on Linux beside the
+  # bazel matrix so they don't wait behind the tests: gazelle, MODULE.bazel
+  # tidiness, the history scan, the Python audit, govulncheck (the `bazel run`
+  # target, whose SARIF is kept as an artifact), zizmor online and CODEOWNERS.
+  repo:
+    name: agent-capacity repo
+    permissions:
+      contents: read
+    uses: tbhb-dev/rules/.github/workflows/repo-checks.yml@431be578eed96a29d2467b9652feb5ac5c361ee6  # main
+    with:
+      gazelle-dirs: .
+      govulncheck-target: //:govulncheck
+      module-dirs: .
+
+  # Scan this module's dependencies with the pinned public scanner.
+  gomodscan:
+    name: agent-capacity dependency scan
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write  # Upload the dependency scan to Code Scanning.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout the scanner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: tbhb-dev/gomodscan
+          ref: 1d7083e6ee351b0b4d7705c9c2346ad45d43127c
+          path: tmp/gomodscan
+          persist-credentials: false
+
+      - name: Set up Bazel for CI
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@431be578eed96a29d2467b9652feb5ac5c361ee6  # main
+        with:
+          targets: '@rules_go//go'
+
+      - name: Vendor the module in a scratch copy
+        run: |
+          scratch="${RUNNER_TEMP}/vendored"
+          mkdir "${scratch}"
+          cp -R go.mod go.sum cmd "${scratch}/"
+          bazelisk run --config=ci @rules_go//go -- -C "${scratch}" mod vendor
+          # A module without dependencies has an empty vendor manifest.
+          mkdir -p "${scratch}/vendor"
+          touch "${scratch}/vendor/modules.txt"
+
+      - name: Run gomodscan (SARIF)
+        working-directory: tmp/gomodscan
+        run: |
+          status=0
+          bazelisk run --config=ci //cmd/gomodscan -- \
+            -modroot "${RUNNER_TEMP}/vendored" \
+            -format sarif -o "${GITHUB_WORKSPACE}/gomodscan.sarif" || status=$?
+          if ((status > 1)); then exit "${status}"; fi
+
+      - name: Upload the gomodscan SARIF
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
+        with:
+          sarif_file: gomodscan.sarif
+          category: agent-capacity-dependencies
+
+  # One stable required check for branch protection. `if: always()` runs it
+  # even when a needed job failed. It passes only when every needed job's
+  # result is exactly "success", so a gate that was skipped, cancelled or
+  # never finished cannot pass. A matrix with a cancelled leg reports
+  # "abandoned", not "cancelled", so the check lists what passes, not what
+  # fails.
+  conclusion:
+    name: agent-capacity conclusion
+    if: always()
+    needs: [bazel, repo, gomodscan]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any needed job did not succeed
+        uses: tbhb-dev/rules/.github/actions/ci-conclusion@431be578eed96a29d2467b9652feb5ac5c361ee6  # main
+        with:
+          needs: ${{ toJSON(needs) }}
