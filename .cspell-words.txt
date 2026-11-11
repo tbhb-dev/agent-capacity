@@ -1,7 +1,11 @@
 # Project vocabulary for cspell: tool, command and package names that
 # the bundled dictionaries lack. Add only real terms; fix typos instead.
 addopts
+afakt
+agy
+Antigravity
 autobuild
+autoexport
 autouse
 bazelignore
 bazelisk
@@ -16,6 +20,8 @@ buildtag
 cacheinfo
 cand
 capsys
+cenkalti
+cespare
 cicd
 cmdlines
 cocogitto
@@ -45,6 +51,7 @@ flatmap
 frontmatter
 fsfe
 funlen
+genproto
 genrule
 gobco
 gochecknoglobals
@@ -62,6 +69,7 @@ golangci
 golines
 gomod
 gomodguard
+gomodscan
 gomutants
 goproxy
 gosec
@@ -85,12 +93,14 @@ LLMX
 localmodule
 lockfiles
 logfmt
+logr
 maintidx
 mapfile
 mapliteral
 mcpjson
 mdfile
 mdir
+metricdata
 modroot
 msgfile
 mutmut
@@ -98,6 +108,7 @@ nakedret
 nbbbb
 ncccc
 nilfunc
+nilnil
 nobuild
 nocache
 nocmd
@@ -110,7 +121,12 @@ nonstrings
 noremote
 nosandbox
 nosystem
+OpenTelemetry
 ossf
+OTEL
+otlpmetric
+otlpmetricgrpc
+otlpmetrichttp
 owenlamont
 owenrumney
 paralleltest
@@ -133,6 +149,7 @@ runfiles
 rylignore
 sandboxed
 sarif
+sdkmetric
 sess
 sessionstart
 setlocal
@@ -144,6 +161,8 @@ sloglint
 srcs
 stampable
 starlark
+statusline
+stdr
 strconcat
 strerror
 stretchr
@@ -154,6 +173,7 @@ surrogateescape
 synctest
 takewhile
 tbhb
+tbhbdev
 tdigest
 tera
 testifylint
@@ -180,8 +200,3 @@ xgpt
 xhigh
 xsession
 zizmor
-Antigravity
-OpenTelemetry
-OTEL
-tbhbdev
-gomodscan

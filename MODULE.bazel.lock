@@ -567,6 +567,22 @@
         }
       }
     },
+    "@@tbhb_rules_go+//:extensions.bzl%go_mod_proxy": {
+      "general": {
+        "bzlTransitiveDigest": "d+aJfWyHtvw15XRr3GCXF8ABJb7tZ9TtQRIX66t8F8g=",
+        "usagesDigest": "tcZG8GqLB2RH9TqkXFdnaS05NWEMuskY2k3+0u7GkB8=",
+        "recordedInputs": [],
+        "generatedRepoSpecs": {
+          "go_mod_proxy": {
+            "repoRuleId": "@@tbhb_rules_go+//private:go_mod_proxy.bzl%go_mod_proxy_repo",
+            "attributes": {
+              "go_sum": "@@//:go.sum",
+              "proxy_url": "https://proxy.golang.org"
+            }
+          }
+        }
+      }
+    },
     "@@yq.bzl+//yq:extensions.bzl%yq": {
       "general": {
         "bzlTransitiveDigest": "tDqk+ntWTdxNAWPDjRY1uITgHbti2jcXR5ZdinltBs0=",

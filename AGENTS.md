@@ -4,11 +4,11 @@
 
 `agent-capacity` is a Go service that reads plan usage windows (percent used and reset time) for Claude Code, Codex, and Antigravity from passive local sources and exports them as OpenTelemetry metrics. The export destination comes only from the standard `OTEL_*` environment variables.
 
-The Go module path is `go.tbhb.dev/agent-capacity`. The current entry point prints one line of usage and exits with status 0. Usage collection and metric export are future work.
+The Go module path is `go.tbhb.dev/agent-capacity`. The entry point runs `serve` or `version`. The source registry starts empty until the source packages arrive.
 
 ## Layout
 
-`cmd/agent-capacity/` holds the entry point and its test. `.go-arch-lint.yml` defines the import contracts. The command uses only Go's standard library.
+`cmd/agent-capacity/` holds the entry point and its tests. `internal/capacity/` defines readings and source registration. `internal/export/` observes readings through the OpenTelemetry SDK. `.go-arch-lint.yml` defines the import contracts.
 
 `tools/` holds the workspace status scripts and lint rules. `docs/` is an OKF bundle with its own rules in `docs/AGENTS.md`. `.github/` holds workflows, CODEOWNERS, and the repository ruleset.
 
