@@ -21,6 +21,7 @@ import (
 
 	"go.tbhb.dev/agent-capacity/internal/capacity"
 	"go.tbhb.dev/agent-capacity/internal/export"
+	"go.tbhb.dev/agent-capacity/internal/source/agy"
 	"go.tbhb.dev/agent-capacity/internal/source/claude"
 	"go.tbhb.dev/agent-capacity/internal/source/codex"
 	"go.tbhb.dev/agent-capacity/internal/spool"
@@ -61,7 +62,10 @@ func newRuntime(ctx context.Context, logger *slog.Logger) Runtime {
 	return Runtime{
 		NewRegistry: codex.Register,
 		Registry: func(dir string) capacity.Registry {
-			return capacity.Registry{{Name: capacity.ClaudeStatusline, Source: claude.Source{Dir: dir, Logger: logger}}}
+			return capacity.Registry{
+				{Name: capacity.ClaudeStatusline, Source: claude.Source{Dir: dir, Logger: logger}},
+				{Name: capacity.AGYStatusline, Source: agy.Source{Dir: dir, Logger: logger}},
+			}
 		},
 		NewProvider: func(ctx context.Context) (Provider, error) { return export.NewProvider(ctx) },
 	}

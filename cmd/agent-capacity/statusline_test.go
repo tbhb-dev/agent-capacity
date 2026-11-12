@@ -152,7 +152,7 @@ func TestSpoolConfiguration(t *testing.T) {
 	assert.Equal(t, "explicit", got.spoolDir)
 	require.NoError(
 		t,
-		capture([]string{"--vendor=agy", workFlag}, strings.NewReader(`{"quota":{}}`), time.Now()),
+		capture([]string{agyVendorFlag, workFlag}, strings.NewReader(`{"quota":{}}`), time.Now()),
 	)
 
 	gotSnapshots, _, err := spool.Read(dir, "agy")
@@ -185,7 +185,7 @@ func TestStatuslineProcess(t *testing.T) {
 		args                  []string
 	}{
 		{args: []string{claudeFlag, workFlag, "--spool-dir=" + t.TempDir()}, input: emptyLimits, message: "", class: ""},
-		{args: []string{"--vendor=agy", workFlag, "--spool-dir=" + t.TempDir()}, input: `{}`, message: "", class: ""},
+		{args: []string{agyVendorFlag, workFlag, "--spool-dir=" + t.TempDir()}, input: `{}`, message: "", class: ""},
 		{
 			args: []string{claudeFlag, workFlag, "--spool-dir=" + t.TempDir()}, input: `{`,
 			message: captureFailure, class: invalidClass,

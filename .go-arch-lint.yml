@@ -14,6 +14,7 @@ components:
   capacity: {in: internal/capacity}
   spool: {in: internal/spool}
   claude: {in: internal/source/claude}
+  agy: {in: internal/source/agy}
   export: {in: internal/export}
   codex: {in: internal/source/codex}
 
@@ -24,7 +25,7 @@ vendors:
 # go-arch-lint requires a non-empty dependency list for each component.
 deps:
   cmd:
-    mayDependOn: [cmd, capacity, export, codex, spool, claude]
+    mayDependOn: [cmd, capacity, export, codex, spool, claude, agy]
     canUse: [otel, testify]
   capacity:
     mayDependOn: [capacity]
@@ -40,4 +41,7 @@ deps:
     canUse: [testify]
   claude:
     mayDependOn: [claude, spool, capacity]
+    canUse: [testify]
+  agy:
+    mayDependOn: [agy, spool, capacity]
     canUse: [testify]
