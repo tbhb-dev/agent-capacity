@@ -12,6 +12,16 @@ bazelisk run //cmd/agent-capacity -- serve --interval=60s --spool-dir=/path/to/s
 
 `serve` requires a spool directory through `--spool-dir` or `AGENT_CAPACITY_SPOOL_DIR`.
 
+## Container image
+
+The `ci` workflow builds the image for Linux amd64 and arm64 on every pull request. It doesn't publish images. Build the Open Container Initiative (OCI) image layout locally with `bazelisk build --config=release //container:image_multiarch` without a container daemon.
+
+The image contains one static Go binary with `cgo` off and uses a digest-pinned distroless static base with CA certificates for the exporter. Its entrypoint runs `agent-capacity serve`. It defaults to the non-root user `65532:65532`, `AGENT_CAPACITY_SPOOL_DIR=/spool`, and `CODEX_HOME=/codex`.
+
+At runtime, mount the host spool at `/spool` and only the host Codex sessions folder at `/codex/sessions`, both read-only. Set the runtime user to the spool owner's numeric user and group IDs. Use `--user "$(id -u):$(id -g)"` when the current user is the spool owner. A mode-0700 spool requires its owner's user ID. Choose a nonzero user ID that also has read access to the sessions folder and its files. For user namespaces, map the runtime user ID to the host spool owner rather than choosing a fixed host user ID in the image.
+
+Set the export destination only through the standard `OTEL_EXPORTER_OTLP_*` environment variables at runtime. The image contains no tokens, sign-in directory, or config directory. Keep those directories outside the mounts.
+
 ## Sources
 
 - Claude Code reads captured `rate_limits` windows with vendor `anthropic` and source `claude_statusline`.

@@ -29,6 +29,7 @@ go_library(
 go_binary(
     name = "agent-capacity",
     embed = [":agent-capacity_lib"],
+    pure = "on",
     visibility = ["//visibility:public"],
 )
 

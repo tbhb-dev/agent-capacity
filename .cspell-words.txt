@@ -37,6 +37,7 @@ dedupe
 delenv
 depguard
 direnv
+distroless
 docstrings
 dunder
 dupl
@@ -104,6 +105,7 @@ mdir
 metricdata
 modroot
 msgfile
+multiarch
 mutmut
 nakedret
 nbbbb
@@ -114,6 +116,7 @@ nobuild
 nocache
 nocmd
 noexperimental
+nofetch
 nogo
 nohup
 nolint
