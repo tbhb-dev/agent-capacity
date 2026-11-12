@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -225,6 +226,54 @@ func TestStopBeforeAdmission(t *testing.T) {
 			}
 
 			assert.Equal(t, fixtureNone, decision.Action)
+		})
+	}
+}
+
+func TestStopStateErrorSurvivesRestart(t *testing.T) {
+	t.Parallel()
+
+	for _, signals := range [][]string{{"rate_limit"}, nil} {
+		t.Run(strings.Join(signals, " "), func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keeper := enrolledKeeper(t, &now)
+			stopPath := filepath.Join(keeper.store.Dir, fixtureStop)
+			keeper.observer = observerFunc(func(context.Context, time.Time) (Observation, error) {
+				require.NoError(t, os.Mkdir(stopPath, 0o700))
+
+				return Observation{At: now, Signals: signals}, nil
+			})
+
+			status, decision, err := keeper.Step(t.Context(), false)
+			require.ErrorIs(t, err, ErrStateInvalid)
+			assert.Equal(t, fixtureStateInvalid, status.Reason)
+			assert.Equal(t, phaseStopped, status.Phase)
+			assert.Equal(t, fixtureNone, decision.Action)
+
+			restarted, err := New(keeper.store, enrollment(), []string{fixtureWork}, keeper.now,
+				keeper.source, observationAt(now, nil))
+			require.NoError(t, err)
+			require.NoError(t, os.Remove(stopPath))
+
+			for _, elapsed := range []time.Duration{0, 8 * 24 * time.Hour} {
+				now = instant().Add(elapsed)
+
+				status, decision, err = restarted.Step(t.Context(), false)
+				require.NoError(t, err)
+				assert.Equal(t, phaseStopped, status.Phase)
+				assert.Equal(t, fixtureNone, decision.Action)
+
+				stored, statusErr := restarted.store.ReadStatus(fixtureWork)
+				require.NoError(t, statusErr)
+				assert.Equal(t, status, stored)
+			}
+
+			require.NoError(t, restarted.Rearm())
+
+			restarted.observer = observationAt(now, nil)
+			step(t, restarted, fixtureNone, fixtureAdmit)
 		})
 	}
 }
@@ -450,6 +499,9 @@ func TestStopPreventsObservation(t *testing.T) {
 
 			return Observation{At: now, Signals: nil}, nil
 		})
+
+		now = now.Add(time.Second)
+
 		status, decision, err := keeper.Step(t.Context(), false)
 
 		if invalid {
@@ -466,6 +518,8 @@ func TestStopPreventsObservation(t *testing.T) {
 		state, loadErr := keeper.store.load(keeper.enrollment, now)
 		require.NoError(t, loadErr)
 		assert.Zero(t, state.InputCount)
+		assert.Equal(t, status, state.Status)
+		assert.Equal(t, now, state.LastAt)
 	}
 }
 

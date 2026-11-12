@@ -28,6 +28,7 @@ go_test(
         "decision_test.go",
         "keeper_test.go",
         "store_test.go",
+        "store_unix_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":keeper"],

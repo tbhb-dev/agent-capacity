@@ -257,9 +257,12 @@ func TestSpoolBoundaries(t *testing.T) {
 	assert.Equal(t, "safe", string(data))
 }
 
+const fixtureOpenErrorWithFile = "open error with file"
+
 type faultySpool struct {
 	*os.Root
 
+	file  *os.File
 	fault string
 }
 
@@ -280,6 +283,10 @@ func (root faultySpool) Open(name string) (*os.File, error) {
 
 	if root.fault == fixtureDifferentFile {
 		return root.Root.Open(fixtureOther)
+	}
+
+	if root.fault == fixtureOpenErrorWithFile {
+		return root.file, fs.ErrPermission
 	}
 
 	file, err := root.Root.Open(name)
@@ -328,7 +335,7 @@ func TestAtomicFailures(t *testing.T) {
 	t.Parallel()
 
 	for _, fault := range []string{
-		fixtureStat, fixtureOpen, fixtureClosedRead, fixtureDifferentFile, "create", "closed write",
+		fixtureStat, fixtureOpen, fixtureOpenErrorWithFile, fixtureClosedRead, fixtureDifferentFile, "create", "closed write",
 		fixtureLink, "rename", "directory open", "directory sync",
 	} {
 		t.Run(fault, func(t *testing.T) {
@@ -341,9 +348,16 @@ func TestAtomicFailures(t *testing.T) {
 			require.NoError(t, write(root, fixtureStatus, initialState().Status, false))
 			require.NoError(t, write(root, fixtureOther, initialState().Status, false))
 
-			fake := faultySpool{Root: root, fault: fault}
+			fake := faultySpool{Root: root, fault: fault, file: nil}
+
+			if fault == fixtureOpenErrorWithFile {
+				fake.file, err = root.Open(fixtureStatus)
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, fake.file.Close()) })
+			}
+
 			switch fault {
-			case fixtureStat, fixtureOpen, fixtureClosedRead, fixtureDifferentFile:
+			case fixtureStat, fixtureOpen, fixtureOpenErrorWithFile, fixtureClosedRead, fixtureDifferentFile:
 				require.ErrorIs(t, read(fake, fixtureStatus, new(Status)), ErrStateInvalid)
 			default:
 				require.ErrorIs(

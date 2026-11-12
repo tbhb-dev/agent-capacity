@@ -186,13 +186,11 @@ func regular(root spoolFiles, name string) (fs.FileInfo, error) {
 
 func read(root spoolFiles, name string, value any) error {
 	info, err := regular(root, name)
-	// gomutants:disable-next-line BRANCH_IF reason="Nil info fails SameFile."
 	if err != nil {
 		return ErrStateInvalid
 	}
 
 	file, err := root.Open(name)
-	// gomutants:disable-next-line BRANCH_IF reason="A nil file also fails Stat with the same fixed error."
 	if err != nil {
 		return ErrStateInvalid
 	}

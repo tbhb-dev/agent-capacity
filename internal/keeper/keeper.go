@@ -91,18 +91,19 @@ func (keeper *Keeper) Rearm() error {
 
 // Step checks stops before admission and persists attempts before returning.
 // Call at least once per second while running. Errors suppress admission.
+// The caller must check stop controls again at delivery because a stop file can appear after Step's last check.
 func (keeper *Keeper) Step(ctx context.Context, stopSignal bool) (Status, Decision, error) {
 	now := keeper.now()
 
 	state, err := keeper.store.load(keeper.enrollment, now)
 	// gomutants:disable-next-line BRANCH_IF reason="Failed loads return empty state that also fails save."
 	if err != nil {
-		return keeper.invalid(now)
+		return keeper.invalid(now, nil)
 	}
 
 	stopped, err := keeper.store.stopped(keeper.enrollment.Alias)
 	if err != nil {
-		return keeper.invalid(now)
+		return keeper.invalid(now, &state)
 	}
 
 	if stopped || stopSignal || ctx.Err() != nil {
@@ -123,7 +124,7 @@ func (keeper *Keeper) Step(ctx context.Context, stopSignal bool) (Status, Decisi
 
 	stopped, err = keeper.store.stopped(keeper.enrollment.Alias)
 	if err != nil {
-		return keeper.invalid(now)
+		return keeper.invalid(now, &state)
 	}
 
 	if stopped || ctx.Err() != nil {
@@ -132,7 +133,7 @@ func (keeper *Keeper) Step(ctx context.Context, stopSignal bool) (Status, Decisi
 	}
 
 	if keeper.store.save(state, false) != nil {
-		return keeper.invalid(now)
+		return keeper.invalid(now, &state)
 	}
 
 	return state.Status, decision, nil
@@ -174,7 +175,7 @@ func (keeper *Keeper) observe(ctx context.Context, state State, now time.Time) (
 	return evaluate(state, now, nil, snapshot)
 }
 
-func (keeper *Keeper) invalid(now time.Time) (Status, Decision, error) {
+func (keeper *Keeper) invalid(now time.Time, state *State) (Status, Decision, error) {
 	status := Status{
 		Alias: keeper.enrollment.Alias, Vendor: keeper.enrollment.Vendor,
 		Phase: phaseStopped, Reason: stateInvalid, At: now,
@@ -185,6 +186,18 @@ func (keeper *Keeper) invalid(now time.Time) (Status, Decision, error) {
 		CheckAt: time.Time{},
 	}, errors.Join(
 		ErrStateInvalid,
+		keeper.saveInvalid(state, now),
 		keeper.store.WriteStatus(status),
 	)
+}
+
+func (keeper *Keeper) saveInvalid(state *State, now time.Time) error {
+	if state == nil {
+		return nil
+	}
+
+	latch(state, "ledger_lost", now)
+	state.LastAt = now
+
+	return keeper.store.save(*state, false)
 }
