@@ -8,13 +8,18 @@ repo_files()
 
 go_library(
     name = "agent-capacity_lib",
-    srcs = ["main.go"],
+    srcs = [
+        "main.go",
+        "statusline.go",
+    ],
     importpath = "go.tbhb.dev/agent-capacity/cmd/agent-capacity",
     visibility = ["//visibility:private"],
     deps = [
         "//internal/capacity",
         "//internal/export",
+        "//internal/source/claude",
         "//internal/source/codex",
+        "//internal/spool",
         "@io_opentelemetry_go_otel//:otel",
         "@io_opentelemetry_go_otel_metric//:metric",
     ],
@@ -28,12 +33,16 @@ go_binary(
 
 go_test(
     name = "agent-capacity_test",
-    srcs = ["main_test.go"],
+    srcs = [
+        "main_test.go",
+        "statusline_test.go",
+    ],
     embed = [":agent-capacity_lib"],
     visibility = ["//:__pkg__"],
     deps = [
         "//internal/capacity",
         "//internal/export",
+        "//internal/spool",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
         "@io_opentelemetry_go_otel//:otel",

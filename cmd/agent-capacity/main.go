@@ -21,7 +21,9 @@ import (
 
 	"go.tbhb.dev/agent-capacity/internal/capacity"
 	"go.tbhb.dev/agent-capacity/internal/export"
+	"go.tbhb.dev/agent-capacity/internal/source/claude"
 	"go.tbhb.dev/agent-capacity/internal/source/codex"
+	"go.tbhb.dev/agent-capacity/internal/spool"
 )
 
 // Provider supplies a meter and flushes on shutdown.
@@ -34,7 +36,7 @@ type Provider interface {
 type Runtime struct {
 	NewRegistry func(string, string) (capacity.Registry, error)
 	NewProvider func(context.Context) (Provider, error)
-	Registry    capacity.Registry
+	Registry    func(string) capacity.Registry
 }
 
 func main() {
@@ -57,8 +59,10 @@ func newRuntime(ctx context.Context, logger *slog.Logger) Runtime {
 	}))
 
 	return Runtime{
-		Registry:    capacity.Registry{},
 		NewRegistry: codex.Register,
+		Registry: func(dir string) capacity.Registry {
+			return capacity.Registry{{Name: capacity.ClaudeStatusline, Source: claude.Source{Dir: dir, Logger: logger}}}
+		},
 		NewProvider: func(ctx context.Context) (Provider, error) { return export.NewProvider(ctx) },
 	}
 }
@@ -75,6 +79,10 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 		return 0
 	}
 
+	if len(args) > 0 && args[0] == "statusline" {
+		return statusline(ctx, args[1:], os.Stdin, logger)
+	}
+
 	options, err := parseServe(args)
 	if err != nil {
 		logger.ErrorContext(ctx, "invalid command", "class", "arguments")
@@ -82,15 +90,22 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 		return 1
 	}
 
+	if options.spoolDir == "" {
+		logger.ErrorContext(ctx, spool.ErrDirectory.Error(), "class", "arguments")
+
+		return 1
+	}
+
+	registry := r.Registry(options.spoolDir)
 	if r.NewRegistry != nil {
-		registry, registryErr := r.NewRegistry(options.codexHome, options.codexAccount)
+		codexRegistry, registryErr := r.NewRegistry(options.codexHome, options.codexAccount)
 		if registryErr != nil {
 			logger.ErrorContext(ctx, "invalid command", "class", "arguments")
 
 			return 1
 		}
 
-		r.Registry = append(r.Registry, registry...)
+		registry = append(registry, codexRegistry...)
 	}
 
 	provider, err := r.NewProvider(ctx)
@@ -105,7 +120,7 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 		ticker := time.NewTicker(options.interval)
 		defer ticker.Stop()
 
-		Serve(ctx, r.Registry, collector, logger, ticker.C, time.Now)
+		Serve(ctx, registry, collector, logger, ticker.C, time.Now)
 	} else {
 		logger.ErrorContext(ctx, "setup failed", "class", capacity.ErrorClass(err))
 	}
@@ -126,6 +141,7 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 }
 
 type serveOptions struct {
+	spoolDir     string
 	codexHome    string
 	codexAccount string
 	interval     time.Duration
@@ -140,6 +156,7 @@ func parseServe(args []string) (serveOptions, error) {
 	flags.SetOutput(io.Discard)
 	codexHome := flags.String("codex-home", os.Getenv("CODEX_HOME"), "Codex rollout home")
 	codexAccount := flags.String("codex-account", "primary", "Codex account alias")
+	dir := flags.String("spool-dir", os.Getenv("AGENT_CAPACITY_SPOOL_DIR"), "snapshot directory")
 	interval := flags.Duration("interval", time.Minute, "source read interval")
 
 	err := flags.Parse(args[1:])
@@ -151,7 +168,7 @@ func parseServe(args []string) (serveOptions, error) {
 		return serveOptions{}, errArguments
 	}
 
-	return serveOptions{interval: *interval, codexHome: *codexHome, codexAccount: *codexAccount}, nil
+	return serveOptions{interval: *interval, spoolDir: *dir, codexHome: *codexHome, codexAccount: *codexAccount}, nil
 }
 
 // Serve collects immediately and after each tick until the context is canceled.
