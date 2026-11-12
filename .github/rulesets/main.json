@@ -50,7 +50,7 @@
         "do_not_enforce_on_create": false,
         "required_status_checks": [
           {
-            "context": "agent-capacity conclusion",
+            "context": "conclusion",
             "integration_id": 15368
           }
         ]
