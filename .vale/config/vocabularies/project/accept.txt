@@ -25,4 +25,4 @@ Antigravity
 OpenTelemetry
 OTEL
 tbhbdev
-ci
+[Cc][Ii]
