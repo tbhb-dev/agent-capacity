@@ -178,6 +178,7 @@ tdigest
 tera
 testifylint
 testonly
+testpackage
 testpaths
 tombi
 toolu

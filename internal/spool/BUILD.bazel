@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Tony Burns
+
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+load("@tbhb_rules//repo:defs.bzl", "repo_files")
+
+repo_files()
+
+go_library(
+    name = "spool",
+    srcs = ["spool.go"],
+    importpath = "go.tbhb.dev/agent-capacity/internal/spool",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/capacity"],
+)
+
+go_test(
+    name = "spool_test",
+    srcs = ["spool_test.go"],
+    embed = [":spool"],
+    visibility = ["//:__pkg__"],
+    deps = [
+        "//internal/capacity",
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+    ],
+)

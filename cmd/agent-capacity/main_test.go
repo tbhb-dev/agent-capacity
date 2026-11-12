@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -35,6 +36,8 @@ const (
 	invalidCommand  = "invalid command"
 	invalidInterval = "--interval=invalid"
 	codexSource     = "codex_rollout"
+	readClass       = "read"
+	invalidClass    = "invalid"
 )
 
 func TestMain(tests *testing.M) {
@@ -65,7 +68,12 @@ func TestProcess(t *testing.T) {
 	} {
 		command := exec.CommandContext(t.Context(), executable, testCase.args...)
 
-		command.Env = append(os.Environ(), processTest+"=1", "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=unknown")
+		command.Env = append(
+			os.Environ(),
+			processTest+"=1",
+			"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=unknown",
+			"AGENT_CAPACITY_SPOOL_DIR="+t.TempDir(),
+		)
 
 		var out, logs bytes.Buffer
 
@@ -97,7 +105,7 @@ func TestParseInterval(t *testing.T) {
 		{[]string{serveCommand, "--interval=1ns"}, time.Nanosecond},
 		{[]string{serveCommand, "--interval=2s"}, 2 * time.Second},
 	} {
-		got, err := parseInterval(testCase.args)
+		got, _, err := parseServe(testCase.args)
 		require.NoError(t, err)
 		assert.Equal(t, testCase.want, got)
 	}
@@ -111,7 +119,7 @@ func TestParseInterval(t *testing.T) {
 		{serveCommand, extraArgument},
 		{serveCommand, "--endpoint=unused"},
 	} {
-		got, err := parseInterval(args)
+		got, _, err := parseServe(args)
 		require.EqualError(t, err, "invalid arguments")
 		assert.Zero(t, got)
 	}
@@ -127,7 +135,7 @@ func TestRuntimeSetup(t *testing.T) {
 	var logs bytes.Buffer
 
 	runtime := newRuntime(t.Context(), slog.New(slog.NewJSONHandler(&logs, nil)))
-	assert.Empty(t, runtime.Registry)
+	assert.Len(t, runtime.Registry(t.TempDir()), 1)
 
 	provider, err := runtime.NewProvider(t.Context())
 	require.ErrorIs(t, err, export.ErrProtocol)
@@ -148,7 +156,7 @@ func assertLogs(t *testing.T, logs *bytes.Buffer, message string) {
 		assert.Equal(t, message, entry["msg"])
 		assert.Equal(t, "ERROR", entry["level"])
 
-		class := "read"
+		class := readClass
 		if message == invalidCommand {
 			class = "arguments"
 		}
@@ -313,15 +321,19 @@ func TestRun(t *testing.T) {
 
 		calls := 0
 		runtime := Runtime{
-			Registry: capacity.Registry{{Name: codexSource, Source: sourceFunc(
-				func(got context.Context, _ time.Time) ([]capacity.Reading, error) {
-					assert.Equal(t, ctx, got)
+			Registry: func(dir string) capacity.Registry {
+				assert.Equal(t, filepath.Join("spool", "test"), dir)
 
-					calls++
+				return capacity.Registry{{Name: codexSource, Source: sourceFunc(
+					func(got context.Context, _ time.Time) ([]capacity.Reading, error) {
+						assert.Equal(t, ctx, got)
 
-					return nil, nil
-				},
-			)}},
+						calls++
+
+						return nil, nil
+					},
+				)}}
+			},
 			NewProvider: func(context.Context) (Provider, error) {
 				if testCase.setupErr {
 					return nil, errors.ErrUnsupported
@@ -332,7 +344,7 @@ func TestRun(t *testing.T) {
 		}
 		started := time.Now()
 
-		assert.Equal(t, testCase.want, runtime.Run(ctx, testCase.args, &out, logger))
+		assert.Equal(t, testCase.want, runtime.Run(ctx, withSpool(testCase.args), &out, logger))
 		assert.Equal(t, testCase.output, out.String())
 		assertRunState(t, testCase, stub, calls, started)
 		assertLogs(t, &logs, testCase.message())
@@ -445,10 +457,18 @@ func TestServe(t *testing.T) {
 		var entry map[string]any
 		require.NoError(t, decoder.Decode(&entry))
 		assert.Equal(t, "claude_statusline", entry["source"])
-		assert.Equal(t, "read", entry["class"])
+		assert.Equal(t, readClass, entry["class"])
 		assert.NotContains(t, entry, "error")
 	}
 
 	var trailing any
 	require.ErrorIs(t, decoder.Decode(&trailing), io.EOF)
+}
+
+func withSpool(args []string) []string {
+	if len(args) > 0 && args[0] == serveCommand {
+		return append([]string{serveCommand, "--spool-dir=" + filepath.Join("spool", "test")}, args[1:]...)
+	}
+
+	return args
 }

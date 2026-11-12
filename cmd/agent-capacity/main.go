@@ -21,6 +21,8 @@ import (
 
 	"go.tbhb.dev/agent-capacity/internal/capacity"
 	"go.tbhb.dev/agent-capacity/internal/export"
+	"go.tbhb.dev/agent-capacity/internal/source/claude"
+	"go.tbhb.dev/agent-capacity/internal/spool"
 )
 
 // Provider supplies a meter and flushes on shutdown.
@@ -32,7 +34,7 @@ type Provider interface {
 // Runtime keeps source registration and SDK creation at the command boundary.
 type Runtime struct {
 	NewProvider func(context.Context) (Provider, error)
-	Registry    capacity.Registry
+	Registry    func(string) capacity.Registry
 }
 
 func main() {
@@ -55,7 +57,9 @@ func newRuntime(ctx context.Context, logger *slog.Logger) Runtime {
 	}))
 
 	return Runtime{
-		Registry:    capacity.Registry{},
+		Registry: func(dir string) capacity.Registry {
+			return capacity.Registry{{Name: capacity.ClaudeStatusline, Source: claude.Source{Dir: dir, Logger: logger}}}
+		},
 		NewProvider: func(ctx context.Context) (Provider, error) { return export.NewProvider(ctx) },
 	}
 }
@@ -72,9 +76,19 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 		return 0
 	}
 
-	interval, err := parseInterval(args)
+	if len(args) > 0 && args[0] == "statusline" {
+		return statusline(ctx, args[1:], os.Stdin, logger)
+	}
+
+	interval, dir, err := parseServe(args)
 	if err != nil {
 		logger.ErrorContext(ctx, "invalid command", "class", "arguments")
+
+		return 1
+	}
+
+	if dir == "" {
+		logger.ErrorContext(ctx, spool.ErrDirectory.Error(), "class", "arguments")
 
 		return 1
 	}
@@ -91,7 +105,7 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
-		Serve(ctx, r.Registry, collector, logger, ticker.C, time.Now)
+		Serve(ctx, r.Registry(dir), collector, logger, ticker.C, time.Now)
 	} else {
 		logger.ErrorContext(ctx, "setup failed", "class", capacity.ErrorClass(err))
 	}
@@ -111,25 +125,26 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 	return 0
 }
 
-func parseInterval(args []string) (time.Duration, error) {
+func parseServe(args []string) (time.Duration, string, error) {
 	if len(args) == 0 || args[0] != "serve" {
-		return 0, errArguments
+		return 0, "", errArguments
 	}
 
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
+	dir := flags.String("spool-dir", os.Getenv("AGENT_CAPACITY_SPOOL_DIR"), "snapshot directory")
 	interval := flags.Duration("interval", time.Minute, "source read interval")
 
 	err := flags.Parse(args[1:])
 	if err != nil {
-		return 0, errArguments
+		return 0, "", errArguments
 	}
 
 	if flags.NArg() != 0 || *interval <= 0 {
-		return 0, errArguments
+		return 0, "", errArguments
 	}
 
-	return *interval, nil
+	return *interval, *dir, nil
 }
 
 // Serve collects immediately and after each tick until the context is canceled.
