@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -180,11 +181,18 @@ func TestStatuslineProcess(t *testing.T) {
 	blocked := filepath.Join(t.TempDir(), "file")
 	require.NoError(t, os.WriteFile(blocked, nil, 0o600))
 
-	for _, testCase := range []struct {
+	type processCase struct {
 		input, message, class string
 		args                  []string
-	}{
-		{args: []string{claudeFlag, workFlag, "--spool-dir=" + t.TempDir()}, input: emptyLimits, message: "", class: ""},
+	}
+
+	testCases := []processCase{
+		{
+			args:    []string{claudeFlag, workFlag, "--spool-dir=" + t.TempDir()},
+			input:   emptyLimits,
+			message: "",
+			class:   "",
+		},
 		{args: []string{"--vendor=agy", workFlag, "--spool-dir=" + t.TempDir()}, input: `{}`, message: "", class: ""},
 		{
 			args: []string{claudeFlag, workFlag, "--spool-dir=" + t.TempDir()}, input: `{`,
@@ -203,7 +211,24 @@ func TestStatuslineProcess(t *testing.T) {
 			args: []string{claudeFlag, workFlag, "--spool-dir=" + blocked}, input: emptyLimits,
 			message: captureFailure, class: readClass,
 		},
-	} {
+	}
+
+	if runtime.GOOS == "windows" {
+		dir := t.TempDir()
+		args := []string{claudeFlag, workFlag, "--spool-dir=" + dir}
+		require.NoError(t, capture(args, strings.NewReader(emptyLimits), time.Unix(100000, 0)))
+
+		old, openErr := os.Open(filepath.Join(dir, "claude-work.json"))
+		require.NoError(t, openErr)
+
+		defer old.Close()
+
+		testCases = append(testCases, processCase{
+			input: emptyLimits, message: captureFailure, class: "permission", args: args,
+		})
+	}
+
+	for _, testCase := range testCases {
 		command := exec.CommandContext(t.Context(), executable, append([]string{"statusline"}, testCase.args...)...)
 		command.Env = append(os.Environ(), processTest+"=1", "AGENT_CAPACITY_SPOOL_DIR=")
 		command.Stdin = strings.NewReader(testCase.input)

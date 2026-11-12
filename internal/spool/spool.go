@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -86,7 +87,8 @@ func Read(dir, vendor string) ([]Snapshot, []string, error) {
 		return nil, nil, ErrDirectory
 	}
 
-	entries, err := os.ReadDir(dir)
+	// Only a missing open means no spool. Preserve directory read errors.
+	file, err := os.Open(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil, nil
 	}
@@ -94,6 +96,18 @@ func Read(dir, vendor string) ([]Snapshot, []string, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("read spool: %w", err)
 	}
+
+	defer file.Close()
+
+	// gomutants:disable-next-line INTEGER_DECREMENT reason="ReadDir reads all entries for any count at or below zero."
+	entries, err := file.ReadDir(0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read spool: %w", err)
+	}
+
+	slices.SortFunc(entries, func(left, right fs.DirEntry) int {
+		return strings.Compare(left.Name(), right.Name())
+	})
 
 	var snapshots []Snapshot
 

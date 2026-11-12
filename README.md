@@ -13,3 +13,5 @@ bazelisk run //cmd/agent-capacity -- serve --interval=60s
 The export destination comes only from standard `OTEL_*` environment variables. Set `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, and `OTEL_EXPORTER_OTLP_PROTOCOL`, or their signal specific `OTEL_EXPORTER_OTLP_METRICS_*` forms. Supported protocols are `grpc` and `http/protobuf`. The default is `http/protobuf`.
 
 `OTEL_SERVICE_NAME` overrides the default service name, `agent-capacity`. `OTEL_RESOURCE_ATTRIBUTES` supplies resource attributes. Account labels must match `^[a-z0-9][a-z0-9_-]{0,31}$`.
+
+On Windows, the spool can replace an existing snapshot after readers close it. While a reader has the snapshot open, writes fail with class `permission`. The writer preserves the previous snapshot and removes the temporary file. The `statusline` command logs one safe line and exits with code 0 on failure. Reading a missing spool returns no snapshots. A regular file used as the spool directory or a directory used as a snapshot fails with class `read`.

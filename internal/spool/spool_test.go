@@ -60,17 +60,23 @@ func TestWriteAtomic(t *testing.T) {
 	snapshot.ObservedAt = snapshot.ObservedAt.In(time.FixedZone("offset", 3600))
 	require.NoError(t, Write(dir, snapshot))
 	path := filepath.Join(dir, "claude-work.json")
-	old, err := os.Open(path)
-	require.NoError(t, err)
-
-	defer old.Close()
-
 	snapshot.Data = json.RawMessage(`{"seven_day":null}`)
-	require.NoError(t, Write(dir, snapshot))
 
-	var previous Snapshot
-	require.NoError(t, json.NewDecoder(old).Decode(&previous))
-	assert.JSONEq(t, `{"five_hour":null}`, string(previous.Data))
+	if runtime.GOOS != windowsOS {
+		old, err := os.Open(path)
+		require.NoError(t, err)
+
+		defer old.Close()
+
+		require.NoError(t, Write(dir, snapshot))
+
+		var previous Snapshot
+		require.NoError(t, json.NewDecoder(old).Decode(&previous))
+		assert.JSONEq(t, `{"five_hour":null}`, string(previous.Data))
+	} else {
+		// Windows can replace an existing snapshot when no reader holds it open.
+		require.NoError(t, Write(dir, snapshot))
+	}
 
 	got, failures, err := Read(dir, claudeVendor)
 	require.NoError(t, err)
@@ -97,6 +103,47 @@ func TestWriteAtomic(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 	assert.Equal(t, "claude-work.json", entries[0].Name())
+}
+
+func TestWriteHeldSnapshotWindows(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS != windowsOS {
+		t.Skip("Windows refuses replacement while a reader holds the snapshot open")
+	}
+
+	dir := t.TempDir()
+	require.NoError(t, Write(dir, sample()))
+	old, err := os.Open(filepath.Join(dir, "claude-work.json"))
+	require.NoError(t, err)
+
+	defer old.Close()
+
+	snapshot := sample()
+	snapshot.Data = json.RawMessage(`{"seven_day":null}`)
+	err = Write(dir, snapshot)
+	require.ErrorIs(t, err, os.ErrPermission)
+	assert.Equal(t, "permission", capacity.ErrorClass(err))
+
+	var previous Snapshot
+	require.NoError(t, json.NewDecoder(old).Decode(&previous))
+	assert.Equal(t, sample(), previous)
+
+	got, failures, err := Read(dir, claudeVendor)
+	require.NoError(t, err)
+	assert.Empty(t, failures)
+	assert.Equal(t, []Snapshot{sample()}, got)
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "claude-work.json", entries[0].Name())
+	require.NoError(t, old.Close())
+	require.NoError(t, Write(dir, snapshot))
+	got, failures, err = Read(dir, claudeVendor)
+	require.NoError(t, err)
+	assert.Empty(t, failures)
+	assert.Equal(t, []Snapshot{snapshot}, got)
 }
 
 func TestWriteFailures(t *testing.T) {
@@ -163,12 +210,7 @@ func TestRead(t *testing.T) {
 	_, failures, err := Read(dir, claudeVendor)
 	require.NoError(t, err)
 
-	wantClass := "read"
-	if runtime.GOOS == windowsOS {
-		wantClass = "permission"
-	}
-
-	assert.Equal(t, []string{invalidClass, wantClass}, failures)
+	assert.Equal(t, []string{invalidClass, "read"}, failures)
 	got, failures, err := Read(filepath.Join(dir, "missing"), claudeVendor)
 	require.NoError(t, err)
 	assert.Nil(t, got)
@@ -178,6 +220,18 @@ func TestRead(t *testing.T) {
 	require.ErrorIs(t, err, ErrDirectory)
 	_, _, err = Read(filepath.Join(dir, "other.json"), claudeVendor)
 	require.Error(t, err)
+}
+
+func TestReadOrder(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "claude-z.json"), []byte(`{`), 0o600))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "claude-a.json"), 0o700))
+	got, failures, err := Read(dir, claudeVendor)
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	assert.Equal(t, []string{"read", invalidClass}, failures)
 }
 
 func TestReadIdentity(t *testing.T) {
@@ -214,6 +268,10 @@ func TestFilesystemErrors(t *testing.T) {
 	require.ErrorAs(t, err, &cause)
 	_, _, err = Read(file, claudeVendor)
 	require.ErrorAs(t, err, &cause)
+	assert.Equal(t, "read", capacity.ErrorClass(err))
+	_, _, err = Read(filepath.Join(dir, "invalid\x00"), claudeVendor)
+	require.ErrorAs(t, err, &cause)
+	assert.Equal(t, "read", capacity.ErrorClass(err))
 	_, err = readFile(dir, "missing.json")
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
