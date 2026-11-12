@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Tony Burns
 
-package keeper
+package keepalive
 
 import (
 	"crypto/rand"
@@ -232,7 +232,7 @@ func write(root spoolFiles, name string, value any, initial bool) error {
 		return ErrStateInvalid
 	}
 
-	file, err := root.OpenFile(".keeper-"+rand.Text(), os.O_WRONLY|os.O_CREATE|os.O_EXCL, privateFileMode)
+	file, err := root.OpenFile(".keepalive-"+rand.Text(), os.O_WRONLY|os.O_CREATE|os.O_EXCL, privateFileMode)
 	if err != nil {
 		return ErrStateInvalid
 	}

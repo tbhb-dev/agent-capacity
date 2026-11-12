@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Tony Burns
 
-// Package keeper provides an off by default decision core and durable state.
-// The keeper is unproven against any harness.
-package keeper
+// Package keepalive provides an off by default decision core and durable state.
+// The keepalive logic is unproven against any harness.
+package keepalive
 
 import (
 	"time"

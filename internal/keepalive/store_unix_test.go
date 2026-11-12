@@ -4,7 +4,7 @@
 // Copyright Tony Burns
 
 //nolint:testpackage // The FIFO fixture exercises the internal read guard.
-package keeper
+package keepalive
 
 import (
 	"errors"

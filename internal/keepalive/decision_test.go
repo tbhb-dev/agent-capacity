@@ -2,7 +2,7 @@
 // Copyright Tony Burns
 
 //nolint:testpackage // Fault fixtures exercise internal filesystem errors and pure guards.
-package keeper
+package keepalive
 
 import (
 	"encoding/json"

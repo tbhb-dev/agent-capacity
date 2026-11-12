@@ -12,26 +12,26 @@ exports_files(
 )
 
 go_library(
-    name = "keeper",
+    name = "keepalive",
     srcs = [
         "decision.go",
-        "keeper.go",
+        "keepalive.go",
         "store.go",
     ],
-    importpath = "go.tbhb.dev/agent-capacity/internal/keeper",
+    importpath = "go.tbhb.dev/agent-capacity/internal/keepalive",
     visibility = ["//:__subpackages__"],
 )
 
 go_test(
-    name = "keeper_test",
+    name = "keepalive_test",
     srcs = [
         "decision_test.go",
-        "keeper_test.go",
+        "keepalive_test.go",
         "store_test.go",
         "store_unix_test.go",
     ],
     data = glob(["testdata/**"]),
-    embed = [":keeper"],
+    embed = [":keepalive"],
     visibility = ["//:__pkg__"],
     deps = [
         "@com_github_stretchr_testify//assert",
