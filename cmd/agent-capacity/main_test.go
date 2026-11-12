@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -34,6 +35,7 @@ const (
 	extraArgument   = "extra"
 	invalidCommand  = "invalid command"
 	invalidInterval = "--interval=invalid"
+	testAccount     = "work_2-a"
 	codexSource     = "codex_rollout"
 )
 
@@ -97,9 +99,9 @@ func TestParseInterval(t *testing.T) {
 		{[]string{serveCommand, "--interval=1ns"}, time.Nanosecond},
 		{[]string{serveCommand, "--interval=2s"}, 2 * time.Second},
 	} {
-		got, err := parseInterval(testCase.args)
+		got, err := parseServe(testCase.args)
 		require.NoError(t, err)
-		assert.Equal(t, testCase.want, got)
+		assert.Equal(t, testCase.want, got.interval)
 	}
 
 	for _, args := range [][]string{
@@ -111,13 +113,14 @@ func TestParseInterval(t *testing.T) {
 		{serveCommand, extraArgument},
 		{serveCommand, "--endpoint=unused"},
 	} {
-		got, err := parseInterval(args)
+		got, err := parseServe(args)
 		require.EqualError(t, err, "invalid arguments")
 		assert.Zero(t, got)
 	}
 }
 
 func TestRuntimeSetup(t *testing.T) {
+	t.Setenv("CODEX_HOME", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "unknown")
 
 	previous := otel.GetErrorHandler()
@@ -128,6 +131,9 @@ func TestRuntimeSetup(t *testing.T) {
 
 	runtime := newRuntime(t.Context(), slog.New(slog.NewJSONHandler(&logs, nil)))
 	assert.Empty(t, runtime.Registry)
+	registry, registryErr := runtime.NewRegistry("", "primary")
+	require.NoError(t, registryErr)
+	assert.Empty(t, registry)
 
 	provider, err := runtime.NewProvider(t.Context())
 	require.ErrorIs(t, err, export.ErrProtocol)
@@ -135,6 +141,113 @@ func TestRuntimeSetup(t *testing.T) {
 
 	otel.Handle(errors.ErrUnsupported)
 	assertLogs(t, &logs, "export failed")
+}
+
+func TestCodexFlags(t *testing.T) {
+	t.Setenv("CODEX_HOME", "synthetic-env-home")
+
+	for _, testCase := range []struct {
+		home    string
+		account string
+		args    []string
+	}{
+		{args: []string{serveCommand}, home: "synthetic-env-home", account: "primary"},
+		{
+			args:    []string{serveCommand, "--codex-home=synthetic-flag-home", "--codex-account=work_2-a"},
+			home:    "synthetic-flag-home",
+			account: testAccount,
+		},
+		{args: []string{serveCommand, "--codex-home="}, home: "", account: "primary"},
+	} {
+		options, err := parseServe(testCase.args)
+		require.NoError(t, err)
+		assert.Equal(t, testCase.home, options.codexHome)
+		assert.Equal(t, testCase.account, options.codexAccount)
+	}
+
+	t.Setenv("CODEX_HOME", "")
+
+	options, err := parseServe([]string{serveCommand})
+	require.NoError(t, err)
+	assert.Empty(t, options.codexHome)
+}
+
+func TestCodexRuntime(t *testing.T) {
+	t.Setenv("CODEX_HOME", "")
+
+	previous := otel.GetErrorHandler()
+
+	t.Cleanup(func() { otel.SetErrorHandler(previous) })
+	home := t.TempDir()
+	directory := filepath.Join(home, "sessions", "2026", "01", "02")
+	require.NoError(t, os.MkdirAll(directory, 0o700))
+	require.NoError(
+		t,
+		os.WriteFile(
+			filepath.Join(directory, "rollout-example.jsonl"),
+			[]byte(
+				`{"timestamp":"2026-01-02T03:04:05Z","type":"event_msg",`+
+					`"payload":{"type":"token_count","rate_limits":`+
+					`{"primary":{"used_percent":25,"window_minutes":10080}}}}`,
+			),
+			0o600,
+		),
+	)
+
+	for _, account := range []string{testAccount, "invalid@alias"} {
+		var out, logs bytes.Buffer
+
+		logger := slog.New(slog.NewJSONHandler(&logs, nil))
+		runtime := newRuntime(t.Context(), logger)
+		sdk := sdkmetric.NewMeterProvider()
+
+		t.Cleanup(func() { require.NoError(t, sdk.Shutdown(context.Background())) })
+
+		stub := &provider{
+			MeterProvider: sdk,
+			shutdownErr:   nil,
+			deadline:      time.Time{},
+			shutdownAt:    time.Time{},
+			stopped:       false,
+		}
+		runtime.NewProvider = func(context.Context) (Provider, error) { return stub, nil }
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		if account == testAccount {
+			// Verify the factory receives the configured home and alias.
+			register := runtime.NewRegistry
+			runtime.NewRegistry = func(gotHome, gotAccount string) (capacity.Registry, error) {
+				assert.Equal(t, home, gotHome)
+				assert.Equal(t, account, gotAccount)
+				registry, err := register(gotHome, gotAccount)
+				require.NoError(t, err)
+				readings, failures := registry.Read(t.Context(), time.Time{})
+				assert.Empty(t, failures)
+				require.Len(t, readings, 1)
+				assert.Equal(t, account, readings[0].Account)
+				assert.Equal(t, "7d", readings[0].Window)
+
+				return registry, nil
+			}
+			assert.Equal(
+				t,
+				0,
+				runtime.Run(
+					ctx,
+					[]string{serveCommand, "--codex-home=" + home, "--codex-account=" + account},
+					&out,
+					logger,
+				),
+			)
+			assert.Contains(t, logs.String(), `"source":"codex_rollout","class":"canceled"`)
+		} else {
+			assert.Equal(t, 1, runtime.Run(ctx, []string{serveCommand, "--codex-account=" + account}, &out, logger))
+			assertLogs(t, &logs, invalidCommand)
+		}
+
+		assert.Empty(t, out.String())
+	}
 }
 
 func assertLogs(t *testing.T, logs *bytes.Buffer, message string) {
@@ -313,6 +426,7 @@ func TestRun(t *testing.T) {
 
 		calls := 0
 		runtime := Runtime{
+			NewRegistry: nil,
 			Registry: capacity.Registry{{Name: codexSource, Source: sourceFunc(
 				func(got context.Context, _ time.Time) ([]capacity.Reading, error) {
 					assert.Equal(t, ctx, got)

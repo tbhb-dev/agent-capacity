@@ -14,6 +14,7 @@ go_library(
     deps = [
         "//internal/capacity",
         "//internal/export",
+        "//internal/source/codex",
         "@io_opentelemetry_go_otel//:otel",
         "@io_opentelemetry_go_otel_metric//:metric",
     ],

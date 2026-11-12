@@ -180,6 +180,7 @@ tera
 testifylint
 testonly
 testpaths
+testpackage
 tombi
 toolu
 tricolon

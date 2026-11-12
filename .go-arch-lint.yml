@@ -13,6 +13,7 @@ components:
   cmd: {in: cmd/*}
   capacity: {in: internal/capacity}
   export: {in: internal/export}
+  codex: {in: internal/source/codex}
 
 vendors:
   otel: {in: go.opentelemetry.io/**}
@@ -21,7 +22,7 @@ vendors:
 # go-arch-lint requires a non-empty dependency list for each component.
 deps:
   cmd:
-    mayDependOn: [cmd, capacity, export]
+    mayDependOn: [cmd, capacity, export, codex]
     canUse: [otel, testify]
   capacity:
     mayDependOn: [capacity]
@@ -29,3 +30,6 @@ deps:
   export:
     mayDependOn: [capacity, export]
     canUse: [otel, testify]
+  codex:
+    mayDependOn: [capacity, codex]
+    canUse: [testify]
