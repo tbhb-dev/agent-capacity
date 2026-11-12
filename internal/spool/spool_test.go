@@ -8,7 +8,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +21,6 @@ import (
 const (
 	claudeVendor = "claude"
 	invalidClass = "invalid"
-	windowsOS    = "windows"
 )
 
 func sample() Snapshot {
@@ -82,16 +80,12 @@ func TestWriteAtomic(t *testing.T) {
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 
-	if runtime.GOOS != windowsOS {
-		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
-	}
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 
 	info, err = os.Stat(dir)
 	require.NoError(t, err)
 
-	if runtime.GOOS != windowsOS {
-		assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
-	}
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
@@ -163,12 +157,7 @@ func TestRead(t *testing.T) {
 	_, failures, err := Read(dir, claudeVendor)
 	require.NoError(t, err)
 
-	wantClass := "read"
-	if runtime.GOOS == windowsOS {
-		wantClass = "permission"
-	}
-
-	assert.Equal(t, []string{invalidClass, wantClass}, failures)
+	assert.Equal(t, []string{invalidClass, "read"}, failures)
 	got, failures, err := Read(filepath.Join(dir, "missing"), claudeVendor)
 	require.NoError(t, err)
 	assert.Nil(t, got)
