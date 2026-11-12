@@ -4,7 +4,7 @@
 
 `agent-capacity` is a Go service that reads plan usage windows (percent used and reset time) for Claude Code, Codex, and Antigravity from passive local sources and exports them as OpenTelemetry metrics. The export destination comes only from the standard `OTEL_*` environment variables.
 
-The Go module path is `go.tbhb.dev/agent-capacity`. The entry point runs `serve` or `version`. The registry includes the Claude status-line source and adds the Codex rollout source when `--codex-home` or `CODEX_HOME` supplies a home directory.
+The Go module path is `go.tbhb.dev/agent-capacity`. The entry point runs `serve` or `version`. The registry includes the Claude and Antigravity status-line sources and adds the Codex rollout source when `--codex-home` or `CODEX_HOME` supplies a home directory.
 
 ## Layout
 

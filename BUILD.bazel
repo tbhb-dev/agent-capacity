@@ -104,6 +104,8 @@ nogo(
 # contracts in .go-arch-lint.yml, and go mod tidy checks go.mod and go.sum
 # offline against the module proxy.
 GO_TARGETS = [
+    "//internal/source/agy",
+    "//internal/source/agy:agy_test",
     "//cmd/agent-capacity",
     "//cmd/agent-capacity:agent-capacity_test",
     "//internal/capacity",
@@ -244,6 +246,14 @@ gobco_test(
     go_sum = "go.sum",
     proxy = "@go_mod_proxy//:proxy",
     tests = ["//internal/source/claude:claude_test"],
+)
+
+gobco_test(
+    name = "agy_gobco_test",
+    go_mod = "go.mod",
+    go_sum = "go.sum",
+    proxy = "@go_mod_proxy//:proxy",
+    tests = ["//internal/source/agy:agy_test"],
 )
 
 # The changes file for a diff-scope mutation run: empty, so full scope,
