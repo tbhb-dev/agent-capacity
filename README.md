@@ -18,6 +18,8 @@ The `ci` workflow builds the image for Linux amd64 and arm64 on every pull reque
 
 The image contains one static Go binary with `cgo` off and uses a digest-pinned distroless static base with CA certificates for the exporter. Its entrypoint runs `agent-capacity serve`. It defaults to the non-root user `65532:65532`, `AGENT_CAPACITY_SPOOL_DIR=/spool`, and `CODEX_HOME=/codex`.
 
+The binary target in `cmd/agent-capacity/BUILD.bazel` sets `pure = "on"`, which turns `cgo` off for every Bazel build of that binary, including builds outside the container image.
+
 At runtime, mount the host spool at `/spool` and only the host Codex sessions folder at `/codex/sessions`, both read-only. Set the runtime user to the spool owner's numeric user and group IDs. Use `--user "$(id -u):$(id -g)"` when the current user is the spool owner. A mode-0700 spool requires its owner's user ID. Choose a nonzero user ID that also has read access to the sessions folder and its files. For user namespaces, map the runtime user ID to the host spool owner rather than choosing a fixed host user ID in the image.
 
 Set the export destination only through the standard `OTEL_EXPORTER_OTLP_*` environment variables at runtime. The image contains no tokens, sign-in directory, or config directory. Keep those directories outside the mounts.
