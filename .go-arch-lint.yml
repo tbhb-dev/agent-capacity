@@ -12,6 +12,7 @@ allow:
 components:
   cmd: {in: cmd/*}
   capacity: {in: internal/capacity}
+  keeper: {in: internal/keeper}
   spool: {in: internal/spool}
   claude: {in: internal/source/claude}
   agy: {in: internal/source/agy}
@@ -29,6 +30,9 @@ deps:
     canUse: [otel, testify]
   capacity:
     mayDependOn: [capacity]
+    canUse: [testify]
+  keeper:
+    mayDependOn: [keeper]
     canUse: [testify]
   export:
     mayDependOn: [capacity, export]

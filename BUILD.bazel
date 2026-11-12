@@ -104,6 +104,8 @@ nogo(
 # contracts in .go-arch-lint.yml, and go mod tidy checks go.mod and go.sum
 # offline against the module proxy.
 GO_TARGETS = [
+    "//internal/keeper",
+    "//internal/keeper:keeper_test",
     "//internal/source/agy",
     "//internal/source/agy:agy_test",
     "//cmd/agent-capacity",
@@ -181,6 +183,7 @@ govulncheck(
 gomutants_test(
     name = "gomutants_test",
     cpus = 2,
+    data = ["//internal/keeper:testdata/stops.json"],
     flags = [
         # Keep mutation runs stable when CI runners are busy.
         "--timeout-min=20s",
@@ -214,6 +217,15 @@ gobco_test(
     go_sum = "go.sum",
     proxy = "@go_mod_proxy//:proxy",
     tests = ["//internal/capacity:capacity_test"],
+)
+
+gobco_test(
+    name = "keeper_gobco_test",
+    data = ["//internal/keeper:testdata/stops.json"],
+    go_mod = "go.mod",
+    go_sum = "go.sum",
+    proxy = "@go_mod_proxy//:proxy",
+    tests = ["//internal/keeper:keeper_test"],
 )
 
 gobco_test(
