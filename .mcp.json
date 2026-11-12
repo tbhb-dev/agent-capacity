@@ -1,3 +1,16 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "awrel": {
+      "command": "go",
+      "args": [
+        "run",
+        "go.tbhb.dev/awrel/cmd/awrel@v0.5.0",
+        "mcp"
+      ],
+      "env": {
+        "AWREL_ENDPOINT": "${AWREL_ENDPOINT}",
+        "AWREL_CONNECT_TOKEN_FILE": "${AWREL_CONNECT_TOKEN_FILE}"
+      }
+    }
+  }
 }

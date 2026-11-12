@@ -4,77 +4,17 @@
     "commit": "",
     "pr": ""
   },
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "tbhbdev alpha identity record claude"
-          }
-        ]
-      }
+  "permissions": {
+    "allow": [
+      "mcp__awrel"
     ],
-    "SubagentStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "tbhbdev alpha identity record claude"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "tbhbdev alpha identity record claude"
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "tbhbdev alpha guard-gh-pr"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "tbhbdev alpha identity record claude"
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "tbhbdev alpha pr hook claude"
-          }
-        ]
-      }
-    ],
-    "PostToolUseFailure": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "tbhbdev alpha identity record claude"
-          }
-        ]
-      }
+    "deny": [
+      "Bash(gh pr create:*)",
+      "Bash(gh pr edit:*)",
+      "Bash(gh pr merge:*)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "awrel"
+  ]
 }

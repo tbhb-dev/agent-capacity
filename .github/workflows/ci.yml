@@ -60,7 +60,7 @@ jobs:
       # Hardens the runner, sets up Bazel and fetches, with the platform
       # workarounds, from tbhb-dev/rules.
       - name: Set up Bazel for CI
-        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@431be578eed96a29d2467b9652feb5ac5c361ee6  # main
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@c7a8816b70deb33b5c23d4f78f225abcc2918c52  # main
         with:
           disk-cache: ${{ github.workflow }}-${{ matrix.os }}
           cache-save: ${{ github.event_name != 'pull_request' }}
@@ -101,7 +101,7 @@ jobs:
     name: agent-capacity repo
     permissions:
       contents: read
-    uses: tbhb-dev/rules/.github/workflows/repo-checks.yml@431be578eed96a29d2467b9652feb5ac5c361ee6  # main
+    uses: tbhb-dev/rules/.github/workflows/repo-checks.yml@c7a8816b70deb33b5c23d4f78f225abcc2918c52  # main
     with:
       gazelle-dirs: .
       govulncheck-target: //:govulncheck
@@ -130,7 +130,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Bazel for CI
-        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@431be578eed96a29d2467b9652feb5ac5c361ee6  # main
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@c7a8816b70deb33b5c23d4f78f225abcc2918c52  # main
         with:
           targets: '@rules_go//go'
 
@@ -154,7 +154,7 @@ jobs:
           if ((status > 1)); then exit "${status}"; fi
 
       - name: Upload the gomodscan SARIF
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066  # v4.39.3
         with:
           sarif_file: gomodscan.sarif
           category: agent-capacity-dependencies
@@ -173,6 +173,6 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Fail if any needed job did not succeed
-        uses: tbhb-dev/rules/.github/actions/ci-conclusion@431be578eed96a29d2467b9652feb5ac5c361ee6  # main
+        uses: tbhb-dev/rules/.github/actions/ci-conclusion@c7a8816b70deb33b5c23d4f78f225abcc2918c52  # main
         with:
           needs: ${{ toJSON(needs) }}

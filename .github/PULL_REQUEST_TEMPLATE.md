@@ -8,7 +8,10 @@ prose only: code blocks and links are free.
 
 Agents don't use this form. They draft .github/PULL_REQUEST_DRAFT.md, which is
 gitignored. Its frontmatter carries the metadata and its H1 is the title, and
-the PR script lints the draft and opens the PR from it. -->
+the PR script lints the draft and opens the PR from it. The script also
+appends the Generated-by and Assisted-by trailers as the body's last paragraph,
+from the branch's commits and the posting agent's identity. Never write them.
+-->
 
 ## Why
 

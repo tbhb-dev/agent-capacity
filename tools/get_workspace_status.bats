@@ -13,11 +13,13 @@ setup() {
 	for v in $names; do
 		[[ $v == GIT_* ]] && unset "$v"
 	done
+	export HOME="${BATS_TEST_TMPDIR}/home"
 	export GIT_CONFIG_NOSYSTEM=1
 	export GIT_CONFIG_GLOBAL=/dev/null
 	export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@example.invalid
 	export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@example.invalid
 	export GIT_AUTHOR_DATE=2026-01-02T03:04:05Z GIT_COMMITTER_DATE=2026-01-02T03:04:05Z
+	mkdir -p "$HOME"
 	REPO="${BATS_TEST_TMPDIR}/repo"
 }
 

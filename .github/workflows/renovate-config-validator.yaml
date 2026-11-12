@@ -10,7 +10,10 @@ on:
   pull_request:
     paths:
       - ".github/renovate.json5"
-      - ".github/workflows/renovate-config-validator.yaml"
+      - ".github/workflows/*.yaml"
+      - ".github/workflows/*.yml"
+      - "MODULE.bazel"
+      - "**/*.bzl"
 
 permissions:
   contents: read
@@ -18,6 +21,6 @@ permissions:
 jobs:
   validate:
     # yamllint disable-line rule:line-length
-    uses: tbhb-dev/renovate-config/.github/workflows/renovate-config-validator.yaml@c993c230872876912187a2fb8df69d94778be799  # main
+    uses: tbhb-dev/renovate-config/.github/workflows/renovate-config-validator.yaml@5abdcea8af69138ab567e12bdbb291f44c41d8e7  # main
     with:
       configs: .github/renovate.json5

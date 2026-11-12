@@ -3,6 +3,7 @@
 addopts
 autobuild
 autouse
+awrel
 bazelignore
 bazelisk
 bazelrc
