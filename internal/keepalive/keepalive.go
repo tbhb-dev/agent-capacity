@@ -31,6 +31,7 @@ type Keepalive struct {
 	source       Source
 	observer     Observer
 	store        Store
+	save         func(State, bool) error
 	enrollment   Enrollment
 	invalidState bool
 }
@@ -46,7 +47,13 @@ func New(store Store, enrollment Enrollment, allow []string, now func() time.Tim
 	enrollment.Windows = append([]string(nil), enrollment.Windows...)
 
 	return &Keepalive{
-		store: store, enrollment: enrollment, now: now, source: source, observer: observer, invalidState: true,
+		store:        store,
+		save:         store.save,
+		enrollment:   enrollment,
+		now:          now,
+		source:       source,
+		observer:     observer,
+		invalidState: true,
 	}, nil
 }
 
@@ -55,6 +62,8 @@ func New(store Store, enrollment Enrollment, allow []string, now func() time.Tim
 // Use an absolute spool path under exclusive ownership. If the status record
 // remains after ledger loss, restore the ledger's history before using the core.
 func (keepalive *Keepalive) Enroll() error {
+	keepalive.invalidState = true
+
 	now := keepalive.now()
 
 	state := State{
@@ -66,7 +75,7 @@ func (keepalive *Keepalive) Enroll() error {
 		LastAt: now, DueAt: now, PendingAt: time.Time{}, Retry: 0,
 	}
 
-	return keepalive.store.save(state, true)
+	return keepalive.save(state, true)
 }
 
 // Rearm explicitly clears a latch while preserving counts and debits.
@@ -108,7 +117,8 @@ func (keepalive *Keepalive) Rearm() error {
 	return nil
 }
 
-// Step checks stops before admission and persists attempts without sending input.
+// Step rechecks stops after saving and before it reports admit.
+// It persists attempts without sending input.
 // A restart or a new instance needs one explicit Rearm before it can admit.
 // Operator stop files always win. Errors require another successful Rearm.
 // Call at least once per second while running.
@@ -147,12 +157,25 @@ func (keepalive *Keepalive) Step(ctx context.Context, stopSignal bool) (Status, 
 	decision := Next(state, now)
 
 	if decision.Action == "observe" {
-		state, decision = keepalive.observe(ctx, state, now)
+		state, decision, err = keepalive.observe(ctx, state, now)
+		if err != nil {
+			return keepalive.invalid(ctx, stopSignal, now, &state)
+		}
 	}
 
 	keepalive.rememberInvalid(state.Status)
 
-	stopped, err = keepalive.store.stopped(keepalive.enrollment.Alias)
+	return keepalive.savedStep(ctx, stopSignal, now, state, decision)
+}
+
+func (keepalive *Keepalive) savedStep(
+	ctx context.Context, stopSignal bool, now time.Time, state State, decision Decision,
+) (Status, Decision, error) {
+	if keepalive.save(state, false) != nil {
+		return keepalive.invalid(ctx, stopSignal, now, &state)
+	}
+
+	stopped, err := keepalive.store.stopped(keepalive.enrollment.Alias)
 	if err != nil {
 		return keepalive.invalid(ctx, stopSignal, now, &state)
 	}
@@ -162,10 +185,10 @@ func (keepalive *Keepalive) Step(ctx context.Context, stopSignal bool) (Status, 
 
 		latch(&state, "stop_signal", now)
 		decision = Next(state, now)
-	}
 
-	if keepalive.store.save(state, false) != nil {
-		return keepalive.invalid(ctx, stopSignal, now, &state)
+		if keepalive.save(state, false) != nil {
+			return keepalive.invalid(ctx, stopSignal, now, &state)
+		}
 	}
 
 	return state.Status, decision, nil
@@ -188,41 +211,55 @@ func (keepalive *Keepalive) blocked(ctx context.Context, stopSignal bool, now ti
 	return status, Decision{Action: reasonNone, CheckAt: time.Time{}}, nil
 }
 
-func (keepalive *Keepalive) observe(ctx context.Context, state State, now time.Time) (State, Decision) {
+func (keepalive *Keepalive) observe(ctx context.Context, state State, now time.Time) (State, Decision, error) {
 	observation, err := keepalive.observer.Observe(ctx, now)
+	if keepalive.now().Before(now) {
+		return state, Decision{}, ErrStateInvalid
+	}
+
 	if err != nil {
 		keepalive.invalidState = true
 		state = retry(state, now)
 
-		return state, Next(state, now)
+		return state, Next(state, now), nil //nolint:nilerr // Retry decisions handle errors. cspell:ignore nilerr
 	}
 
 	if observation.At.After(now) {
 		latch(&state, "future_observation", now)
 
-		return state, Next(state, now)
+		return state, Next(state, now), nil
 	}
 
 	if observation.At.IsZero() || now.Sub(observation.At) > time.Second {
 		latch(&state, "unknown_dialog", now)
 
-		return state, Next(state, now)
+		return state, Next(state, now), nil
 	}
 
 	phase, _ := Stop(observation.Signals...)
 
 	if phase != phaseRunning {
-		return evaluate(state, now, observation.Signals, Snapshot{Windows: nil, Debit: nil})
+		var decision Decision
+
+		state, decision = evaluate(state, now, observation.Signals, Snapshot{Windows: nil, Debit: nil})
+
+		return state, decision, nil
 	}
 
 	snapshot, err := keepalive.source.Read(ctx, now)
+	if keepalive.now().Before(now) {
+		return state, Decision{}, ErrStateInvalid
+	}
+
 	if err != nil {
 		latch(&state, readingInvalid, now)
 
-		return state, Next(state, now)
+		return state, Next(state, now), nil //nolint:nilerr // Reading errors become stop codes. cspell:ignore nilerr
 	}
 
-	return evaluate(state, now, nil, snapshot)
+	state, decision := evaluate(state, now, nil, snapshot)
+
+	return state, decision, nil
 }
 
 func (keepalive *Keepalive) rememberInvalid(status Status) {
@@ -265,5 +302,5 @@ func (keepalive *Keepalive) saveInvalid(state *State, now time.Time) error {
 	latch(state, "ledger_lost", now)
 	state.LastAt = now
 
-	return keepalive.store.save(*state, false)
+	return keepalive.save(*state, false)
 }

@@ -200,6 +200,8 @@ func TestRestartAndRearm(t *testing.T) {
 	require.NoError(t, keepalive.Enroll())
 	require.NoError(t, keepalive.Rearm())
 	require.ErrorIs(t, keepalive.Enroll(), ErrStateInvalid)
+	unarmedStep(t, keepalive)
+	require.NoError(t, keepalive.Rearm())
 	step(t, keepalive, fixtureNone, fixtureAdmit)
 
 	state, err := keepalive.store.load(keepalive.enrollment, now)
@@ -737,7 +739,7 @@ func TestStrictRestartAfterRollback(t *testing.T) {
 	unarmedStep(t, restartKeepalive(t, keepalive))
 }
 
-// A symlink allows reading the prior status but makes Store refuse replacement.
+// A symlink makes Store refuse the status read and replacement.
 func refuseStatusWrite(t *testing.T, keepalive *Keepalive) func() {
 	t.Helper()
 
@@ -1071,5 +1073,199 @@ func countedObservation(now *time.Time, calls *int) observerFunc {
 		*calls++
 
 		return Observation{At: *now, Signals: nil}, nil
+	}
+}
+
+func TestEnrollFailureClosesGate(t *testing.T) {
+	t.Parallel()
+
+	now := instant()
+	keepalive := enrolledKeepalive(t, &now)
+	save := keepalive.save
+	keepalive.save = func(State, bool) error { return ErrStateInvalid }
+	require.ErrorIs(t, keepalive.Enroll(), ErrStateInvalid)
+	keepalive.save = save
+
+	unarmedStep(t, keepalive)
+	require.NoError(t, keepalive.Rearm())
+	step(t, keepalive, fixtureNone, fixtureAdmit)
+}
+
+func TestStopDuringSave(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{fixtureStop, fixtureAliasStop} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := enrolledKeepalive(t, &now)
+			save := keepalive.save
+			path := filepath.Join(keepalive.store.Dir, name)
+			keepalive.save = func(state State, initial bool) error {
+				require.NoError(t, save(state, initial))
+				require.NoError(t, os.WriteFile(path, nil, privateFileMode))
+
+				return nil
+			}
+
+			step(t, keepalive, fixtureOperatorStop, fixtureNone)
+			state, err := keepalive.store.load(keepalive.enrollment, now)
+			require.NoError(t, err)
+			assert.Equal(t, uint64(1), state.InputCount)
+			assert.Equal(t, []Attempt{{At: now, Debit: 0.1}}, state.Attempts)
+			require.NoError(t, os.Remove(path))
+			unarmedStep(t, keepalive)
+		})
+	}
+}
+
+func TestRollbackDuringObservation(t *testing.T) {
+	t.Parallel()
+
+	for _, call := range []string{"source", "observer"} {
+		t.Run(call, func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := enrolledKeepalive(t, &now)
+			reads := 0
+			keepalive.source = sourceFunc(func(_ context.Context, at time.Time) (Snapshot, error) {
+				reads++
+
+				return snapshotAt(at), nil
+			})
+
+			// Keep the rollback later than the durable checkpoint.
+			now = now.Add(time.Second)
+
+			if call == "source" {
+				keepalive.source = sourceFunc(func(_ context.Context, at time.Time) (Snapshot, error) {
+					now = now.Add(-time.Nanosecond)
+
+					return snapshotAt(at), nil
+				})
+			} else {
+				keepalive.observer = observerFunc(func(_ context.Context, at time.Time) (Observation, error) {
+					now = now.Add(-time.Nanosecond)
+
+					return Observation{At: at, Signals: nil}, nil
+				})
+			}
+
+			invalidStep(t, keepalive)
+
+			if call == "observer" {
+				assert.Zero(t, reads)
+			}
+
+			now = instant().Add(time.Second)
+
+			unarmedStep(t, keepalive)
+			state, err := keepalive.store.load(keepalive.enrollment, now)
+			require.NoError(t, err)
+			assert.Zero(t, state.InputCount)
+			assert.Equal(t, fixtureStateInvalid, state.Status.Reason)
+
+			keepalive.source = sourceFunc(readSnapshot)
+			keepalive.observer = observationAt(now, nil)
+			require.NoError(t, keepalive.Rearm())
+			step(t, keepalive, fixtureNone, fixtureAdmit)
+		})
+	}
+}
+
+func TestSuccessfulRearmPreservesBothStops(t *testing.T) {
+	t.Parallel()
+
+	now := instant()
+	keepalive := enrolledKeepalive(t, &now)
+	_, _, err := keepalive.Step(t.Context(), true)
+	require.NoError(t, err)
+	before, err := keepalive.store.load(keepalive.enrollment, now)
+	require.NoError(t, err)
+
+	status := before.Status
+	status.Reason = fixtureStateInvalid
+
+	require.NoError(t, keepalive.store.WriteStatus(status))
+
+	now = now.Add(time.Second)
+
+	require.NoError(t, keepalive.Rearm())
+
+	after, err := keepalive.store.load(keepalive.enrollment, now)
+	require.NoError(t, err)
+	assert.Equal(t, before.Status, after.Status)
+
+	storedStatus, err := keepalive.store.ReadStatus(fixtureWork)
+	require.NoError(t, err)
+	assert.Equal(t, status, storedStatus)
+}
+
+func readSnapshot(_ context.Context, at time.Time) (Snapshot, error) {
+	return snapshotAt(at), nil
+}
+
+func TestSaveRecheckFailures(t *testing.T) {
+	t.Parallel()
+
+	for _, fixture := range []struct {
+		failure string
+		reason  string
+	}{
+		{fixtureStopRead, fixtureStateInvalid},
+		{"stop save", fixtureOperatorStop},
+		{fixtureCancel, fixtureOperatorStop},
+	} {
+		t.Run(fixture.failure, func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := enrolledKeepalive(t, &now)
+			keepalive.source = sourceFunc(readSnapshot)
+			keepalive.observer = observationAt(now, nil)
+			ctx, cancel := context.WithCancel(t.Context())
+
+			defer cancel()
+
+			save := keepalive.save
+			path := filepath.Join(keepalive.store.Dir, fixtureStop)
+			keepalive.save = func(state State, initial bool) error {
+				keepalive.save = save
+				require.NoError(t, save(state, initial))
+
+				switch fixture.failure {
+				case fixtureStopRead:
+					require.NoError(t, os.Mkdir(path, 0o700))
+				case "stop save":
+					require.NoError(t, os.WriteFile(path, nil, privateFileMode))
+
+					keepalive.save = func(State, bool) error { return ErrStateInvalid }
+				case fixtureCancel:
+					cancel()
+				}
+
+				return nil
+			}
+
+			status, decision, err := keepalive.Step(ctx, false)
+			if fixture.failure == fixtureCancel {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, ErrStateInvalid)
+			}
+
+			assert.Equal(t, fixture.reason, status.Reason)
+			assert.Equal(t, fixtureNone, decision.Action)
+
+			keepalive.save = save
+
+			if fixture.failure != fixtureCancel {
+				require.NoError(t, os.Remove(path))
+			}
+
+			unarmedStep(t, keepalive)
+		})
 	}
 }

@@ -270,6 +270,7 @@ func TestSpoolBoundaries(t *testing.T) {
 const (
 	fixtureOpenErrorWithFile = "open error with file"
 	fixtureRename            = "rename"
+	fixtureStatusRename      = "status rename"
 	fixtureStatusAlias       = "status alias"
 )
 
@@ -338,7 +339,7 @@ func (root faultySpool) Link(oldName, newName string) error {
 
 //nolint:wrapcheck // Each filesystem operation has an independent failure fixture.
 func (root faultySpool) Rename(oldName, newName string) error {
-	if root.fault == fixtureRename || root.fault == "status rename" && newName == "work.status" ||
+	if root.fault == fixtureRename || root.fault == fixtureStatusRename && newName == "work.status" ||
 		root.fault == "ledger rename" && newName == "work.ledger" {
 		return fs.ErrPermission
 	}
@@ -444,7 +445,7 @@ func TestMissingSpool(t *testing.T) {
 func TestRearmRecordFailuresPreserveStops(t *testing.T) {
 	t.Parallel()
 
-	for _, fault := range []string{fixtureRename, "ledger rename", "status rename"} {
+	for _, fault := range []string{fixtureRename, "ledger rename", fixtureStatusRename} {
 		t.Run(fault, func(t *testing.T) {
 			t.Parallel()
 
@@ -513,4 +514,46 @@ func TestRearmRecordValidation(t *testing.T) {
 	}
 
 	require.ErrorIs(t, (Store{Dir: "relative"}).rearm(initialState()), ErrStateInvalid)
+}
+
+func TestRearmStatusFailureAfterLedgerReplacePreservesBothStops(t *testing.T) {
+	t.Parallel()
+
+	state := initialState()
+	latch(&state, "stop_signal", instant())
+
+	store := Store{Dir: spoolDir(t)}
+	require.NoError(t, store.save(state, true))
+
+	status := state.Status
+	status.Reason = fixtureStateInvalid
+
+	require.NoError(t, store.WriteStatus(status))
+	before, err := os.Stat(filepath.Join(store.Dir, "work.ledger"))
+	require.NoError(t, err)
+	root, err := openSpool(store.Dir)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, root.Close()) })
+
+	state.LastAt = instant().Add(time.Second)
+	state.DueAt = state.LastAt
+
+	require.ErrorIs(
+		t,
+		rearmRecords(faultySpool{Root: root, file: nil, fault: fixtureStatusRename}, state),
+		ErrStateInvalid,
+	)
+
+	after, err := os.Stat(filepath.Join(store.Dir, "work.ledger"))
+	require.NoError(t, err)
+	assert.False(t, os.SameFile(before, after))
+
+	stored, err := store.load(enrollment(), state.LastAt)
+	require.NoError(t, err)
+	assert.Equal(t, state.LastAt, stored.LastAt)
+	assert.Equal(t, state.Status, stored.Status)
+
+	storedStatus, err := store.ReadStatus(fixtureWork)
+	require.NoError(t, err)
+	assert.Equal(t, status, storedStatus)
 }
