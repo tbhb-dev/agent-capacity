@@ -55,4 +55,4 @@ Use the committer identity the machine's hooks configure, signed with the machin
 
 ## Workflows
 
-`ci.yml` runs on pull requests and pushes to `main`. A `bazel` job runs `bazelisk test //...` on Linux x64 and arm64, macOS, and Windows, and a final `conclusion` job gives branch protection one required check. `codeql.yml` analyzes Go and the workflows. `renovate.yaml` runs Renovate, and `renovate-config-validator.yaml` validates its configuration. All scheduled times use Coordinated Universal Time (UTC).
+`ci.yml` runs on pull requests and pushes to `main`. A `bazel` job runs `bazelisk test //...` on Linux (amd64 and arm64) and macOS (arm64), and a final `conclusion` job gives branch protection one required check. `codeql.yml` analyzes Go and the workflows. `renovate.yaml` runs Renovate, and `renovate-config-validator.yaml` validates its configuration. All scheduled times use Coordinated Universal Time (UTC).
