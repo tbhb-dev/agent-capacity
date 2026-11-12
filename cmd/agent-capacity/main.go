@@ -112,6 +112,15 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 		registry = append(registry, codexRegistry...)
 	}
 
+	transcripts, transcriptErr := claude.RegisterTranscripts(options.claudeTranscripts, options.claudeAccount)
+	if transcriptErr != nil {
+		logger.ErrorContext(ctx, "invalid command", "class", "arguments")
+
+		return 1
+	}
+
+	registry = append(registry, transcripts...)
+
 	provider, err := r.NewProvider(ctx)
 	if err != nil {
 		logger.ErrorContext(ctx, "setup failed", "class", capacity.ErrorClass(err))
@@ -145,10 +154,12 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 }
 
 type serveOptions struct {
-	spoolDir     string
-	codexHome    string
-	codexAccount string
-	interval     time.Duration
+	claudeTranscripts string
+	claudeAccount     string
+	spoolDir          string
+	codexHome         string
+	codexAccount      string
+	interval          time.Duration
 }
 
 func parseServe(args []string) (serveOptions, error) {
@@ -160,6 +171,12 @@ func parseServe(args []string) (serveOptions, error) {
 	flags.SetOutput(io.Discard)
 	codexHome := flags.String("codex-home", os.Getenv("CODEX_HOME"), "Codex rollout home")
 	codexAccount := flags.String("codex-account", "primary", "Codex account alias")
+	transcripts := flags.String(
+		"claude-transcripts",
+		os.Getenv("AGENT_CAPACITY_CLAUDE_TRANSCRIPTS"),
+		"transcript files or directories, separated by commas",
+	)
+	claudeAccount := flags.String("claude-account", "primary", "Claude transcript account alias")
 	dir := flags.String("spool-dir", os.Getenv("AGENT_CAPACITY_SPOOL_DIR"), "snapshot directory")
 	interval := flags.Duration("interval", time.Minute, "source read interval")
 
@@ -172,7 +189,14 @@ func parseServe(args []string) (serveOptions, error) {
 		return serveOptions{}, errArguments
 	}
 
-	return serveOptions{interval: *interval, spoolDir: *dir, codexHome: *codexHome, codexAccount: *codexAccount}, nil
+	return serveOptions{
+		interval:          *interval,
+		spoolDir:          *dir,
+		codexHome:         *codexHome,
+		codexAccount:      *codexAccount,
+		claudeTranscripts: *transcripts,
+		claudeAccount:     *claudeAccount,
+	}, nil
 }
 
 // Serve collects immediately and after each tick until the context is canceled.

@@ -25,6 +25,7 @@ type Reading struct {
 // Source names identify the passive input format.
 const (
 	ClaudeStatusline   = "claude_statusline"
+	ClaudeTranscript   = "claude_transcript"
 	CodexRollout       = "codex_rollout"
 	AGYStatusline      = "agy_statusline"
 	statuslineFreshFor = 10 * time.Minute
@@ -60,7 +61,7 @@ func (r Reading) Validate() error {
 	}
 
 	switch r.Source {
-	case ClaudeStatusline, CodexRollout, AGYStatusline:
+	case ClaudeStatusline, ClaudeTranscript, CodexRollout, AGYStatusline:
 	default:
 		return ErrInvalidReading
 	}

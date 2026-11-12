@@ -8,7 +8,10 @@ repo_files()
 
 go_library(
     name = "claude",
-    srcs = ["claude.go"],
+    srcs = [
+        "claude.go",
+        "transcript.go",
+    ],
     importpath = "go.tbhb.dev/agent-capacity/internal/source/claude",
     visibility = ["//:__subpackages__"],
     deps = [
@@ -19,7 +22,10 @@ go_library(
 
 go_test(
     name = "claude_test",
-    srcs = ["claude_test.go"],
+    srcs = [
+        "claude_test.go",
+        "transcript_test.go",
+    ],
     embed = [":claude"],
     visibility = ["//:__pkg__"],
     deps = [
