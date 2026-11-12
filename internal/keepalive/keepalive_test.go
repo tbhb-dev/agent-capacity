@@ -38,18 +38,24 @@ func observationAt(at time.Time, err error) observerFunc {
 func fixtureKeepalive(t *testing.T, now *time.Time) *Keepalive {
 	t.Helper()
 
-	keepalive, err := New(Store{Dir: spoolDir(t)}, enrollment(), []string{fixtureWork}, func() time.Time { return *now },
+	keepalive, err := New(
+		Store{Dir: spoolDir(t)},
+		enrollment(),
+		[]string{fixtureWork},
+		func() time.Time { return *now },
 		sourceFunc(func(ctx context.Context, at time.Time) (Snapshot, error) {
 			assert.Equal(t, t.Context(), ctx)
 			assert.Equal(t, *now, at)
 
 			return snapshotAt(at), nil
-		}), observerFunc(func(ctx context.Context, at time.Time) (Observation, error) {
+		}),
+		observerFunc(func(ctx context.Context, at time.Time) (Observation, error) {
 			assert.Equal(t, t.Context(), ctx)
 			assert.Equal(t, *now, at)
 
 			return Observation{At: at, Signals: nil}, nil
-		}))
+		}),
+	)
 	require.NoError(t, err)
 
 	return keepalive
@@ -147,7 +153,14 @@ func TestInvalidLatchAfterClockRecovery(t *testing.T) {
 	assert.Equal(t, fixtureStateInvalid, state.Status.Reason)
 	assert.Zero(t, state.InputCount)
 
-	restarted, err := New(keepalive.store, enrollment(), []string{fixtureWork}, keepalive.now, keepalive.source, keepalive.observer)
+	restarted, err := New(
+		keepalive.store,
+		enrollment(),
+		[]string{fixtureWork},
+		keepalive.now,
+		keepalive.source,
+		keepalive.observer,
+	)
 	require.NoError(t, err)
 
 	now = now.Add(8 * 24 * time.Hour)
@@ -197,7 +210,14 @@ func TestRestartAndRearm(t *testing.T) {
 	assert.Equal(t, []Attempt{{At: now, Debit: 0.1}}, state.Attempts)
 
 	// A new instance reads the pending attempt instead of repeating it.
-	restarted, err := New(keepalive.store, enrollment(), []string{fixtureWork}, keepalive.now, keepalive.source, keepalive.observer)
+	restarted, err := New(
+		keepalive.store,
+		enrollment(),
+		[]string{fixtureWork},
+		keepalive.now,
+		keepalive.source,
+		keepalive.observer,
+	)
 	require.NoError(t, err)
 	step(t, restarted, fixtureNone, fixtureWait)
 
@@ -522,7 +542,14 @@ func TestEnrollment(t *testing.T) {
 	now := instant()
 	keepalive := fixtureKeepalive(t, &now)
 	copyEnrollment := enrollment()
-	created, err := New(keepalive.store, copyEnrollment, []string{fixtureWork}, keepalive.now, keepalive.source, keepalive.observer)
+	created, err := New(
+		keepalive.store,
+		copyEnrollment,
+		[]string{fixtureWork},
+		keepalive.now,
+		keepalive.source,
+		keepalive.observer,
+	)
 	require.NoError(t, err)
 
 	copyEnrollment.Windows[0] = fixtureOther
@@ -540,7 +567,14 @@ func TestEnrollment(t *testing.T) {
 		{keepalive.now, nil, keepalive.observer, []string{fixtureWork}},
 		{keepalive.now, keepalive.source, nil, []string{fixtureWork}},
 	} {
-		created, err = New(keepalive.store, enrollment(), fixture.allow, fixture.clock, fixture.source, fixture.observer)
+		created, err = New(
+			keepalive.store,
+			enrollment(),
+			fixture.allow,
+			fixture.clock,
+			fixture.source,
+			fixture.observer,
+		)
 		require.ErrorIs(t, err, ErrStateInvalid)
 		assert.Nil(t, created)
 	}
