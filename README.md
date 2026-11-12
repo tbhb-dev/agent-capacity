@@ -2,6 +2,8 @@
 
 `agent-capacity` reads plan usage windows for Claude Code, Codex, and Antigravity from passive local sources and exports them as OpenTelemetry metrics. Source packages arrive in later changes. Until then, the registry starts empty.
 
+Supported platforms include Linux (amd64 and arm64) and macOS (arm64).
+
 ```sh
 bazelisk build //cmd/agent-capacity
 bazelisk run //cmd/agent-capacity -- version

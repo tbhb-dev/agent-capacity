@@ -18,9 +18,6 @@ common --symlink_prefix=.bazel-
 common --check_direct_dependencies=error
 
 build:release -c opt --stamp --workspace_status_command=tools/get_workspace_status.sh
-# Bazel runs the status command without a shell on Windows, so Windows
-# release builds use the batch form.
-build:release-windows --config=release --workspace_status_command=tools/get_workspace_status.bat
 # `common:windows` lines apply on Windows only (preset.bazelrc sets this
 # too; it is stated here so the lines below never depend on the preset).
 common --enable_platform_specific_config

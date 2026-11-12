@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   # Bazel 9.x only, the version .bazelversion pins, on Linux (x86_64 and
-  # arm64), macOS (arm64) and Windows (x86_64). The checks that need the
+  # arm64) and macOS (arm64). The checks that need the
   # network or GitHub's API run on Linux only; they do not depend on the OS.
   bazel:
     name: "bazel (${{ matrix.os }})"
@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-26.04, ubuntu-26.04-arm, macos-26, windows-2025]
+        os: [ubuntu-26.04, ubuntu-26.04-arm, macos-26]
         include:
           - os: ubuntu-26.04
             release: release
@@ -41,10 +41,6 @@ jobs:
             release: release
           - os: macos-26
             release: release
-          # Bazel runs the workspace status command without a shell on
-          # Windows, so the release config there uses the batch script.
-          - os: windows-2025
-            release: release-windows
     defaults:
       run:
         shell: bash
