@@ -21,6 +21,7 @@ import (
 
 	"go.tbhb.dev/agent-capacity/internal/capacity"
 	"go.tbhb.dev/agent-capacity/internal/export"
+	"go.tbhb.dev/agent-capacity/internal/source/codex"
 )
 
 // Provider supplies a meter and flushes on shutdown.
@@ -31,6 +32,7 @@ type Provider interface {
 
 // Runtime keeps source registration and SDK creation at the command boundary.
 type Runtime struct {
+	NewRegistry func(string, string) (capacity.Registry, error)
 	NewProvider func(context.Context) (Provider, error)
 	Registry    capacity.Registry
 }
@@ -56,6 +58,7 @@ func newRuntime(ctx context.Context, logger *slog.Logger) Runtime {
 
 	return Runtime{
 		Registry:    capacity.Registry{},
+		NewRegistry: codex.Register,
 		NewProvider: func(ctx context.Context) (Provider, error) { return export.NewProvider(ctx) },
 	}
 }
@@ -72,11 +75,22 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 		return 0
 	}
 
-	interval, err := parseInterval(args)
+	options, err := parseServe(args)
 	if err != nil {
 		logger.ErrorContext(ctx, "invalid command", "class", "arguments")
 
 		return 1
+	}
+
+	if r.NewRegistry != nil {
+		registry, registryErr := r.NewRegistry(options.codexHome, options.codexAccount)
+		if registryErr != nil {
+			logger.ErrorContext(ctx, "invalid command", "class", "arguments")
+
+			return 1
+		}
+
+		r.Registry = append(r.Registry, registry...)
 	}
 
 	provider, err := r.NewProvider(ctx)
@@ -88,7 +102,7 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 
 	collector, err := export.New(provider.Meter("go.tbhb.dev/agent-capacity"), time.Now)
 	if err == nil {
-		ticker := time.NewTicker(interval)
+		ticker := time.NewTicker(options.interval)
 		defer ticker.Stop()
 
 		Serve(ctx, r.Registry, collector, logger, ticker.C, time.Now)
@@ -111,25 +125,33 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 	return 0
 }
 
-func parseInterval(args []string) (time.Duration, error) {
+type serveOptions struct {
+	codexHome    string
+	codexAccount string
+	interval     time.Duration
+}
+
+func parseServe(args []string) (serveOptions, error) {
 	if len(args) == 0 || args[0] != "serve" {
-		return 0, errArguments
+		return serveOptions{}, errArguments
 	}
 
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
+	codexHome := flags.String("codex-home", os.Getenv("CODEX_HOME"), "Codex rollout home")
+	codexAccount := flags.String("codex-account", "primary", "Codex account alias")
 	interval := flags.Duration("interval", time.Minute, "source read interval")
 
 	err := flags.Parse(args[1:])
 	if err != nil {
-		return 0, errArguments
+		return serveOptions{}, errArguments
 	}
 
 	if flags.NArg() != 0 || *interval <= 0 {
-		return 0, errArguments
+		return serveOptions{}, errArguments
 	}
 
-	return *interval, nil
+	return serveOptions{interval: *interval, codexHome: *codexHome, codexAccount: *codexAccount}, nil
 }
 
 // Serve collects immediately and after each tick until the context is canceled.
