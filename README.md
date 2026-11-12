@@ -1,14 +1,16 @@
 # agent-capacity
 
-`agent-capacity` reads plan usage windows for Claude Code, Codex, and Antigravity from passive local sources and exports them as OpenTelemetry metrics. Source packages arrive in later changes. Until then, the registry starts empty.
+`agent-capacity` reads plan usage windows for Claude Code, Codex, and Antigravity from passive local sources and exports them as OpenTelemetry metrics. At startup, the registry includes the Claude status-line source and adds the Codex rollout source when `--codex-home` or `CODEX_HOME` supplies a home directory.
 
 Supported platforms include Linux (amd64 and arm64) and macOS (arm64).
 
 ```sh
 bazelisk build //cmd/agent-capacity
 bazelisk run //cmd/agent-capacity -- version
-bazelisk run //cmd/agent-capacity -- serve --interval=60s
+bazelisk run //cmd/agent-capacity -- serve --interval=60s --spool-dir=/path/to/spool
 ```
+
+`serve` requires a spool directory through `--spool-dir` or `AGENT_CAPACITY_SPOOL_DIR`.
 
 `--interval` sets the source read interval, which defaults to 60 seconds. The SDK sets the export interval through `OTEL_METRIC_EXPORT_INTERVAL`. A process interrupt or termination signal flushes pending metrics and shuts down.
 

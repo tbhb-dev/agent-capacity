@@ -181,7 +181,6 @@ testifylint
 testonly
 testpackage
 testpaths
-testpackage
 tombi
 toolu
 tricolon
