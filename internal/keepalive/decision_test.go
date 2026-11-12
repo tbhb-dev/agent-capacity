@@ -49,6 +49,8 @@ const (
 	fixtureStateInvalid    = "state_invalid"
 	fixtureCancel          = "cancel"
 	fixtureUnknownScreen   = "unknown_screen"
+	fixtureAliasStop       = "work.stop"
+	fixtureNotArmed        = "not_armed"
 )
 
 func instant() time.Time { return time.Unix(2000000, 0).UTC() }

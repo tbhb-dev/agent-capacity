@@ -46,7 +46,7 @@ func New(store Store, enrollment Enrollment, allow []string, now func() time.Tim
 	enrollment.Windows = append([]string(nil), enrollment.Windows...)
 
 	return &Keepalive{
-		store: store, enrollment: enrollment, now: now, source: source, observer: observer, invalidState: false,
+		store: store, enrollment: enrollment, now: now, source: source, observer: observer, invalidState: true,
 	}, nil
 }
 
@@ -71,7 +71,9 @@ func (keepalive *Keepalive) Enroll() error {
 
 // Rearm explicitly clears a latch while preserving counts and debits.
 // It can't repair a lost ledger or bypass a stop file.
+// Durable stops stay in place until the next armed Step succeeds.
 func (keepalive *Keepalive) Rearm() error {
+	keepalive.invalidState = true
 	now := keepalive.now()
 
 	state, err := keepalive.store.load(keepalive.enrollment, now)
@@ -85,11 +87,19 @@ func (keepalive *Keepalive) Rearm() error {
 		return ErrStateInvalid
 	}
 
-	state.Status.Phase, state.Status.Reason, state.Status.At = phaseRunning, reasonNone, now
 	state.LastAt, state.DueAt = now, now
 	state.PendingAt, state.Retry = time.Time{}, 0
 
-	if keepalive.store.save(state, false) != nil {
+	if keepalive.store.rearm(state) != nil {
+		return ErrStateInvalid
+	}
+
+	if !validState(state, keepalive.enrollment, keepalive.now()) {
+		return ErrStateInvalid
+	}
+
+	stopped, err = keepalive.store.stopped(keepalive.enrollment.Alias)
+	if err != nil || stopped {
 		return ErrStateInvalid
 	}
 
@@ -98,32 +108,34 @@ func (keepalive *Keepalive) Rearm() error {
 	return nil
 }
 
-// Step checks stops before admission and persists attempts before returning.
+// Step checks stops before admission and persists attempts without sending input.
+// A restart or a new instance needs one explicit Rearm before it can admit.
+// Operator stop files always win. Errors require another successful Rearm.
 // Call at least once per second while running.
-// Errors latch admission. Only a successful Rearm clears the latch.
-// The caller must check stop controls again at delivery because a stop file can appear after Step's last check.
+// The caller must check stop controls again at delivery.
 func (keepalive *Keepalive) Step(ctx context.Context, stopSignal bool) (Status, Decision, error) {
 	now := keepalive.now()
+
+	if keepalive.invalidState {
+		return keepalive.blocked(ctx, stopSignal, now)
+	}
 
 	state, err := keepalive.store.load(keepalive.enrollment, now)
 	// gomutants:disable-next-line BRANCH_IF reason="Failed loads return empty state that also fails save."
 	if err != nil {
-		return keepalive.invalid(now, nil)
-	}
-
-	keepalive.rememberInvalid(state.Status)
-
-	if keepalive.invalidState {
-		return keepalive.invalid(now, &state)
+		return keepalive.invalid(ctx, stopSignal, now, nil)
 	}
 
 	stopped, err := keepalive.store.stopped(keepalive.enrollment.Alias)
 	if err != nil {
-		return keepalive.invalid(now, &state)
+		return keepalive.invalid(ctx, stopSignal, now, &state)
 	}
 
 	if stopped || stopSignal || ctx.Err() != nil {
 		latch(&state, "stop_signal", now)
+	} else {
+		// Rearm preserves durable stops until this armed Step can replace them.
+		state.Status.Phase, state.Status.Reason, state.Status.At = phaseRunning, reasonNone, now
 	}
 
 	state.LastAt = now
@@ -138,28 +150,48 @@ func (keepalive *Keepalive) Step(ctx context.Context, stopSignal bool) (Status, 
 		state, decision = keepalive.observe(ctx, state, now)
 	}
 
+	keepalive.rememberInvalid(state.Status)
+
 	stopped, err = keepalive.store.stopped(keepalive.enrollment.Alias)
 	if err != nil {
-		return keepalive.invalid(now, &state)
+		return keepalive.invalid(ctx, stopSignal, now, &state)
 	}
 
 	if stopped || ctx.Err() != nil {
+		keepalive.invalidState = true
+
 		latch(&state, "stop_signal", now)
 		decision = Next(state, now)
 	}
 
-	keepalive.rememberInvalid(state.Status)
-
 	if keepalive.store.save(state, false) != nil {
-		return keepalive.invalid(now, &state)
+		return keepalive.invalid(ctx, stopSignal, now, &state)
 	}
 
 	return state.Status, decision, nil
 }
 
+func (keepalive *Keepalive) blocked(ctx context.Context, stopSignal bool, now time.Time) (Status, Decision, error) {
+	stopped, err := keepalive.store.stopped(keepalive.enrollment.Alias)
+	if err != nil {
+		return keepalive.invalid(ctx, stopSignal, now, nil)
+	}
+
+	status := Status{
+		Alias: keepalive.enrollment.Alias, Vendor: keepalive.enrollment.Vendor,
+		Phase: phaseStopped, Reason: notArmed, At: now,
+	}
+	if stopped || stopSignal || ctx.Err() != nil {
+		status.Reason = operatorStop
+	}
+
+	return status, Decision{Action: reasonNone, CheckAt: time.Time{}}, nil
+}
+
 func (keepalive *Keepalive) observe(ctx context.Context, state State, now time.Time) (State, Decision) {
 	observation, err := keepalive.observer.Observe(ctx, now)
 	if err != nil {
+		keepalive.invalidState = true
 		state = retry(state, now)
 
 		return state, Next(state, now)
@@ -194,12 +226,14 @@ func (keepalive *Keepalive) observe(ctx context.Context, state State, now time.T
 }
 
 func (keepalive *Keepalive) rememberInvalid(status Status) {
-	if status.Reason == stateInvalid {
+	if status.Phase != phaseRunning {
 		keepalive.invalidState = true
 	}
 }
 
-func (keepalive *Keepalive) invalid(now time.Time, state *State) (Status, Decision, error) {
+func (keepalive *Keepalive) invalid(
+	ctx context.Context, stopSignal bool, now time.Time, state *State,
+) (Status, Decision, error) {
 	keepalive.invalidState = true
 
 	status := Status{
@@ -207,11 +241,17 @@ func (keepalive *Keepalive) invalid(now time.Time, state *State) (Status, Decisi
 		Phase: phaseStopped, Reason: stateInvalid, At: now,
 	}
 
+	stopped, stopErr := keepalive.store.stopped(keepalive.enrollment.Alias)
+	if stopped || stopSignal || ctx.Err() != nil {
+		status.Reason = operatorStop
+	}
+
 	return status, Decision{
 		Action:  reasonNone,
 		CheckAt: time.Time{},
 	}, errors.Join(
 		ErrStateInvalid,
+		stopErr,
 		keepalive.saveInvalid(state, now),
 		keepalive.store.WriteStatus(status),
 	)

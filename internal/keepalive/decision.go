@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Tony Burns
 
-// Package keepalive provides an off by default decision core and durable state.
+// Package keepalive records decisions and durable state without sending input.
+// A restart or a new instance needs one explicit Rearm before it can admit.
+// Operator stop files always win.
+// The caller must check stop controls again at delivery.
 // The keepalive logic is unproven against any harness.
 package keepalive
 
@@ -38,6 +41,9 @@ const (
 	usageLimit         = 0.85
 	refreshWait        = 120 * time.Second
 )
+
+// notArmed means this instance needs an explicit successful Rearm.
+const notArmed = "not_armed"
 
 // Status contains only public labels and fixed codes.
 type Status struct {

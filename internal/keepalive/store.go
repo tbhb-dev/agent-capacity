@@ -101,7 +101,7 @@ func validStatus(status Status) bool {
 		refreshTimeout, unknownScreen, retryExhausted:
 		return status.Phase == phaseStuck
 	case "rate_limited", humanAttached, readingUnavailable, unsupportedVersion, budgetExhausted,
-		nearLimit, operatorStop, stateInvalid:
+		nearLimit, operatorStop, stateInvalid, notArmed:
 		return status.Phase == phaseStopped
 	default:
 		return false
@@ -362,6 +362,39 @@ func (store Store) save(state State, initial bool) error {
 	}
 
 	return store.WriteStatus(state.Status)
+}
+
+// rearm preserves each durable stop until an armed Step succeeds.
+func (store Store) rearm(state State) error {
+	root, err := openSpool(store.Dir)
+	if err != nil {
+		return ErrStateInvalid
+	}
+
+	defer root.Close()
+
+	return rearmRecords(root, state)
+}
+
+func rearmRecords(root spoolFiles, state State) error {
+	alias := state.Enrollment.Alias
+
+	var status Status
+
+	if read(root, alias+".status", &status) != nil || !validStatus(status) || status.Alias != alias {
+		return ErrStateInvalid
+	}
+
+	_, err := regular(root, alias+".ledger")
+	if err != nil {
+		return ErrStateInvalid
+	}
+
+	if write(root, alias+".ledger", state, false) != nil {
+		return ErrStateInvalid
+	}
+
+	return write(root, alias+".status", status, false)
 }
 
 func (store Store) stopped(alias string) (bool, error) {

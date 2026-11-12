@@ -66,6 +66,7 @@ func enrolledKeepalive(t *testing.T, now *time.Time) *Keepalive {
 
 	keepalive := fixtureKeepalive(t, now)
 	require.NoError(t, keepalive.Enroll())
+	require.NoError(t, keepalive.Rearm())
 
 	return keepalive
 }
@@ -111,11 +112,7 @@ func TestInvalidLatchAfterSpoolRecovery(t *testing.T) {
 
 	t.Cleanup(func() { setSpoolMode(t, dir, 0o700) })
 
-	keepalive.source = sourceFunc(func(context.Context, time.Time) (Snapshot, error) {
-		setSpoolMode(t, dir, 0o500)
-
-		return snapshotAt(now), nil
-	})
+	failSaves(t, keepalive, now)
 
 	invalidStep(t, keepalive)
 
@@ -130,7 +127,7 @@ func TestInvalidLatchAfterSpoolRecovery(t *testing.T) {
 		return snapshotAt(now), nil
 	})
 
-	invalidStep(t, keepalive)
+	unarmedStep(t, keepalive)
 	require.NoError(t, keepalive.Rearm())
 	step(t, keepalive, fixtureNone, fixtureAdmit)
 }
@@ -146,11 +143,11 @@ func TestInvalidLatchAfterClockRecovery(t *testing.T) {
 
 	now = instant()
 
-	invalidStep(t, keepalive)
+	unarmedStep(t, keepalive)
 
 	state, err := keepalive.store.load(keepalive.enrollment, now)
 	require.NoError(t, err)
-	assert.Equal(t, fixtureStateInvalid, state.Status.Reason)
+	assert.Equal(t, fixtureNone, state.Status.Reason)
 	assert.Zero(t, state.InputCount)
 
 	restarted, err := New(
@@ -165,11 +162,11 @@ func TestInvalidLatchAfterClockRecovery(t *testing.T) {
 
 	now = now.Add(8 * 24 * time.Hour)
 
-	invalidStep(t, restarted)
+	unarmedStep(t, restarted)
 	require.NoError(t, keepalive.Rearm())
 	step(t, keepalive, fixtureNone, fixtureAdmit)
 
-	invalidStep(t, restarted)
+	unarmedStep(t, restarted)
 	require.NoError(t, restarted.Rearm())
 	step(t, restarted, fixtureBudgetExhausted, fixtureNone)
 }
@@ -190,7 +187,7 @@ func TestFailedRearmPreservesInvalidLatch(t *testing.T) {
 	setSpoolMode(t, dir, 0o500)
 	require.ErrorIs(t, keepalive.Rearm(), ErrStateInvalid)
 	setSpoolMode(t, dir, 0o700)
-	invalidStep(t, keepalive)
+	unarmedStep(t, keepalive)
 	require.NoError(t, keepalive.Rearm())
 	step(t, keepalive, fixtureNone, fixtureAdmit)
 }
@@ -201,6 +198,7 @@ func TestRestartAndRearm(t *testing.T) {
 	now := instant()
 	keepalive := fixtureKeepalive(t, &now)
 	require.NoError(t, keepalive.Enroll())
+	require.NoError(t, keepalive.Rearm())
 	require.ErrorIs(t, keepalive.Enroll(), ErrStateInvalid)
 	step(t, keepalive, fixtureNone, fixtureAdmit)
 
@@ -209,34 +207,16 @@ func TestRestartAndRearm(t *testing.T) {
 	assert.Equal(t, uint64(1), state.InputCount)
 	assert.Equal(t, []Attempt{{At: now, Debit: 0.1}}, state.Attempts)
 
-	// A new instance reads the pending attempt instead of repeating it.
-	restarted, err := New(
-		keepalive.store,
-		enrollment(),
-		[]string{fixtureWork},
-		keepalive.now,
-		keepalive.source,
-		keepalive.observer,
-	)
-	require.NoError(t, err)
-	step(t, restarted, fixtureNone, fixtureWait)
-
-	now = now.Add(time.Second)
-
-	step(t, restarted, fixtureNone, fixtureWait)
-
-	state, err = restarted.store.load(restarted.enrollment, now)
-	require.NoError(t, err)
-	assert.True(t, state.PendingAt.IsZero())
-	assert.Equal(t, uint64(1), state.InputCount)
-
-	now = now.Add(5 * time.Minute)
-
+	// A new instance preserves history and needs its own Rearm.
+	restarted := restartKeepalive(t, keepalive)
+	unarmedStep(t, restarted)
+	require.NoError(t, restarted.Rearm())
 	step(t, restarted, fixtureBudgetExhausted, fixtureNone)
+	unarmedStep(t, restarted)
 
 	now = now.Add(8 * 24 * time.Hour)
 
-	step(t, restarted, fixtureBudgetExhausted, fixtureNone)
+	unarmedStep(t, restarted)
 	require.NoError(t, restarted.Rearm())
 	step(t, restarted, fixtureNone, fixtureAdmit)
 
@@ -250,13 +230,14 @@ func TestRestartAndRearm(t *testing.T) {
 func TestStopControls(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{fixtureStop, "work.stop"} {
+	for _, name := range []string{fixtureStop, fixtureAliasStop} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
 			now := instant()
 			keepalive := fixtureKeepalive(t, &now)
 			require.NoError(t, keepalive.Enroll())
+			require.NoError(t, keepalive.Rearm())
 
 			state, err := keepalive.store.load(keepalive.enrollment, now)
 			require.NoError(t, err)
@@ -273,7 +254,7 @@ func TestStopControls(t *testing.T) {
 			assert.True(t, decision.CheckAt.IsZero())
 			require.ErrorIs(t, keepalive.Rearm(), ErrStateInvalid)
 			require.NoError(t, os.Remove(filepath.Join(keepalive.store.Dir, name)))
-			step(t, keepalive, fixtureOperatorStop, fixtureNone)
+			unarmedStep(t, keepalive)
 			require.NoError(t, keepalive.Rearm())
 			step(t, keepalive, fixtureNone, fixtureAdmit)
 		})
@@ -283,6 +264,7 @@ func TestStopControls(t *testing.T) {
 		now := instant()
 		keepalive := fixtureKeepalive(t, &now)
 		require.NoError(t, keepalive.Enroll())
+		require.NoError(t, keepalive.Rearm())
 
 		ctx, cancel := context.WithCancel(t.Context())
 
@@ -343,6 +325,13 @@ func TestStopBeforeAdmission(t *testing.T) {
 				state, loadErr := keepalive.store.load(keepalive.enrollment, now)
 				require.NoError(t, loadErr)
 				assert.Equal(t, uint64(1), state.InputCount)
+
+				if action == fixtureStop {
+					require.NoError(t, os.Remove(filepath.Join(keepalive.store.Dir, fixtureStop)))
+				}
+
+				require.NoError(t, keepalive.store.save(initialState(), false))
+				unarmedStep(t, keepalive)
 			} else {
 				require.ErrorIs(t, err, ErrStateInvalid)
 				assert.Equal(t, fixtureStateInvalid, status.Reason)
@@ -379,19 +368,12 @@ func TestStopStateErrorSurvivesRestart(t *testing.T) {
 				keepalive.source, observationAt(now, nil))
 			require.NoError(t, err)
 			require.NoError(t, os.Remove(stopPath))
-			invalidStep(t, keepalive)
+			unarmedStep(t, keepalive)
 
 			for _, elapsed := range []time.Duration{0, 8 * 24 * time.Hour} {
 				now = instant().Add(elapsed)
 
-				status, decision, err = restarted.Step(t.Context(), false)
-				require.ErrorIs(t, err, ErrStateInvalid)
-				assert.Equal(t, phaseStopped, status.Phase)
-				assert.Equal(t, fixtureNone, decision.Action)
-
-				stored, statusErr := restarted.store.ReadStatus(fixtureWork)
-				require.NoError(t, statusErr)
-				assert.Equal(t, status, stored)
+				unarmedStep(t, restarted)
 			}
 
 			require.NoError(t, restarted.Rearm())
@@ -443,7 +425,7 @@ func TestRuntimeObservations(t *testing.T) {
 
 				step(t, keepalive, fixture.want, wantAction)
 				require.NoError(t, keepalive.store.save(state, false))
-				invalidStep(t, keepalive)
+				unarmedStep(t, keepalive)
 			} else {
 				step(t, keepalive, fixture.want, wantAction)
 			}
@@ -456,41 +438,23 @@ func TestPersistedRetries(t *testing.T) {
 
 	now := instant()
 	keepalive := enrolledKeepalive(t, &now)
-
 	keepalive.observer = observationAt(time.Time{}, errors.ErrUnsupported)
+	step(t, keepalive, fixtureNone, fixtureWait)
 
-	for index, delay := range []time.Duration{30 * time.Second, 2 * time.Minute, 5 * time.Minute} {
-		step(t, keepalive, fixtureNone, fixtureWait)
+	state, err := keepalive.store.load(keepalive.enrollment, now)
+	require.NoError(t, err)
+	assert.Equal(t, now.Add(30*time.Second), state.DueAt)
+	assert.Equal(t, 1, state.Retry)
+	assert.Zero(t, state.InputCount)
+	unarmedStep(t, keepalive)
 
-		state, err := keepalive.store.load(keepalive.enrollment, now)
-		require.NoError(t, err)
-		assert.Equal(t, now.Add(delay), state.DueAt)
-		assert.Equal(t, index+1, state.Retry)
-		assert.Zero(t, state.InputCount)
+	restarted := restartKeepalive(t, keepalive)
+	now = state.DueAt
 
-		restarted, newErr := New(
-			keepalive.store,
-			enrollment(),
-			[]string{fixtureWork},
-			keepalive.now,
-			keepalive.source,
-			keepalive.observer,
-		)
-		require.NoError(t, newErr)
-
-		keepalive = restarted
-		now = state.DueAt.Add(-time.Nanosecond)
-
-		step(t, keepalive, fixtureNone, fixtureWait)
-
-		now = state.DueAt
-	}
-
-	step(t, keepalive, "retry_exhausted", fixtureNone)
-	require.NoError(t, keepalive.Rearm())
-
-	keepalive.observer = observationAt(now, nil)
-	step(t, keepalive, fixtureNone, fixtureAdmit)
+	unarmedStep(t, restarted)
+	require.NoError(t, restarted.Rearm())
+	restarted.observer = observationAt(now, nil)
+	step(t, restarted, fixtureNone, fixtureAdmit)
 }
 
 func TestPendingTimeoutAndStateLoss(t *testing.T) {
@@ -503,13 +467,18 @@ func TestPendingTimeoutAndStateLoss(t *testing.T) {
 			now := instant()
 			keepalive := fixtureKeepalive(t, &now)
 			require.NoError(t, keepalive.Enroll())
+			require.NoError(t, keepalive.Rearm())
 			step(t, keepalive, fixtureNone, fixtureAdmit)
 
 			switch action {
 			case "timeout":
 				now = now.Add(120 * time.Second)
 
+				observed := 0
+				keepalive.observer = countedObservation(&now, &observed)
+
 				step(t, keepalive, fixtureRefreshTimeout, fixtureNone)
+				assert.Zero(t, observed)
 
 				return
 			case "rollback":
@@ -519,7 +488,7 @@ func TestPendingTimeoutAndStateLoss(t *testing.T) {
 			case "corrupt":
 				require.NoError(t, os.WriteFile(filepath.Join(keepalive.store.Dir, "work.ledger"), []byte("{"), 0o600))
 			case "stop directory":
-				require.NoError(t, os.Mkdir(filepath.Join(keepalive.store.Dir, "work.stop"), 0o700))
+				require.NoError(t, os.Mkdir(filepath.Join(keepalive.store.Dir, fixtureAliasStop), 0o700))
 			}
 
 			status, decision, err := keepalive.Step(t.Context(), false)
@@ -579,10 +548,7 @@ func TestEnrollment(t *testing.T) {
 		assert.Nil(t, created)
 	}
 
-	status, decision, err := keepalive.Step(t.Context(), false)
-	require.ErrorIs(t, err, ErrStateInvalid)
-	assert.Equal(t, fixtureStateInvalid, status.Reason)
-	assert.Equal(t, fixtureNone, decision.Action)
+	unarmedStep(t, keepalive)
 
 	now = time.Time{}
 
@@ -595,7 +561,10 @@ func TestOperatorLatchSurvivesTimeout(t *testing.T) {
 	now := instant()
 	keepalive := fixtureKeepalive(t, &now)
 	require.NoError(t, keepalive.Enroll())
+	require.NoError(t, keepalive.Rearm())
 	step(t, keepalive, fixtureNone, fixtureAdmit)
+
+	now = now.Add(120 * time.Second)
 
 	status, decision, err := keepalive.Step(t.Context(), true)
 	require.NoError(t, err)
@@ -604,7 +573,7 @@ func TestOperatorLatchSurvivesTimeout(t *testing.T) {
 
 	now = now.Add(120 * time.Second)
 
-	step(t, keepalive, fixtureOperatorStop, fixtureNone)
+	unarmedStep(t, keepalive)
 	require.NoError(t, keepalive.Rearm())
 	step(t, keepalive, fixtureBudgetExhausted, fixtureNone)
 }
@@ -615,6 +584,7 @@ func TestEnrollmentCannotReplaceLostLedger(t *testing.T) {
 	now := instant()
 	keepalive := fixtureKeepalive(t, &now)
 	require.NoError(t, keepalive.Enroll())
+	require.NoError(t, keepalive.Rearm())
 	step(t, keepalive, fixtureNone, fixtureAdmit)
 	require.NoError(t, os.Remove(filepath.Join(keepalive.store.Dir, "work.ledger")))
 	require.ErrorIs(t, keepalive.Enroll(), ErrStateInvalid)
@@ -630,6 +600,7 @@ func TestStopPreventsObservation(t *testing.T) {
 		now := instant()
 		keepalive := fixtureKeepalive(t, &now)
 		require.NoError(t, keepalive.Enroll())
+		require.NoError(t, keepalive.Rearm())
 
 		name := filepath.Join(keepalive.store.Dir, fixtureStop)
 
@@ -641,11 +612,7 @@ func TestStopPreventsObservation(t *testing.T) {
 
 		observed := 0
 
-		keepalive.observer = observerFunc(func(context.Context, time.Time) (Observation, error) {
-			observed++
-
-			return Observation{At: now, Signals: nil}, nil
-		})
+		keepalive.observer = countedObservation(&now, &observed)
 
 		now = now.Add(time.Second)
 
@@ -676,24 +643,17 @@ func TestTimeoutDuringRetryWait(t *testing.T) {
 	now := instant()
 	keepalive := enrolledKeepalive(t, &now)
 	step(t, keepalive, fixtureNone, fixtureAdmit)
-
 	keepalive.observer = observationAt(time.Time{}, errors.ErrUnsupported)
-
 	now = instant().Add(time.Second)
 
 	step(t, keepalive, fixtureNone, fixtureWait)
 
-	now = now.Add(30 * time.Second)
-
-	step(t, keepalive, fixtureNone, fixtureWait)
-
-	state, err := keepalive.store.load(keepalive.enrollment, now)
-	require.NoError(t, err)
-	assert.Equal(t, instant().Add(151*time.Second), state.DueAt)
-
 	now = instant().Add(120 * time.Second)
 
-	step(t, keepalive, fixtureRefreshTimeout, fixtureNone)
+	unarmedStep(t, keepalive)
+	require.NoError(t, keepalive.Rearm())
+	keepalive.observer = observationAt(now, nil)
+	step(t, keepalive, fixtureBudgetExhausted, fixtureNone)
 }
 
 func TestZeroClockAndObservation(t *testing.T) {
@@ -710,8 +670,406 @@ func TestZeroClockAndObservation(t *testing.T) {
 	now = now.Add(time.Second)
 
 	require.NoError(t, keepalive.Enroll())
+	require.NoError(t, keepalive.Rearm())
 
 	keepalive.observer = observationAt(time.Time{}, nil)
 
 	step(t, keepalive, fixtureUnknownScreen, fixtureNone)
+}
+
+func restartKeepalive(t *testing.T, previous *Keepalive) *Keepalive {
+	t.Helper()
+
+	restarted, err := New(previous.store, previous.enrollment, []string{fixtureWork}, previous.now,
+		previous.source, previous.observer)
+	require.NoError(t, err)
+
+	return restarted
+}
+
+func unarmedStep(t *testing.T, keepalive *Keepalive) {
+	t.Helper()
+
+	status, decision, err := keepalive.Step(t.Context(), false)
+	require.NoError(t, err)
+	assert.Equal(t, fixtureNotArmed, status.Reason)
+	assert.Equal(t, phaseStopped, status.Phase)
+	assert.Equal(t, fixtureNone, decision.Action)
+	assert.True(t, decision.CheckAt.IsZero())
+}
+
+func TestStrictRestartAfterSaveFailures(t *testing.T) {
+	t.Parallel()
+
+	now := instant()
+	keepalive := enrolledKeepalive(t, &now)
+	require.NoError(t, keepalive.Rearm())
+	dir := keepalive.store.Dir
+
+	t.Cleanup(func() { setSpoolMode(t, dir, 0o700) })
+	failSaves(t, keepalive, now)
+	invalidStep(t, keepalive)
+	setSpoolMode(t, dir, 0o700)
+
+	keepalive.source = sourceFunc(func(context.Context, time.Time) (Snapshot, error) {
+		return snapshotAt(now), nil
+	})
+
+	restarted := restartKeepalive(t, keepalive)
+	unarmedStep(t, restarted)
+	require.NoError(t, restarted.Rearm())
+	step(t, restarted, fixtureNone, fixtureAdmit)
+}
+
+func TestStrictRestartAfterRollback(t *testing.T) {
+	t.Parallel()
+
+	now := instant()
+	keepalive := enrolledKeepalive(t, &now)
+	require.NoError(t, keepalive.Rearm())
+
+	now = now.Add(-time.Nanosecond)
+
+	invalidStep(t, keepalive)
+
+	now = instant()
+
+	unarmedStep(t, restartKeepalive(t, keepalive))
+}
+
+// A symlink allows reading the prior status but makes Store refuse replacement.
+func refuseStatusWrite(t *testing.T, keepalive *Keepalive) func() {
+	t.Helper()
+
+	path := filepath.Join(keepalive.store.Dir, "work.status")
+	backup := path + ".saved"
+	require.NoError(t, os.Rename(path, backup))
+	require.NoError(t, os.Symlink(backup, path))
+
+	return func() {
+		require.NoError(t, os.Remove(path))
+		require.NoError(t, os.Rename(backup, path))
+	}
+}
+
+func TestStrictRearmPreservesPersistedStop(t *testing.T) {
+	t.Parallel()
+
+	now := instant()
+	keepalive := enrolledKeepalive(t, &now)
+	require.NoError(t, keepalive.Rearm())
+	_, _, err := keepalive.Step(t.Context(), true)
+	require.NoError(t, err)
+	before, err := keepalive.store.load(keepalive.enrollment, now)
+	require.NoError(t, err)
+	restore := refuseStatusWrite(t, keepalive)
+	require.ErrorIs(t, keepalive.Rearm(), ErrStateInvalid)
+	after, err := keepalive.store.load(keepalive.enrollment, now)
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	restore()
+
+	status, err := keepalive.store.ReadStatus(fixtureWork)
+	require.NoError(t, err)
+	assert.Equal(t, before.Status, status)
+}
+
+func TestStrictFailedRearmClosesGate(t *testing.T) {
+	t.Parallel()
+
+	for _, failure := range []string{fixtureStop, fixtureStopRead, fixtureLedgerLoad, "status write"} {
+		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := enrolledKeepalive(t, &now)
+			require.NoError(t, keepalive.Rearm())
+			state, err := keepalive.store.load(keepalive.enrollment, now)
+			require.NoError(t, err)
+
+			path := filepath.Join(keepalive.store.Dir, fixtureStop)
+
+			restore := func() { require.NoError(t, os.Remove(path)) }
+
+			switch failure {
+			case fixtureStop:
+				require.NoError(t, os.WriteFile(path, nil, 0o600))
+			case fixtureStopRead:
+				require.NoError(t, os.Mkdir(path, 0o700))
+			case fixtureLedgerLoad:
+				path = filepath.Join(keepalive.store.Dir, "work.ledger")
+				require.NoError(t, os.Rename(path, path+".saved"))
+
+				restore = func() { require.NoError(t, os.Rename(path+".saved", path)) }
+			case "status write":
+				restore = refuseStatusWrite(t, keepalive)
+			}
+
+			ledgerPath := filepath.Join(keepalive.store.Dir, "work.ledger")
+			if failure == fixtureLedgerLoad {
+				ledgerPath += ".saved"
+			}
+
+			before, err := os.Stat(ledgerPath)
+			require.NoError(t, err)
+			require.ErrorIs(t, keepalive.Rearm(), ErrStateInvalid)
+
+			after, err := os.Stat(ledgerPath)
+			require.NoError(t, err)
+			assert.True(t, os.SameFile(before, after))
+			restore()
+			require.NoError(t, keepalive.store.save(state, false))
+			unarmedStep(t, keepalive)
+			require.NoError(t, keepalive.Rearm())
+			step(t, keepalive, fixtureNone, fixtureAdmit)
+		})
+	}
+}
+
+func TestStrictNewInstanceNeedsRearm(t *testing.T) {
+	t.Parallel()
+
+	now := instant()
+	keepalive := fixtureKeepalive(t, &now)
+	require.NoError(t, keepalive.Enroll())
+
+	state, err := keepalive.store.load(enrollment(), now)
+	require.NoError(t, err)
+	assert.Equal(t, initialState(), state)
+
+	path := filepath.Join(keepalive.store.Dir, "work.ledger")
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	unarmedStep(t, keepalive)
+
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	later, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	assert.True(t, os.SameFile(info, later))
+	require.NoError(t, keepalive.Rearm())
+	step(t, keepalive, fixtureNone, fixtureAdmit)
+}
+
+func TestStrictInternalInvalidBeforeStop(t *testing.T) {
+	t.Parallel()
+
+	for _, control := range []string{fixtureStop, fixtureCancel} {
+		t.Run(control, func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := enrolledKeepalive(t, &now)
+			require.NoError(t, keepalive.Rearm())
+			state, err := keepalive.store.load(keepalive.enrollment, now)
+			require.NoError(t, err)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			path := filepath.Join(keepalive.store.Dir, fixtureStop)
+			keepalive.observer = observerFunc(func(context.Context, time.Time) (Observation, error) {
+				if control == fixtureStop {
+					require.NoError(t, os.WriteFile(path, nil, 0o600))
+				} else {
+					cancel()
+				}
+
+				return Observation{At: now.Add(time.Nanosecond), Signals: nil}, nil
+			})
+			status, decision, err := keepalive.Step(ctx, false)
+			require.NoError(t, err)
+			assert.Equal(t, fixtureOperatorStop, status.Reason)
+			assert.Equal(t, fixtureNone, decision.Action)
+
+			if control == fixtureStop {
+				require.NoError(t, os.Remove(path))
+			}
+
+			require.NoError(t, keepalive.store.save(state, false))
+			keepalive.observer = observationAt(now, nil)
+			unarmedStep(t, keepalive)
+			require.NoError(t, keepalive.Rearm())
+			step(t, keepalive, fixtureNone, fixtureAdmit)
+		})
+	}
+}
+
+func TestStrictSameInstanceAfterInternalError(t *testing.T) {
+	t.Parallel()
+
+	now := instant()
+	keepalive := enrolledKeepalive(t, &now)
+	require.NoError(t, keepalive.Rearm())
+
+	now = now.Add(-time.Nanosecond)
+
+	invalidStep(t, keepalive)
+
+	now = instant()
+	status, decision, err := keepalive.Step(t.Context(), false)
+	require.NoError(t, err)
+	assert.NotEqual(t, fixtureAdmit, decision.Action)
+	assert.NotEqual(t, fixtureNone, status.Reason)
+	require.NoError(t, keepalive.Rearm())
+	step(t, keepalive, fixtureNone, fixtureAdmit)
+}
+
+func TestStrictRearmRefusesStopFiles(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{fixtureStop, fixtureAliasStop} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := enrolledKeepalive(t, &now)
+			require.NoError(t, keepalive.Rearm())
+			path := filepath.Join(keepalive.store.Dir, name)
+			require.NoError(t, os.WriteFile(path, nil, 0o600))
+
+			ledgerPath := filepath.Join(keepalive.store.Dir, "work.ledger")
+			before, err := os.Stat(ledgerPath)
+			require.NoError(t, err)
+			require.ErrorIs(t, keepalive.Rearm(), ErrStateInvalid)
+
+			after, err := os.Stat(ledgerPath)
+			require.NoError(t, err)
+			assert.True(t, os.SameFile(before, after))
+			status, decision, err := keepalive.Step(t.Context(), false)
+			require.NoError(t, err)
+			assert.Equal(t, fixtureOperatorStop, status.Reason)
+			assert.Equal(t, fixtureNone, decision.Action)
+		})
+	}
+}
+
+func failSaves(t *testing.T, keepalive *Keepalive, now time.Time) {
+	t.Helper()
+
+	keepalive.source = sourceFunc(func(context.Context, time.Time) (Snapshot, error) {
+		setSpoolMode(t, keepalive.store.Dir, 0o500)
+
+		return snapshotAt(now), nil
+	})
+}
+
+const (
+	fixtureClockRollback = "clock rollback"
+	fixtureLedgerLoad    = "ledger load"
+	fixtureReadError     = "read error"
+	fixtureStopRead      = "stop read"
+)
+
+func TestRearmRechecks(t *testing.T) {
+	t.Parallel()
+
+	for _, failure := range []string{fixtureStop, fixtureStopRead, fixtureClockRollback} {
+		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := enrolledKeepalive(t, &now)
+			calls := 0
+			path := filepath.Join(keepalive.store.Dir, fixtureStop)
+			keepalive.now = func() time.Time {
+				calls++
+				if calls == 2 {
+					switch failure {
+					case fixtureStop:
+						require.NoError(t, os.WriteFile(path, nil, 0o600))
+					case fixtureStopRead:
+						require.NoError(t, os.Mkdir(path, 0o700))
+					case fixtureClockRollback:
+						return now.Add(-time.Nanosecond)
+					}
+				}
+
+				return now
+			}
+			require.ErrorIs(t, keepalive.Rearm(), ErrStateInvalid)
+
+			if failure != fixtureClockRollback {
+				require.NoError(t, os.Remove(path))
+			}
+
+			unarmedStep(t, keepalive)
+		})
+	}
+}
+
+func TestBlockedStopControls(t *testing.T) {
+	t.Parallel()
+
+	for _, control := range []string{fixtureStop, fixtureCancel, fixtureReadError} {
+		t.Run(control, func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := fixtureKeepalive(t, &now)
+			require.NoError(t, keepalive.Enroll())
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			if control == fixtureCancel {
+				cancel()
+			}
+
+			if control == fixtureReadError {
+				require.NoError(t, os.Mkdir(filepath.Join(keepalive.store.Dir, fixtureStop), 0o700))
+			}
+
+			status, decision, err := keepalive.Step(ctx, control == fixtureStop)
+			if control == fixtureReadError {
+				require.ErrorIs(t, err, ErrStateInvalid)
+				assert.Equal(t, fixtureStateInvalid, status.Reason)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, fixtureOperatorStop, status.Reason)
+			}
+
+			assert.Equal(t, fixtureNone, decision.Action)
+		})
+	}
+}
+
+func TestInternalErrorStillHonorsStops(t *testing.T) {
+	t.Parallel()
+
+	for _, control := range []string{fixtureStop, fixtureCancel, "signal"} {
+		t.Run(control, func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := enrolledKeepalive(t, &now)
+			require.NoError(t, os.Remove(filepath.Join(keepalive.store.Dir, "work.ledger")))
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			switch control {
+			case fixtureStop:
+				require.NoError(t, os.WriteFile(filepath.Join(keepalive.store.Dir, fixtureStop), nil, 0o600))
+			case fixtureCancel:
+				cancel()
+			}
+
+			status, decision, err := keepalive.Step(ctx, control == "signal")
+			require.ErrorIs(t, err, ErrStateInvalid)
+			assert.Equal(t, fixtureOperatorStop, status.Reason)
+			assert.Equal(t, fixtureNone, decision.Action)
+		})
+	}
+}
+
+func countedObservation(now *time.Time, calls *int) observerFunc {
+	return func(context.Context, time.Time) (Observation, error) {
+		*calls++
+
+		return Observation{At: *now, Signals: nil}, nil
+	}
 }

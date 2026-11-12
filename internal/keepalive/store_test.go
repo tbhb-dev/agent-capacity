@@ -64,6 +64,12 @@ func TestValidation(t *testing.T) {
 		assert.False(t, validEnrollment(value, []string{value.Alias}))
 	}
 
+	status := initialState().Status
+	status.Reason, status.Phase = fixtureNotArmed, phaseStopped
+	assert.True(t, validStatus(status))
+	status.Phase = phaseRunning
+	assert.False(t, validStatus(status))
+
 	for _, change := range []func(*Status){
 		func(s *Status) { s.Alias = "@" },
 		func(s *Status) { s.At = time.Time{} },
@@ -81,13 +87,17 @@ func TestLedgerValidation(t *testing.T) {
 
 	assert.True(t, validState(initialState(), enrollment(), instant()))
 
+	maximumRetry := initialState()
+	maximumRetry.Retry = 3
+	assert.True(t, validState(maximumRetry, enrollment(), instant()))
+
 	for _, fixture := range []struct {
 		change func(*State)
 		name   string
 	}{
 		{func(s *State) { s.Status.Phase = "invalid" }, fixtureStatus},
 		{func(s *State) { s.Enrollment.Alias = fixturePersonal }, "enrollment"},
-		{func(s *State) { s.Status.Alias = fixturePersonal }, "status alias"},
+		{func(s *State) { s.Status.Alias = fixturePersonal }, fixtureStatusAlias},
 		{func(s *State) { s.Status.Vendor = fixtureCodex }, "status vendor"},
 		{func(s *State) { s.Enrollment.Vendor = fixtureCodex }, "ledger vendor"},
 		{func(s *State) { s.Enrollment.DebitAllowance = 0.4 }, "allowance"},
@@ -229,7 +239,7 @@ func TestSpoolBoundaries(t *testing.T) {
 
 			store := Store{Dir: spoolDir(t)}
 
-			for _, name := range []string{"work.status", "work.ledger", fixtureStop, "work.stop"} {
+			for _, name := range []string{"work.status", "work.ledger", fixtureStop, fixtureAliasStop} {
 				require.NoError(t, os.Symlink(target, filepath.Join(store.Dir, name)))
 			}
 
@@ -257,7 +267,11 @@ func TestSpoolBoundaries(t *testing.T) {
 	assert.Equal(t, "safe", string(data))
 }
 
-const fixtureOpenErrorWithFile = "open error with file"
+const (
+	fixtureOpenErrorWithFile = "open error with file"
+	fixtureRename            = "rename"
+	fixtureStatusAlias       = "status alias"
+)
 
 type faultySpool struct {
 	*os.Root
@@ -324,7 +338,8 @@ func (root faultySpool) Link(oldName, newName string) error {
 
 //nolint:wrapcheck // Each filesystem operation has an independent failure fixture.
 func (root faultySpool) Rename(oldName, newName string) error {
-	if root.fault == "rename" {
+	if root.fault == fixtureRename || root.fault == "status rename" && newName == "work.status" ||
+		root.fault == "ledger rename" && newName == "work.ledger" {
 		return fs.ErrPermission
 	}
 
@@ -336,7 +351,7 @@ func TestAtomicFailures(t *testing.T) {
 
 	for _, fault := range []string{
 		fixtureStat, fixtureOpen, fixtureOpenErrorWithFile, fixtureClosedRead, fixtureDifferentFile, "create", "closed write",
-		fixtureLink, "rename", "directory open", "directory sync",
+		fixtureLink, fixtureRename, "directory open", "directory sync",
 	} {
 		t.Run(fault, func(t *testing.T) {
 			t.Parallel()
@@ -424,4 +439,78 @@ func TestMissingSpool(t *testing.T) {
 
 	_, err = store.load(enrollment(), instant())
 	require.ErrorIs(t, err, ErrStateInvalid)
+}
+
+func TestRearmRecordFailuresPreserveStops(t *testing.T) {
+	t.Parallel()
+
+	for _, fault := range []string{fixtureRename, "ledger rename", "status rename"} {
+		t.Run(fault, func(t *testing.T) {
+			t.Parallel()
+
+			state := initialState()
+			latch(&state, "stop_signal", instant())
+
+			store := Store{Dir: spoolDir(t)}
+			require.NoError(t, store.save(state, true))
+
+			status := state.Status
+			status.Reason = fixtureStateInvalid
+			require.NoError(t, store.WriteStatus(status))
+
+			root, err := openSpool(store.Dir)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, root.Close()) })
+
+			state.DueAt = instant()
+			require.ErrorIs(t, rearmRecords(faultySpool{Root: root, file: nil, fault: fault}, state), ErrStateInvalid)
+
+			stored, err := store.load(enrollment(), instant())
+			require.NoError(t, err)
+			assert.Equal(t, fixtureOperatorStop, stored.Status.Reason)
+
+			storedStatus, err := store.ReadStatus(fixtureWork)
+			require.NoError(t, err)
+			assert.Equal(t, status, storedStatus)
+		})
+	}
+}
+
+func TestRearmRecordValidation(t *testing.T) {
+	t.Parallel()
+
+	for _, fault := range []string{fixtureMissing, "status reason", fixtureStatusAlias, "ledger missing"} {
+		t.Run(fault, func(t *testing.T) {
+			t.Parallel()
+
+			store := Store{Dir: spoolDir(t)}
+			state := initialState()
+			require.NoError(t, store.save(state, true))
+			path := filepath.Join(store.Dir, "work.status")
+
+			switch fault {
+			case fixtureMissing:
+				require.NoError(t, os.Remove(path))
+			case "status reason":
+				status := state.Status
+				status.Reason = fixtureUnknown
+
+				root, err := openSpool(store.Dir)
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, root.Close()) })
+				require.NoError(t, write(root, "work.status", status, false))
+			case fixtureStatusAlias:
+				status := state.Status
+				status.Alias = fixtureOther
+				require.NoError(t, store.WriteStatus(status))
+				require.NoError(t, os.Rename(filepath.Join(store.Dir, "other.status"), path))
+			case "ledger missing":
+				require.NoError(t, os.Remove(filepath.Join(store.Dir, "work.ledger")))
+			}
+
+			require.ErrorIs(t, store.rearm(state), ErrStateInvalid)
+		})
+	}
+
+	require.ErrorIs(t, (Store{Dir: "relative"}).rearm(initialState()), ErrStateInvalid)
 }
