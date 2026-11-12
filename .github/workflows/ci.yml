@@ -89,7 +89,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
-  # Build both Linux images without a daemon or registry writes.
+  # Build both Linux images and check runtime defaults without a daemon.
   container:
     name: container
     runs-on: ubuntu-26.04
@@ -108,10 +108,12 @@ jobs:
         with:
           disk-cache: ${{ github.workflow }}-container
           cache-save: ${{ github.event_name != 'pull_request' }}
-          targets: //container:image_multiarch
+          targets: //container:image_multiarch //container:image_config_test
 
-      - name: Build the Linux images
-        run: bazelisk build --config=ci --config=release --nofetch //container:image_multiarch
+      - name: Build and test the Linux images
+        run: >-
+          bazelisk test --config=ci --config=release --nofetch
+          //container:image_multiarch //container:image_config_test
 
   # The repository-level checks, in the shared workflow, on Linux beside the
   # bazel matrix so they don't wait behind the tests: gazelle, MODULE.bazel
