@@ -77,7 +77,7 @@ func TestValidate(t *testing.T) {
 		assert.Equal(t, window == "" || window == unknownLabel, errors.Is(r.Validate(), capacity.ErrInvalidReading))
 	}
 
-	for _, source := range []string{claudeSource, codexSource, agySource, "", unknownLabel} {
+	for _, source := range []string{claudeSource, capacity.ClaudeTranscript, codexSource, agySource, "", unknownLabel} {
 		r := reading()
 		r.Source = source
 		assert.Equal(t, source == "" || source == unknownLabel, errors.Is(r.Validate(), capacity.ErrInvalidReading))
@@ -157,6 +157,7 @@ func TestRegistry(t *testing.T) {
 		{name: agySource, batch: []capacity.Reading{reading()}, err: nil, wantClass: invalidClass},
 		{name: unknownLabel, batch: nil, err: nil, wantClass: invalidClass},
 		{name: claudeSource, batch: nil, err: nil, wantClass: ""},
+		{name: capacity.ClaudeTranscript, batch: nil, err: nil, wantClass: ""},
 		{name: claudeSource, batch: []capacity.Reading{reading()}, err: nil, wantClass: ""},
 	}
 	for _, testCase := range cases {

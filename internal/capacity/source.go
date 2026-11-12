@@ -42,7 +42,7 @@ func (r Registry) Read(ctx context.Context, now time.Time) ([]Reading, []Failure
 
 	for _, entry := range r {
 		switch entry.Name {
-		case ClaudeStatusline, CodexRollout, AGYStatusline:
+		case ClaudeStatusline, ClaudeTranscript, CodexRollout, AGYStatusline:
 		default:
 			failures = append(failures, Failure{Source: "unknown", Class: "invalid"})
 

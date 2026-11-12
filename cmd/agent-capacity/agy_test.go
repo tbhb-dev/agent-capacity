@@ -57,11 +57,11 @@ func TestAGYMetrics(t *testing.T) {
 		freshness string
 		age       time.Duration
 	}{
-		{"fresh", 0},
-		{"fresh", 10 * time.Minute},
-		{"carried", 10*time.Minute + time.Nanosecond},
-		{"carried", 6 * time.Hour},
-		{"dropped", 6*time.Hour + time.Nanosecond},
+		{freshLabel, 0},
+		{freshLabel, 10 * time.Minute},
+		{carriedLabel, 10*time.Minute + time.Nanosecond},
+		{carriedLabel, 6 * time.Hour},
+		{droppedLabel, 6*time.Hour + time.Nanosecond},
 	} {
 		collector, err := export.New(provider.Meter(testCase.age.String()), func() time.Time {
 			return observed.Add(testCase.age)
@@ -80,9 +80,9 @@ func assertAGYGauges(t *testing.T, data metricdata.ResourceMetrics, freshness st
 	t.Helper()
 
 	values := map[string]float64{
-		"afakt.capacity.window.utilization": 0.25,
-		"afakt.capacity.window.reset_time":  200000,
-		"afakt.capacity.snapshot.age":       age.Seconds(),
+		utilizationGauge:                   0.25,
+		"afakt.capacity.window.reset_time": 200000,
+		"afakt.capacity.snapshot.age":      age.Seconds(),
 	}
 	count := 0
 
@@ -105,7 +105,7 @@ func assertAGYGauges(t *testing.T, data metricdata.ResourceMetrics, freshness st
 		}
 	}
 
-	if freshness == "dropped" {
+	if freshness == droppedLabel {
 		assert.Equal(t, 0, count)
 	} else {
 		assert.Equal(t, 3, count)

@@ -29,16 +29,20 @@ import (
 )
 
 const (
-	serveCommand    = "serve"
-	processTest     = "AGENT_CAPACITY_PROCESS_TEST"
-	versionCommand  = "version"
-	extraArgument   = "extra"
-	invalidCommand  = "invalid command"
-	invalidInterval = "--interval=invalid"
-	testAccount     = "work_2-a"
-	codexSource     = "codex_rollout"
-	readClass       = "read"
-	invalidClass    = "invalid"
+	freshLabel       = "fresh"
+	carriedLabel     = "carried"
+	droppedLabel     = "dropped"
+	utilizationGauge = "afakt.capacity.window.utilization"
+	serveCommand     = "serve"
+	processTest      = "AGENT_CAPACITY_PROCESS_TEST"
+	versionCommand   = "version"
+	extraArgument    = "extra"
+	invalidCommand   = "invalid command"
+	invalidInterval  = "--interval=invalid"
+	testAccount      = "work_2-a"
+	codexSource      = "codex_rollout"
+	readClass        = "read"
+	invalidClass     = "invalid"
 )
 
 func TestMain(tests *testing.M) {
@@ -563,7 +567,7 @@ func TestServe(t *testing.T) {
 		require.True(t, ok)
 		require.Len(t, gauge.DataPoints, 1)
 
-		if m.Name == "afakt.capacity.window.utilization" {
+		if m.Name == utilizationGauge {
 			assert.InDelta(t, 0.2, gauge.DataPoints[0].Value, 0)
 		}
 	}
