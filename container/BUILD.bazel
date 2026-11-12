@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Tony Burns
+
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_image_index")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("@tbhb_rules//repo:defs.bzl", "repo_files")
+
+repo_files()
+
+# Explicit CI targets keep Linux images out of wildcard checks on macOS.
+pkg_tar(
+    name = "binary",
+    srcs = ["//cmd/agent-capacity"],
+    mode = "0555",
+    package_dir = "/",
+    tags = ["manual"],
+)
+
+oci_image(
+    name = "image",
+    base = "@distroless_static",
+    entrypoint = [
+        "/agent-capacity",
+        "serve",
+    ],
+    env = {
+        "AGENT_CAPACITY_SPOOL_DIR": "/spool",
+        "CODEX_HOME": "/codex",
+    },
+    tags = ["manual"],
+    tars = [":binary"],
+    user = "65532:65532",
+)
+
+oci_image_index(
+    name = "image_multiarch",
+    images = [":image"],
+    platforms = [
+        "@rules_go//go/toolchain:linux_amd64",
+        "@rules_go//go/toolchain:linux_arm64",
+    ],
+    tags = ["manual"],
+)

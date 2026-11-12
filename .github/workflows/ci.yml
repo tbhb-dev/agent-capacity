@@ -89,6 +89,30 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  # Build both Linux images without a daemon or registry writes.
+  container:
+    name: container
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Bazel for CI
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@c7a8816b70deb33b5c23d4f78f225abcc2918c52  # main
+        with:
+          disk-cache: ${{ github.workflow }}-container
+          cache-save: ${{ github.event_name != 'pull_request' }}
+          targets: //container:image_multiarch
+
+      - name: Build the Linux images
+        run: bazelisk build --config=ci --config=release --nofetch //container:image_multiarch
+
   # The repository-level checks, in the shared workflow, on Linux beside the
   # bazel matrix so they don't wait behind the tests: gazelle, MODULE.bazel
   # tidiness, the history scan, the Python audit, govulncheck (the `bazel run`
@@ -164,7 +188,7 @@ jobs:
   conclusion:
     name: conclusion
     if: always()
-    needs: [bazel, repo, gomodscan]
+    needs: [bazel, repo, gomodscan, container]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:

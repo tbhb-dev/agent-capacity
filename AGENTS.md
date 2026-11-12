@@ -25,6 +25,7 @@ Bazel pins every tool and runs every check. [mise](https://mise.jdx.dev) install
 | `bazelisk run //:gazelle` | Regenerate the `BUILD.bazel` files from the Go sources |
 | `bazelisk mod tidy` | Update `use_repo` in `MODULE.bazel` |
 | `bazelisk build --config=release //cmd/agent-capacity` | Build the binary |
+| `bazelisk build --config=release //container:image_multiarch` | Build both Linux container images without publishing |
 | `bazelisk run //cmd/agent-capacity -- <flags>` | Run the entry point |
 
 Each check runs by its target, such as `bazelisk test //:vale_test`. The Go checks are `//:golangci_lint_test`, `//:go_deadcode_test`, `//:go_arch_lint_test`, `//:go_mod_tidy_test`, `//:govulncheck_test`, `//:gomutants_test` and one `gobco_test` per package. The `nogo` analyzers also run during each Go build, and a finding fails it.
@@ -55,4 +56,4 @@ Use the committer identity the machine's hooks configure, signed with the machin
 
 ## Workflows
 
-`ci.yml` runs on pull requests and pushes to `main`. A `bazel` job runs `bazelisk test //...` on Linux (amd64 and arm64) and macOS (arm64), and a final `conclusion` job gives branch protection one required check. `codeql.yml` analyzes Go and the workflows. `renovate.yaml` runs Renovate, and `renovate-config-validator.yaml` validates its configuration. All scheduled times use Coordinated Universal Time (UTC).
+`ci.yml` runs on pull requests and pushes to `main`. A `bazel` job runs `bazelisk test //...` on Linux (amd64 and arm64) and macOS (arm64). A Linux-only `container` job builds both image architectures without publishing. The final `conclusion` job requires both jobs and the repository checks to pass. `codeql.yml` analyzes Go and the workflows. `renovate.yaml` runs Renovate, and `renovate-config-validator.yaml` validates its configuration. All scheduled times use Coordinated Universal Time (UTC).
