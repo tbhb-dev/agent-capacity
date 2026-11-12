@@ -2,8 +2,7 @@
 # Copyright Tony Burns
 
 ---
-# Every package belongs to a component. The entry point uses only Go's
-# standard library and has no internal package dependencies.
+# The command wires sources to the capacity model and metrics export.
 version: 3
 
 allow:
@@ -12,8 +11,21 @@ allow:
 
 components:
   cmd: {in: cmd/*}
+  capacity: {in: internal/capacity}
+  export: {in: internal/export}
+
+vendors:
+  otel: {in: go.opentelemetry.io/**}
+  testify: {in: github.com/stretchr/testify/**}
 
 # go-arch-lint requires a non-empty dependency list for each component.
 deps:
   cmd:
-    mayDependOn: [cmd]
+    mayDependOn: [cmd, capacity, export]
+    canUse: [otel, testify]
+  capacity:
+    mayDependOn: [capacity]
+    canUse: [testify]
+  export:
+    mayDependOn: [capacity, export]
+    canUse: [otel, testify]

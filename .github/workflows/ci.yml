@@ -27,7 +27,7 @@ jobs:
   # arm64), macOS (arm64) and Windows (x86_64). The checks that need the
   # network or GitHub's API run on Linux only; they do not depend on the OS.
   bazel:
-    name: "agent-capacity bazel (${{ matrix.os }})"
+    name: "bazel (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -98,7 +98,7 @@ jobs:
   # tidiness, the history scan, the Python audit, govulncheck (the `bazel run`
   # target, whose SARIF is kept as an artifact), zizmor online and CODEOWNERS.
   repo:
-    name: agent-capacity repo
+    name: repo
     permissions:
       contents: read
     uses: tbhb-dev/rules/.github/workflows/repo-checks.yml@431be578eed96a29d2467b9652feb5ac5c361ee6  # main
@@ -109,7 +109,7 @@ jobs:
 
   # Scan this module's dependencies with the pinned public scanner.
   gomodscan:
-    name: agent-capacity dependency scan
+    name: gomodscan
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
@@ -138,7 +138,7 @@ jobs:
         run: |
           scratch="${RUNNER_TEMP}/vendored"
           mkdir "${scratch}"
-          cp -R go.mod go.sum cmd "${scratch}/"
+          cp -R go.mod go.sum cmd internal "${scratch}/"
           bazelisk run --config=ci @rules_go//go -- -C "${scratch}" mod vendor
           # A module without dependencies has an empty vendor manifest.
           mkdir -p "${scratch}/vendor"
@@ -166,7 +166,7 @@ jobs:
   # "abandoned", not "cancelled", so the check lists what passes, not what
   # fails.
   conclusion:
-    name: agent-capacity conclusion
+    name: conclusion
     if: always()
     needs: [bazel, repo, gomodscan]
     runs-on: ubuntu-26.04
