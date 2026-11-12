@@ -61,7 +61,7 @@ func TestTranscriptParsing(t *testing.T) {
 	} {
 		source := TranscriptSource{files: nil, paths: nil, account: transcriptAccount}
 		latest := map[string]capacity.Reading{}
-		source.considerTranscript([]byte(testCase.line), time.Unix(100000, 0).UTC(), latest)
+		source.considerTranscript([]byte(testCase.line), time.Unix(100000, 0).UTC(), time.Unix(100000, 0).UTC(), latest)
 		require.Len(t, latest, testCase.want)
 	}
 }
@@ -72,7 +72,7 @@ func TestTranscriptSelection(t *testing.T) {
 	source := TranscriptSource{files: nil, paths: nil, account: transcriptAccount}
 	latest := map[string]capacity.Reading{}
 	observed := time.Unix(100000, 0).UTC()
-	source.considerTranscript([]byte(transcriptEventLine), observed, latest)
+	source.considerTranscript([]byte(transcriptEventLine), observed, observed, latest)
 	assert.Equal(t, capacity.Reading{
 		Vendor: "anthropic", Account: transcriptAccount, Source: capacity.ClaudeTranscript, Window: "7d",
 		UsedRatio: 0.25, ResetAt: time.Unix(200000, 0).UTC(), ObservedAt: observed,
@@ -82,21 +82,21 @@ func TestTranscriptSelection(t *testing.T) {
 		line := strings.Replace(transcriptEventLine, `"type":`, `"timestamp":`+timestamp+`,"type":`, 1)
 		line = strings.ReplaceAll(line, "0.25", "0.5")
 		line = strings.ReplaceAll(line, `"resetsAt":200000`, `"reset_time":"1970-01-03T07:33:20Z"`)
-		source.considerTranscript([]byte(line), observed.Add(time.Hour), latest)
+		source.considerTranscript([]byte(line), observed.Add(time.Hour), observed.Add(time.Hour), latest)
 		assert.Equal(t, observed.Add(time.Second), latest["7d"].ObservedAt)
 		assert.InDelta(t, 0.5, latest["7d"].UsedRatio, 0)
 		assert.Equal(t, time.Unix(200000, 0).UTC(), latest["7d"].ResetAt)
 	}
 
-	source.considerTranscript([]byte(transcriptEventLine), observed, latest)
+	source.considerTranscript([]byte(transcriptEventLine), observed, observed, latest)
 	assert.InDelta(t, 0.5, latest["7d"].UsedRatio, 0)
 
 	sameTime := strings.ReplaceAll(transcriptEventLine, "0.25", "0.75")
-	source.considerTranscript([]byte(sameTime), observed.Add(time.Second), latest)
+	source.considerTranscript([]byte(sameTime), observed.Add(time.Second), observed.Add(time.Second), latest)
 	assert.InDelta(t, 0.75, latest["7d"].UsedRatio, 0)
 
 	line := strings.ReplaceAll(transcriptEventLine, "seven_day", "five_hour")
-	source.considerTranscript([]byte(line), observed.Add(time.Second), latest)
+	source.considerTranscript([]byte(line), observed.Add(time.Second), observed.Add(time.Second), latest)
 	require.Len(t, latest, 2)
 	assert.Equal(t, "5h", latest["5h"].Window)
 	assert.InDelta(t, 0.25, latest["5h"].UsedRatio, 0)
@@ -214,11 +214,14 @@ func TestTranscriptRegistration(t *testing.T) {
 	dir := t.TempDir()
 	name := filepath.Join(dir, "one.jsonl")
 	require.NoError(t, os.WriteFile(name, []byte(transcriptEventLine), 0o400))
+
+	observed := time.Unix(100000, 0).UTC()
+	require.NoError(t, os.Chtimes(name, observed, observed))
 	registry, err = RegisterTranscripts(name+","+dir, transcriptAccount)
 	require.NoError(t, err)
 	require.Len(t, registry, 1)
 	assert.Equal(t, capacity.ClaudeTranscript, registry[0].Name)
-	got, failures := registry.Read(t.Context(), time.Time{})
+	got, failures := registry.Read(t.Context(), observed)
 	assert.Empty(t, failures)
 	require.Len(t, got, 1)
 	assert.Equal(t, transcriptAccount, got[0].Account)
@@ -300,7 +303,7 @@ func TestTranscriptReadFailures(t *testing.T) {
 	} {
 		source := TranscriptSource{files: fixture, paths: []string{transcriptInput}, account: transcriptAccount}
 		latest := map[string]capacity.Reading{}
-		source.readTranscript(transcriptInput, latest)
+		source.readTranscript(transcriptInput, time.Time{}, latest)
 
 		if fixture.openErr || fixture.statErr || fixture.readErr || fixture.noReader {
 			assert.Empty(t, latest)
@@ -316,7 +319,7 @@ func TestTranscriptReadFailures(t *testing.T) {
 
 	source := TranscriptSource{files: files, paths: nil, account: transcriptAccount}
 	latest := map[string]capacity.Reading{}
-	source.readTranscript(".", latest)
+	source.readTranscript(".", time.Time{}, latest)
 	assert.Empty(t, latest)
 
 	files["link"] = &fstest.MapFile{
@@ -326,7 +329,7 @@ func TestTranscriptReadFailures(t *testing.T) {
 		Sys:     nil,
 	}
 
-	source.readTranscript("link", latest)
+	source.readTranscript("link", time.Time{}, latest)
 	assert.Empty(t, latest)
 }
 
@@ -348,7 +351,7 @@ func TestTranscriptIndependentWindows(t *testing.T) {
 			1,
 		)
 		latest := map[string]capacity.Reading{}
-		source.considerTranscript([]byte(line), time.Time{}.Add(-time.Nanosecond), latest)
+		source.considerTranscript([]byte(line), time.Time{}.Add(-time.Nanosecond), time.Time{}, latest)
 		require.Len(t, latest, 1)
 		assert.InDelta(t, 0.25, latest["7d"].UsedRatio, 0)
 	}
@@ -369,7 +372,7 @@ func TestTranscriptDirectoryFailure(t *testing.T) {
 		"dir/hidden.jsonl": {
 			Data:    []byte(strings.ReplaceAll(transcriptEventLine, "0.25", "0.75")),
 			Mode:    0,
-			ModTime: time.Unix(200000, 0),
+			ModTime: time.Unix(100001, 0),
 			Sys:     nil,
 		},
 		"visible": {Data: []byte(transcriptEventLine), Mode: 0, ModTime: time.Unix(100000, 0), Sys: nil},
@@ -379,7 +382,7 @@ func TestTranscriptDirectoryFailure(t *testing.T) {
 		account: transcriptAccount,
 		paths:   []string{"dir", "visible"},
 	}
-	got, err := source.Read(t.Context(), time.Time{})
+	got, err := source.Read(t.Context(), time.Unix(100000, 0))
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.InDelta(t, 0.25, got[0].UsedRatio, 0)
@@ -390,6 +393,12 @@ type transcriptProbeFS struct {
 
 	readAt func([]byte, int64) (int, error)
 	mode   fs.FileMode
+}
+
+func (files transcriptProbeFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	entries, err := fs.ReadDir(files.FS, name)
+
+	return entries, errors.Join(err)
 }
 
 func (files transcriptProbeFS) Open(name string) (fs.File, error) {
@@ -467,7 +476,7 @@ func TestTranscriptSpecialFile(t *testing.T) {
 	}
 	source := TranscriptSource{files: files, paths: nil, account: transcriptAccount}
 	latest := map[string]capacity.Reading{}
-	source.readTranscript(transcriptInput, latest)
+	source.readTranscript(transcriptInput, time.Time{}, latest)
 	assert.Empty(t, latest)
 	assert.Equal(t, 0, calls)
 }
@@ -478,4 +487,121 @@ func TestTranscriptOpenFailure(t *testing.T) {
 	file, err := (transcriptFiles{}).Open(filepath.Join(t.TempDir(), "missing"))
 	require.ErrorIs(t, err, fs.ErrNotExist)
 	assert.Nil(t, file)
+}
+
+func TestTranscriptDirectoryAgeBudget(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(100000, 0).UTC()
+	calls := 0
+	fixtures := fstest.MapFS{}
+
+	for name, age := range map[string]time.Duration{
+		"old.jsonl":      6*time.Hour + time.Nanosecond,
+		"boundary.jsonl": 6 * time.Hour,
+		"recent.ndjson":  6*time.Hour - time.Nanosecond,
+	} {
+		fixtures["dir/"+name] = &fstest.MapFile{
+			Data: []byte(transcriptEventLine), Mode: 0, Sys: nil, ModTime: now.Add(-age),
+		}
+	}
+
+	files := transcriptProbeFS{
+		FS:   fixtures,
+		mode: 0,
+		readAt: func(data []byte, offset int64) (int, error) {
+			calls++
+
+			assert.Zero(t, offset)
+
+			return copy(data, transcriptEventLine), nil
+		},
+	}
+	source := TranscriptSource{files: files, paths: []string{"dir"}, account: transcriptAccount}
+	got, err := source.Read(t.Context(), now)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, now.Add(-6*time.Hour+time.Nanosecond), got[0].ObservedAt)
+	assert.Equal(t, 2, calls)
+}
+
+func TestTranscriptFutureBoundary(t *testing.T) {
+	t.Parallel()
+
+	const (
+		realPath   = "real"
+		futurePath = "future"
+	)
+
+	now := time.Unix(100000, 0).UTC()
+
+	for _, ahead := range []time.Duration{
+		5*time.Minute - time.Nanosecond,
+		5 * time.Minute,
+		5*time.Minute + time.Nanosecond,
+		24 * time.Hour,
+	} {
+		for _, explicit := range []bool{false, true} {
+			future := strings.ReplaceAll(transcriptEventLine, "0.25", "0.75")
+			modified := now.Add(ahead)
+
+			if explicit {
+				future = strings.Replace(
+					future,
+					`"type":`,
+					`"timestamp":"`+modified.Format(time.RFC3339Nano)+`","type":`,
+					1,
+				)
+				modified = now
+			}
+
+			files := fstest.MapFS{
+				realPath:   {Data: []byte(transcriptEventLine), ModTime: now, Mode: 0, Sys: nil},
+				futurePath: {Data: []byte(future), ModTime: modified, Mode: 0, Sys: nil},
+			}
+			for _, paths := range [][]string{{realPath, futurePath}, {futurePath, realPath}} {
+				source := TranscriptSource{files: files, paths: paths, account: transcriptAccount}
+				got, err := source.Read(t.Context(), now)
+				require.NoError(t, err)
+
+				require.Len(t, got, 1)
+
+				if ahead <= 5*time.Minute {
+					assert.InDelta(t, 0.75, got[0].UsedRatio, 0)
+					assert.Equal(t, now.Add(ahead), got[0].ObservedAt)
+				} else {
+					assert.InDelta(t, 0.25, got[0].UsedRatio, 0)
+					assert.Equal(t, now, got[0].ObservedAt)
+				}
+			}
+		}
+	}
+}
+
+func TestTranscriptNamedSymlinks(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(100000, 0).UTC()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	require.NoError(t, os.Mkdir(target, 0o700))
+	name := filepath.Join(target, "events.jsonl")
+	require.NoError(t, os.WriteFile(name, []byte(transcriptEventLine), 0o600))
+	require.NoError(t, os.Chtimes(name, now, now))
+
+	fileLink := filepath.Join(dir, "file-link")
+	dirLink := filepath.Join(dir, "dir-link")
+
+	require.NoError(t, os.Symlink(name, fileLink))
+	require.NoError(t, os.Symlink(target, dirLink))
+
+	for _, path := range []string{fileLink, dirLink} {
+		registry, err := RegisterTranscripts(path, transcriptAccount)
+		require.NoError(t, err)
+		got, failures := registry.Read(t.Context(), now)
+		assert.Empty(t, failures)
+
+		require.Len(t, got, 1)
+		assert.Equal(t, now, got[0].ObservedAt.UTC())
+	}
 }

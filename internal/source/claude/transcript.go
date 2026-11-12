@@ -20,8 +20,10 @@ import (
 )
 
 const (
-	transcriptBytes = 8 * 1024 * 1024
-	transcriptLine  = 64 * 1024
+	transcriptBytes       = 8 * 1024 * 1024
+	transcriptLine        = 64 * 1024
+	transcriptRetainedFor = 6 * time.Hour
+	transcriptClockSkew   = 5 * time.Minute
 )
 
 // TranscriptSource keeps only window readings from explicitly named files.
@@ -56,7 +58,7 @@ func RegisterTranscripts(paths, account string) (capacity.Registry, error) {
 }
 
 // Read skips unreadable files and chooses the newest valid event per window.
-func (s TranscriptSource) Read(ctx context.Context, _ time.Time) ([]capacity.Reading, error) {
+func (s TranscriptSource) Read(ctx context.Context, now time.Time) ([]capacity.Reading, error) {
 	latest := map[string]capacity.Reading{}
 
 	for _, name := range s.paths {
@@ -66,7 +68,7 @@ func (s TranscriptSource) Read(ctx context.Context, _ time.Time) ([]capacity.Rea
 		}
 
 		for _, path := range transcriptPaths(s.files, name) {
-			s.readTranscript(path, latest)
+			s.readTranscript(path, now, latest)
 		}
 	}
 
@@ -108,7 +110,7 @@ func transcriptPaths(files fs.FS, name string) []string {
 	return paths
 }
 
-func (s TranscriptSource) readTranscript(name string, latest map[string]capacity.Reading) {
+func (s TranscriptSource) readTranscript(name string, now time.Time, latest map[string]capacity.Reading) {
 	file, err := s.files.Open(name)
 	if err != nil {
 		return
@@ -117,6 +119,10 @@ func (s TranscriptSource) readTranscript(name string, latest map[string]capacity
 
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
+		return
+	}
+
+	if info.ModTime().Before(now.Add(-transcriptRetainedFor)) {
 		return
 	}
 
@@ -142,7 +148,7 @@ func (s TranscriptSource) readTranscript(name string, latest map[string]capacity
 
 	for _, line := range lines {
 		if len(line) <= transcriptLine {
-			s.considerTranscript(line, info.ModTime(), latest)
+			s.considerTranscript(line, info.ModTime(), now, latest)
 		}
 	}
 }
@@ -167,7 +173,7 @@ type transcriptEvent struct {
 	Type      string          `json:"type"`
 }
 
-func (s TranscriptSource) considerTranscript(line []byte, modified time.Time, latest map[string]capacity.Reading) {
+func (s TranscriptSource) considerTranscript(line []byte, modified, now time.Time, latest map[string]capacity.Reading) {
 	var event transcriptEvent
 	if json.Unmarshal(line, &event) != nil || event.Type != "rate_limit_event" {
 		return
@@ -176,6 +182,10 @@ func (s TranscriptSource) considerTranscript(line []byte, modified time.Time, la
 	observed := modified
 	if event.Timestamp != nil {
 		observed = event.Timestamp.Time
+	}
+
+	if observed.After(now.Add(transcriptClockSkew)) {
+		return
 	}
 
 	for _, entry := range []struct {
