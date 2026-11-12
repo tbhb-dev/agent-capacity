@@ -112,6 +112,10 @@ GO_TARGETS = [
     "//internal/export:export_test",
     "//internal/source/codex",
     "//internal/source/codex:codex_test",
+    "//internal/spool",
+    "//internal/spool:spool_test",
+    "//internal/source/claude",
+    "//internal/source/claude:claude_test",
 ]
 
 # The tests of every package that has any, for mutation testing.
@@ -224,6 +228,22 @@ gobco_test(
     go_sum = "go.sum",
     proxy = "@go_mod_proxy//:proxy",
     tests = ["//internal/source/codex:codex_test"],
+)
+
+gobco_test(
+    name = "spool_gobco_test",
+    go_mod = "go.mod",
+    go_sum = "go.sum",
+    proxy = "@go_mod_proxy//:proxy",
+    tests = ["//internal/spool:spool_test"],
+)
+
+gobco_test(
+    name = "claude_gobco_test",
+    go_mod = "go.mod",
+    go_sum = "go.sum",
+    proxy = "@go_mod_proxy//:proxy",
+    tests = ["//internal/source/claude:claude_test"],
 )
 
 # The changes file for a diff-scope mutation run: empty, so full scope,
