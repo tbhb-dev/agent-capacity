@@ -27,11 +27,12 @@ type Observer interface {
 
 // Keeper coordinates an allowed alias. The owner serializes calls and meets CheckAt deadlines.
 type Keeper struct {
-	now        func() time.Time
-	source     Source
-	observer   Observer
-	store      Store
-	enrollment Enrollment
+	now          func() time.Time
+	source       Source
+	observer     Observer
+	store        Store
+	enrollment   Enrollment
+	invalidState bool
 }
 
 // New validates explicit enrollment. It never creates or replaces a ledger.
@@ -44,7 +45,9 @@ func New(store Store, enrollment Enrollment, allow []string, now func() time.Tim
 
 	enrollment.Windows = append([]string(nil), enrollment.Windows...)
 
-	return &Keeper{store: store, enrollment: enrollment, now: now, source: source, observer: observer}, nil
+	return &Keeper{
+		store: store, enrollment: enrollment, now: now, source: source, observer: observer, invalidState: false,
+	}, nil
 }
 
 // Enroll creates a ledger once, as an explicit operator action. It refuses to
@@ -86,11 +89,18 @@ func (keeper *Keeper) Rearm() error {
 	state.LastAt, state.DueAt = now, now
 	state.PendingAt, state.Retry = time.Time{}, 0
 
-	return keeper.store.save(state, false)
+	if keeper.store.save(state, false) != nil {
+		return ErrStateInvalid
+	}
+
+	keeper.invalidState = false
+
+	return nil
 }
 
 // Step checks stops before admission and persists attempts before returning.
-// Call at least once per second while running. Errors suppress admission.
+// Call at least once per second while running.
+// Errors latch admission. Only a successful Rearm clears the latch.
 // The caller must check stop controls again at delivery because a stop file can appear after Step's last check.
 func (keeper *Keeper) Step(ctx context.Context, stopSignal bool) (Status, Decision, error) {
 	now := keeper.now()
@@ -99,6 +109,12 @@ func (keeper *Keeper) Step(ctx context.Context, stopSignal bool) (Status, Decisi
 	// gomutants:disable-next-line BRANCH_IF reason="Failed loads return empty state that also fails save."
 	if err != nil {
 		return keeper.invalid(now, nil)
+	}
+
+	keeper.rememberInvalid(state.Status)
+
+	if keeper.invalidState {
+		return keeper.invalid(now, &state)
 	}
 
 	stopped, err := keeper.store.stopped(keeper.enrollment.Alias)
@@ -131,6 +147,8 @@ func (keeper *Keeper) Step(ctx context.Context, stopSignal bool) (Status, Decisi
 		latch(&state, "stop_signal", now)
 		decision = Next(state, now)
 	}
+
+	keeper.rememberInvalid(state.Status)
 
 	if keeper.store.save(state, false) != nil {
 		return keeper.invalid(now, &state)
@@ -175,7 +193,15 @@ func (keeper *Keeper) observe(ctx context.Context, state State, now time.Time) (
 	return evaluate(state, now, nil, snapshot)
 }
 
+func (keeper *Keeper) rememberInvalid(status Status) {
+	if status.Reason == stateInvalid {
+		keeper.invalidState = true
+	}
+}
+
 func (keeper *Keeper) invalid(now time.Time, state *State) (Status, Decision, error) {
+	keeper.invalidState = true
+
 	status := Status{
 		Alias: keeper.enrollment.Alias, Vendor: keeper.enrollment.Vendor,
 		Phase: phaseStopped, Reason: stateInvalid, At: now,

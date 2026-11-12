@@ -79,6 +79,109 @@ func step(t *testing.T, keeper *Keeper, wantReason, wantAction string) Decision 
 	return decision
 }
 
+func invalidStep(t *testing.T, keeper *Keeper) {
+	t.Helper()
+
+	status, decision, err := keeper.Step(t.Context(), false)
+	require.ErrorIs(t, err, ErrStateInvalid)
+	assert.Equal(t, fixtureStateInvalid, status.Reason)
+	assert.Equal(t, phaseStopped, status.Phase)
+	assert.Equal(t, fixtureNone, decision.Action)
+	assert.True(t, decision.CheckAt.IsZero())
+}
+
+func setSpoolMode(t *testing.T, dir string, mode os.FileMode) {
+	t.Helper()
+
+	require.NoError(t, os.Chmod(dir, mode))
+}
+
+func TestInvalidLatchAfterSpoolRecovery(t *testing.T) {
+	t.Parallel()
+
+	now := instant()
+	keeper := enrolledKeeper(t, &now)
+	dir := keeper.store.Dir
+
+	t.Cleanup(func() { setSpoolMode(t, dir, 0o700) })
+
+	keeper.source = sourceFunc(func(context.Context, time.Time) (Snapshot, error) {
+		setSpoolMode(t, dir, 0o500)
+
+		return snapshotAt(now), nil
+	})
+
+	invalidStep(t, keeper)
+
+	state, err := keeper.store.load(keeper.enrollment, now)
+	require.NoError(t, err)
+	assert.Equal(t, fixtureNone, state.Status.Reason)
+	assert.Zero(t, state.InputCount)
+
+	setSpoolMode(t, dir, 0o700)
+
+	keeper.source = sourceFunc(func(context.Context, time.Time) (Snapshot, error) {
+		return snapshotAt(now), nil
+	})
+
+	invalidStep(t, keeper)
+	require.NoError(t, keeper.Rearm())
+	step(t, keeper, fixtureNone, fixtureAdmit)
+}
+
+func TestInvalidLatchAfterClockRecovery(t *testing.T) {
+	t.Parallel()
+
+	now := instant()
+	keeper := enrolledKeeper(t, &now)
+	now = now.Add(-time.Nanosecond)
+
+	invalidStep(t, keeper)
+
+	now = instant()
+
+	invalidStep(t, keeper)
+
+	state, err := keeper.store.load(keeper.enrollment, now)
+	require.NoError(t, err)
+	assert.Equal(t, fixtureStateInvalid, state.Status.Reason)
+	assert.Zero(t, state.InputCount)
+
+	restarted, err := New(keeper.store, enrollment(), []string{fixtureWork}, keeper.now, keeper.source, keeper.observer)
+	require.NoError(t, err)
+
+	now = now.Add(8 * 24 * time.Hour)
+
+	invalidStep(t, restarted)
+	require.NoError(t, keeper.Rearm())
+	step(t, keeper, fixtureNone, fixtureAdmit)
+
+	invalidStep(t, restarted)
+	require.NoError(t, restarted.Rearm())
+	step(t, restarted, fixtureBudgetExhausted, fixtureNone)
+}
+
+func TestFailedRearmPreservesInvalidLatch(t *testing.T) {
+	t.Parallel()
+
+	now := instant()
+	keeper := enrolledKeeper(t, &now)
+	now = now.Add(-time.Nanosecond)
+
+	invalidStep(t, keeper)
+
+	now = instant()
+	dir := keeper.store.Dir
+
+	t.Cleanup(func() { setSpoolMode(t, dir, 0o700) })
+	setSpoolMode(t, dir, 0o500)
+	require.ErrorIs(t, keeper.Rearm(), ErrStateInvalid)
+	setSpoolMode(t, dir, 0o700)
+	invalidStep(t, keeper)
+	require.NoError(t, keeper.Rearm())
+	step(t, keeper, fixtureNone, fixtureAdmit)
+}
+
 func TestRestartAndRearm(t *testing.T) {
 	t.Parallel()
 
@@ -256,12 +359,13 @@ func TestStopStateErrorSurvivesRestart(t *testing.T) {
 				keeper.source, observationAt(now, nil))
 			require.NoError(t, err)
 			require.NoError(t, os.Remove(stopPath))
+			invalidStep(t, keeper)
 
 			for _, elapsed := range []time.Duration{0, 8 * 24 * time.Hour} {
 				now = instant().Add(elapsed)
 
 				status, decision, err = restarted.Step(t.Context(), false)
-				require.NoError(t, err)
+				require.ErrorIs(t, err, ErrStateInvalid)
 				assert.Equal(t, phaseStopped, status.Phase)
 				assert.Equal(t, fixtureNone, decision.Action)
 
@@ -313,7 +417,16 @@ func TestRuntimeObservations(t *testing.T) {
 				wantAction = fixtureAdmit
 			}
 
-			step(t, keeper, fixture.want, wantAction)
+			if fixture.want == fixtureStateInvalid {
+				state, err := keeper.store.load(keeper.enrollment, now)
+				require.NoError(t, err)
+
+				step(t, keeper, fixture.want, wantAction)
+				require.NoError(t, keeper.store.save(state, false))
+				invalidStep(t, keeper)
+			} else {
+				step(t, keeper, fixture.want, wantAction)
+			}
 		})
 	}
 }
