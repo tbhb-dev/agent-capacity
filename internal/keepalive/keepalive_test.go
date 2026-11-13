@@ -1175,6 +1175,177 @@ func TestRollbackDuringObservation(t *testing.T) {
 	}
 }
 
+func TestRollbackAfterSave(t *testing.T) {
+	t.Parallel()
+
+	for _, elapsed := range []time.Duration{0, time.Second} {
+		t.Run(elapsed.String(), func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := enrolledKeepalive(t, &now)
+			keepalive.source = sourceFunc(func(_ context.Context, at time.Time) (Snapshot, error) {
+				now = now.Add(elapsed)
+
+				return snapshotAt(at), nil
+			})
+
+			save := keepalive.save
+			keepalive.save = func(state State, initial bool) error {
+				keepalive.save = save
+				require.NoError(t, save(state, initial))
+
+				now = now.Add(-time.Nanosecond)
+
+				return nil
+			}
+
+			status, decision, err := keepalive.Step(t.Context(), false)
+			require.ErrorIs(t, err, ErrStateInvalid)
+			assert.Equal(t, fixtureStateInvalid, status.Reason)
+			assert.Equal(t, phaseStopped, status.Phase)
+			assert.Equal(t, fixtureNone, decision.Action)
+			assert.True(t, decision.CheckAt.IsZero())
+			assert.True(t, keepalive.invalidState)
+
+			now = instant().Add(time.Second)
+
+			state, err := keepalive.store.load(keepalive.enrollment, now)
+			require.NoError(t, err)
+			assert.Equal(t, uint64(1), state.InputCount)
+			assert.Equal(t, []Attempt{{At: instant(), Debit: 0.1}}, state.Attempts)
+			assert.Equal(t, fixtureStateInvalid, state.Status.Reason)
+
+			stored, err := keepalive.store.ReadStatus(fixtureWork)
+			require.NoError(t, err)
+			assert.Equal(t, status, stored)
+			unarmedStep(t, keepalive)
+
+			now = instant().Add(6 * time.Hour)
+
+			unarmedStep(t, keepalive)
+			require.NoError(t, keepalive.Rearm())
+			step(t, keepalive, fixtureNone, fixtureAdmit)
+		})
+	}
+}
+
+func TestRollbackBetweenAdapterSamples(t *testing.T) {
+	t.Parallel()
+
+	for _, fixture := range []struct {
+		name    string
+		samples []time.Time
+	}{
+		{"after Observe", []time.Time{instant(), instant().Add(-time.Nanosecond), instant()}},
+		{"after Read", []time.Time{
+			instant(), instant().Add(time.Second), instant().Add(time.Second - time.Nanosecond),
+			instant().Add(time.Second),
+		}},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := enrolledKeepalive(t, &now)
+			samples := fixture.samples
+			keepalive.now = func() time.Time {
+				sampled := samples[0]
+				samples = samples[1:]
+
+				return sampled
+			}
+
+			status, decision, err := keepalive.Step(t.Context(), false)
+			require.ErrorIs(t, err, ErrStateInvalid)
+			assert.Equal(t, fixtureStateInvalid, status.Reason)
+			assert.Equal(t, phaseStopped, status.Phase)
+			assert.Equal(t, fixtureNone, decision.Action)
+			assert.True(t, decision.CheckAt.IsZero())
+			assert.True(t, keepalive.invalidState)
+
+			now = instant().Add(time.Second)
+			keepalive.now = func() time.Time { return now }
+
+			unarmedStep(t, keepalive)
+			state, err := keepalive.store.load(keepalive.enrollment, now)
+			require.NoError(t, err)
+			assert.Zero(t, state.InputCount)
+			assert.Empty(t, state.Attempts)
+		})
+	}
+}
+
+func TestBudgetLatchThroughSixHours(t *testing.T) {
+	t.Parallel()
+
+	for _, fixture := range []struct {
+		vendor   string
+		interval time.Duration
+	}{
+		{fixtureClaude, 5 * time.Minute},
+		{fixtureCodex, 15 * time.Minute},
+	} {
+		t.Run(fixture.vendor, func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := fixtureKeepalive(t, &now)
+			keepalive.enrollment.Vendor = fixture.vendor
+			require.NoError(t, keepalive.Enroll())
+			unarmedStep(t, keepalive)
+			require.NoError(t, keepalive.Rearm())
+			step(t, keepalive, fixtureNone, fixtureAdmit)
+
+			now = instant().Add(time.Second)
+
+			decision := step(t, keepalive, fixtureNone, fixtureWait)
+			assert.Equal(t, now.Add(time.Second), decision.CheckAt)
+			state, err := keepalive.store.load(keepalive.enrollment, now)
+			require.NoError(t, err)
+			assert.True(t, state.PendingAt.IsZero())
+			assert.Equal(t, now.Add(fixture.interval), state.DueAt)
+
+			now = now.Add(fixture.interval)
+
+			decision = step(t, keepalive, fixtureBudgetExhausted, fixtureNone)
+			assert.True(t, decision.CheckAt.IsZero())
+
+			stopped, err := keepalive.store.ReadStatus(fixtureWork)
+			require.NoError(t, err)
+			assert.Equal(t, phaseStopped, stopped.Phase)
+			assert.True(t, keepalive.invalidState)
+
+			for elapsed := fixture.interval + time.Minute; elapsed <= 6*time.Hour; elapsed += time.Minute {
+				now = instant().Add(elapsed)
+
+				unarmedStep(t, keepalive)
+				state, err = keepalive.store.load(keepalive.enrollment, now)
+				require.NoError(t, err)
+				assert.Equal(t, uint64(1), state.InputCount)
+				assert.Equal(t, []Attempt{{At: instant(), Debit: 0.1}}, state.Attempts)
+				assert.Equal(t, stopped, state.Status)
+			}
+
+			require.NoError(t, keepalive.Rearm())
+			state, err = keepalive.store.load(keepalive.enrollment, now)
+			require.NoError(t, err)
+			assert.Equal(t, stopped, state.Status)
+
+			stored, err := keepalive.store.ReadStatus(fixtureWork)
+			require.NoError(t, err)
+			assert.Equal(t, stopped, stored)
+			assert.Equal(t, uint64(1), state.InputCount)
+			assert.Equal(t, []Attempt{{At: instant(), Debit: 0.1}}, state.Attempts)
+			step(t, keepalive, fixtureNone, fixtureAdmit)
+			state, err = keepalive.store.load(keepalive.enrollment, now)
+			require.NoError(t, err)
+			assert.Equal(t, uint64(2), state.InputCount)
+			assert.Equal(t, []Attempt{{At: instant(), Debit: 0.1}, {At: now, Debit: 0.1}}, state.Attempts)
+		})
+	}
+}
+
 func TestSuccessfulRearmPreservesBothStops(t *testing.T) {
 	t.Parallel()
 

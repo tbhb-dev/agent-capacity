@@ -155,9 +155,10 @@ func (keepalive *Keepalive) Step(ctx context.Context, stopSignal bool) (Status, 
 	}
 
 	decision := Next(state, now)
+	last := now
 
 	if decision.Action == "observe" {
-		state, decision, err = keepalive.observe(ctx, state, now)
+		state, decision, err = keepalive.observe(ctx, state, now, &last)
 		if err != nil {
 			return keepalive.invalid(ctx, stopSignal, now, &state)
 		}
@@ -165,13 +166,17 @@ func (keepalive *Keepalive) Step(ctx context.Context, stopSignal bool) (Status, 
 
 	keepalive.rememberInvalid(state.Status)
 
-	return keepalive.savedStep(ctx, stopSignal, now, state, decision)
+	return keepalive.savedStep(ctx, stopSignal, now, last, state, decision)
 }
 
 func (keepalive *Keepalive) savedStep(
-	ctx context.Context, stopSignal bool, now time.Time, state State, decision Decision,
+	ctx context.Context, stopSignal bool, now, last time.Time, state State, decision Decision,
 ) (Status, Decision, error) {
 	if keepalive.save(state, false) != nil {
+		return keepalive.invalid(ctx, stopSignal, now, &state)
+	}
+
+	if keepalive.now().Before(last) {
 		return keepalive.invalid(ctx, stopSignal, now, &state)
 	}
 
@@ -211,11 +216,17 @@ func (keepalive *Keepalive) blocked(ctx context.Context, stopSignal bool, now ti
 	return status, Decision{Action: reasonNone, CheckAt: time.Time{}}, nil
 }
 
-func (keepalive *Keepalive) observe(ctx context.Context, state State, now time.Time) (State, Decision, error) {
+func (keepalive *Keepalive) observe(
+	ctx context.Context, state State, now time.Time, last *time.Time,
+) (State, Decision, error) {
 	observation, err := keepalive.observer.Observe(ctx, now)
-	if keepalive.now().Before(now) {
+	sampled := keepalive.now()
+
+	if sampled.Before(*last) {
 		return state, Decision{}, ErrStateInvalid
 	}
+
+	*last = sampled
 
 	if err != nil {
 		keepalive.invalidState = true
@@ -247,9 +258,13 @@ func (keepalive *Keepalive) observe(ctx context.Context, state State, now time.T
 	}
 
 	snapshot, err := keepalive.source.Read(ctx, now)
-	if keepalive.now().Before(now) {
+	sampled = keepalive.now()
+
+	if sampled.Before(*last) {
 		return state, Decision{}, ErrStateInvalid
 	}
+
+	*last = sampled
 
 	if err != nil {
 		latch(&state, readingInvalid, now)

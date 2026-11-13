@@ -335,6 +335,7 @@ func evaluate(state State, now time.Time, signals []string, snapshot Snapshot) (
 	}
 
 	if signal := budgetSignal(state, snapshot.Debit, now); signal != "" {
+		// Budget exhaustion persists until an explicit Rearm.
 		latch(&state, signal, now)
 
 		return state, Next(state, now)
