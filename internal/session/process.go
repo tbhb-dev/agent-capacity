@@ -68,6 +68,8 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 		cmd.SysProcAttr.Setpgid = true
 
 		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+		cmd.WaitDelay = terminationGrace
+
 		if cmd.Start() != nil {
 			return nil, ErrArguments
 		}

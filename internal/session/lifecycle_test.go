@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -1378,9 +1379,19 @@ func TestLaunchRefusesAmbiguousSettingsKeys(t *testing.T) {
 		"defaultMode variant":      `{"permissions":{` + safe + `,"DefaultMode":"acceptEdits"}}`,
 		"deny variant":             `{"permissions":{` + safe + `,"Deny":[]}}`,
 		"nested duplicate":         `{"permissions":{` + safe + `},"other":[{"a":1,"A":2}]}`,
-		"non string key":           `{1:2}`,
-		"bad nested value":         `{"permissions":}`,
-		"bad array value":          `{"other":[}`,
+		"only Permissions":         `{"Permissions":{` + safe + `}}`,
+		"only DefaultMode": `{"permissions":{"DefaultMode":"dontAsk","disableBypassPermissionsMode":"disable",` +
+			`"deny":` + deny + `}}`,
+		"only DisableBypassPermissionsMode": `{"permissions":{"defaultMode":"dontAsk",` +
+			`"DisableBypassPermissionsMode":"disable","deny":` + deny + `}}`,
+		"only Deny": `{"permissions":{"defaultMode":"dontAsk","disableBypassPermissionsMode":"disable",` +
+			`"Deny":` + deny + `}}`,
+		"top level array":       `[]`,
+		"top level empty":       `{}`,
+		"permissions not a map": `{"permissions":1}`,
+		"non string key":        `{1:2}`,
+		"bad nested value":      `{"permissions":}`,
+		"bad array value":       `{"other":[}`,
 	}
 
 	for name, content := range tests {
@@ -1392,6 +1403,41 @@ func TestLaunchRefusesAmbiguousSettingsKeys(t *testing.T) {
 			must(t, os.WriteFile(path, []byte(content), 0o600))
 			wantRefusedLaunch(t, fixtureValue)
 		})
+	}
+}
+
+func TestSettingsNestingLimit(t *testing.T) {
+	t.Parallel()
+
+	wrappers := map[string]func(value any) any{
+		"array":  func(value any) any { return []any{value} },
+		"object": func(value any) any { return map[string]any{"a": value} },
+	}
+
+	// The top object and permissions add two levels, so 29 wrappers make 31 levels and 31 make 33.
+	for kind, wrap := range wrappers {
+		for levels, accepted := range map[int]bool{29: true, 30: true, 31: false} {
+			fixtureValue := setup(t, vendorClaude)
+			writeSettings(t, fixtureValue, func(permissions map[string]any) {
+				var value any = 1
+				for range levels {
+					value = wrap(value)
+				}
+
+				permissions["extra"] = value
+			})
+
+			alias, err := fixtureValue.options.openAlias()
+			must(t, err)
+
+			got := checkSettings(alias) == nil
+
+			must(t, alias.Close())
+
+			if got != accepted {
+				t.Fatalf("%d nested %ss: accepted %v, want %v", levels, kind, got, accepted)
+			}
+		}
 	}
 }
 
@@ -1460,5 +1506,95 @@ func TestLoginEndsWhenGrandchildHoldsOutput(t *testing.T) {
 		}
 	case <-time.After(5 * terminationGrace):
 		t.Fatal("login blocked on the output pipe after cancellation")
+	}
+}
+
+//nolint:paralleltest // Swapped hooks are package variables.
+func TestCleanupRejectsSwappedSessionsDirectory(t *testing.T) {
+	fixtureValue := setup(t, vendorCodex)
+	home := filepath.Join(fixtureValue.options.directory(), directoryHome)
+	sessions := filepath.Join(fixtureValue.options.directory(), vendorCodex, "sessions")
+	now := fixtureValue.clock.Now()
+	old := now.Add(-3 * 24 * time.Hour)
+
+	must(t, os.Mkdir(sessions, 0o700))
+
+	homeFile := filepath.Join(home, "rollout.jsonl")
+	sessionFile := filepath.Join(sessions, "rollout.jsonl")
+
+	for _, path := range []string{homeFile, sessionFile} {
+		must(t, os.WriteFile(path, nil, 0o600))
+		must(t, os.Chtimes(path, old, old))
+	}
+
+	alias, err := fixtureValue.options.openAlias()
+	must(t, err)
+
+	defer alias.Close()
+
+	t.Cleanup(func() { statRoot = (*os.Root).Stat })
+
+	other, err := os.Stat(home)
+	must(t, err)
+
+	statRoot = func(*os.Root, string) (fs.FileInfo, error) { return other, nil }
+
+	if !errors.Is(cleanRollouts(alias, now), ErrArguments) {
+		t.Fatal("swapped sessions directory accepted")
+	}
+
+	statRoot = func(*os.Root, string) (fs.FileInfo, error) { return nil, fs.ErrPermission }
+
+	if !errors.Is(cleanRollouts(alias, now), ErrArguments) {
+		t.Fatal("unreadable sessions directory accepted")
+	}
+
+	for _, path := range []string{homeFile, sessionFile} {
+		_, err = os.Lstat(path)
+		must(t, err)
+	}
+
+	statRoot = (*os.Root).Stat
+
+	must(t, cleanRollouts(alias, now))
+
+	_, err = os.Lstat(sessionFile)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("old rollout kept", err)
+	}
+
+	_, err = os.Lstat(homeFile)
+	must(t, err)
+}
+
+func TestPipeChildEndsWhenGrandchildHoldsOutput(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c", "/bin/sleep 30 & echo $! > grandchild")
+	cmd.Dir = dir
+
+	var warning atomic.Bool
+
+	child, err := start(cmd, false, &warning)
+	must(t, err)
+
+	t.Cleanup(func() {
+		data, readErr := os.ReadFile(filepath.Join(dir, "grandchild"))
+		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+
+		if readErr == nil && parseErr == nil {
+			//nolint:errcheck // The process may have ended.
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+
+	select {
+	case err = <-child.done:
+		if !errors.Is(err, exec.ErrWaitDelay) {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * terminationGrace):
+		t.Fatal("wait blocked on the output pipe")
 	}
 }

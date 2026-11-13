@@ -482,7 +482,12 @@ func exitCode(err error) int {
 	return -1
 }
 
+//nolint:gochecknoglobals // Tests replace the call to simulate a concurrent filesystem change.
+var statRoot = (*os.Root).Stat
+
 func cleanRollouts(alias *os.Root, now time.Time) error {
+	var sessions fs.FileInfo
+
 	for _, name := range []string{vendorCodex, "codex/sessions"} {
 		info, err := alias.Lstat(name)
 		if errors.Is(err, fs.ErrNotExist) {
@@ -492,6 +497,8 @@ func cleanRollouts(alias *os.Root, now time.Time) error {
 		if err != nil || !info.IsDir() {
 			return ErrArguments
 		}
+
+		sessions = info
 	}
 
 	root, err := alias.OpenRoot("codex/sessions")
@@ -499,6 +506,11 @@ func cleanRollouts(alias *os.Root, now time.Time) error {
 		return ErrArguments
 	}
 	defer root.Close()
+
+	opened, err := statRoot(root, ".")
+	if err != nil || !os.SameFile(sessions, opened) {
+		return ErrArguments
+	}
 
 	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {

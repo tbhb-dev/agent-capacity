@@ -6,6 +6,7 @@ package session
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 const (
 	safeDefaultMode = "dontAsk"
 	safeBypassMode  = "disable"
+	maxDepth        = 32
 	settingsPath    = "config/settings.json"
 )
 
@@ -43,28 +45,31 @@ func checkSettings(alias *os.Root) error {
 		return ErrArguments
 	}
 
-	if checkKeys(json.NewDecoder(bytes.NewReader(data))) != nil {
+	if checkKeys(json.NewDecoder(bytes.NewReader(data)), 0) != nil {
 		return ErrArguments
 	}
 
-	var settings struct {
-		Permissions struct {
-			DefaultMode string   `json:"defaultMode"`
-			Bypass      string   `json:"disableBypassPermissionsMode"`
-			Deny        []string `json:"deny"`
-		} `json:"permissions"`
-	}
-	if json.Unmarshal(data, &settings) != nil {
+	var raw json.RawMessage
+	if field(data, "permissions", &raw) != nil {
 		return ErrArguments
 	}
 
-	permissions := settings.Permissions
-	if permissions.DefaultMode != safeDefaultMode || permissions.Bypass != safeBypassMode {
+	var (
+		defaultMode, bypass string
+		deny                []string
+	)
+
+	err = errors.Join(
+		field(raw, "defaultMode", &defaultMode),
+		field(raw, "disableBypassPermissionsMode", &bypass),
+		field(raw, "deny", &deny),
+	)
+	if err != nil || defaultMode != safeDefaultMode || bypass != safeBypassMode {
 		return ErrArguments
 	}
 
 	for _, tool := range denyList() {
-		if !slices.Contains(permissions.Deny, tool) {
+		if !slices.Contains(deny, tool) {
 			return ErrArguments
 		}
 	}
@@ -72,7 +77,20 @@ func checkSettings(alias *os.Root) error {
 	return nil
 }
 
-func checkKeys(dec *json.Decoder) error {
+func field(object json.RawMessage, name string, target any) error {
+	var members map[string]json.RawMessage
+	if json.Unmarshal(object, &members) != nil {
+		return ErrArguments
+	}
+
+	if json.Unmarshal(members[name], target) != nil {
+		return ErrArguments
+	}
+
+	return nil
+}
+
+func checkKeys(dec *json.Decoder, depth int) error {
 	token, err := dec.Token()
 	if err != nil {
 		return ErrArguments
@@ -80,16 +98,24 @@ func checkKeys(dec *json.Decoder) error {
 
 	switch token {
 	case json.Delim('{'):
-		return checkObject(dec)
+		if depth >= maxDepth {
+			return ErrArguments
+		}
+
+		return checkObject(dec, depth+1)
 	case json.Delim('['):
-		return checkArray(dec)
+		if depth >= maxDepth {
+			return ErrArguments
+		}
+
+		return checkArray(dec, depth+1)
 	default:
 		return nil
 	}
 }
 
-func checkObject(dec *json.Decoder) error {
-	var seen []string
+func checkObject(dec *json.Decoder, depth int) error {
+	seen := map[string]struct{}{}
 
 	for dec.More() {
 		name, err := dec.Token()
@@ -97,15 +123,15 @@ func checkObject(dec *json.Decoder) error {
 			return ErrArguments
 		}
 
-		key := fmt.Sprint(name)
+		key := strings.ToLower(fmt.Sprint(name))
 
-		if slices.ContainsFunc(seen, func(other string) bool { return strings.EqualFold(other, key) }) {
+		if _, duplicate := seen[key]; duplicate {
 			return ErrArguments
 		}
 
-		seen = append(seen, key)
+		seen[key] = struct{}{}
 
-		if checkKeys(dec) != nil {
+		if checkKeys(dec, depth) != nil {
 			return ErrArguments
 		}
 	}
@@ -113,9 +139,9 @@ func checkObject(dec *json.Decoder) error {
 	return closeContainer(dec)
 }
 
-func checkArray(dec *json.Decoder) error {
+func checkArray(dec *json.Decoder, depth int) error {
 	for dec.More() {
-		if checkKeys(dec) != nil {
+		if checkKeys(dec, depth) != nil {
 			return ErrArguments
 		}
 	}
