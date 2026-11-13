@@ -104,6 +104,8 @@ nogo(
 # contracts in .go-arch-lint.yml, and go mod tidy checks go.mod and go.sum
 # offline against the module proxy.
 GO_TARGETS = [
+    "//internal/session",
+    "//internal/session:session_test",
     "//internal/keepalive",
     "//internal/keepalive:keepalive_test",
     "//internal/source/agy",
@@ -242,6 +244,14 @@ gobco_test(
     go_sum = "go.sum",
     proxy = "@go_mod_proxy//:proxy",
     tests = ["//internal/source/codex:codex_test"],
+)
+
+gobco_test(
+    name = "session_gobco_test",
+    go_mod = "go.mod",
+    go_sum = "go.sum",
+    proxy = "@go_mod_proxy//:proxy",
+    tests = ["//internal/session:session_test"],
 )
 
 gobco_test(

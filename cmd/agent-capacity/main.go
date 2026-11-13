@@ -77,14 +77,8 @@ var errArguments = errors.New("invalid arguments")
 
 // Run executes serve or version. Errors log fixed messages and safe classes.
 func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *slog.Logger) int {
-	if len(args) == 1 && args[0] == "version" {
-		fmt.Fprintln(out, "agent-capacity 0.0.0-dev")
-
-		return 0
-	}
-
-	if len(args) > 0 && args[0] == "statusline" {
-		return statusline(ctx, args[1:], os.Stdin, logger)
+	if code, handled := runCommand(ctx, args, out, logger); handled {
+		return code
 	}
 
 	options, err := parseServe(args)
@@ -151,6 +145,31 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 	}
 
 	return 0
+}
+
+func runCommand(ctx context.Context, args []string, out io.Writer, logger *slog.Logger) (int, bool) {
+	if len(args) == 0 {
+		return 0, false
+	}
+
+	switch args[0] {
+	case "version":
+		if len(args) != 1 {
+			return 0, false
+		}
+
+		fmt.Fprintln(out, "agent-capacity 0.0.0-dev")
+
+		return 0, true
+	case "statusline":
+		return statusline(ctx, args[1:], os.Stdin, logger), true
+	case "login":
+		return loginCommand(args[1:], os.Stdin, out, os.Stderr), true
+	case "session":
+		return sessionCommand(ctx, args[1:], out), true
+	default:
+		return 0, false
+	}
 }
 
 type serveOptions struct {
