@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/signal"
@@ -159,21 +158,9 @@ func setup(t *testing.T, vendor string) fixture {
 
 	executable, err := os.Executable()
 	must(t, err)
-	source, err := os.Open(executable)
-	must(t, err)
-
-	defer source.Close()
-
-	destination, err := os.OpenFile(
-		options.Binary,
-		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
-		0o600,
-	)
-	must(t, err)
-	_, err = io.Copy(destination, source)
-	must(t, err)
-	must(t, destination.Close())
-	setMode(t, options.Binary, 0o700)
+	// The link keeps the test binary closed for writing. Copying it would leave a writable descriptor open,
+	// and a parallel test's fork could inherit that descriptor. Linux then refuses to run the copy (ETXTBSY).
+	must(t, os.Symlink(executable, options.Binary))
 
 	fixtureValue := fixture{
 		options: options,
