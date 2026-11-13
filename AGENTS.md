@@ -44,6 +44,8 @@ Tests must give the same result on every run. Use fixtures for passive local inp
 
 ## Conventions
 
+Before choosing a model for a subagent or peer run, read [models/README.md in tbhb-dev/wiki](https://github.com/tbhb-dev/wiki/blob/main/models/README.md).
+
 Change only the files the task needs, and stage paths by name. Run `bazelisk test //...` before committing. Keep private values in an ignored file, never in the tree.
 
 Write each Markdown paragraph on one line. `rumdl`, Vale and cspell check the Markdown and the Go comments, so keep the prose plain.
