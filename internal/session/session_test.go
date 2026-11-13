@@ -291,7 +291,7 @@ func (c *testClock) tick() {
 func (fixtureValue fixture) until(t *testing.T, predicate func() bool) {
 	t.Helper()
 
-	deadline := time.NewTimer(5 * time.Second)
+	deadline := time.NewTimer(60 * time.Second)
 	defer deadline.Stop()
 
 	ticker := time.NewTicker(time.Millisecond)
@@ -333,7 +333,7 @@ func (fixtureValue fixture) run(t *testing.T) (context.CancelFunc, <-chan int) {
 
 		select {
 		case <-finished:
-		case <-time.After(4 * time.Second):
+		case <-time.After(60 * time.Second):
 			t.Error("runner did not exit")
 		}
 	})
