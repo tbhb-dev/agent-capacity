@@ -154,6 +154,12 @@ func setup(t *testing.T, vendor string) fixture {
 		must(t, os.Mkdir(sub, 0o700))
 	}
 
+	if vendor == vendorClaude {
+		rendered, err := RenderSettings(vendorClaude, fixtureAlias, options.Binary, options.SpoolDir)
+		must(t, err)
+		must(t, os.WriteFile(filepath.Join(options.directory(), settingsPath), rendered, 0o600))
+	}
+
 	must(t, os.WriteFile(options.AliasFile, []byte("# approved aliases\n\n"+vendor+" sample ignored\n"), 0o600))
 
 	executable, err := os.Executable()

@@ -361,6 +361,10 @@ func (s *running) limitReached() bool {
 }
 
 func (s *running) launch() error {
+	if s.options.Vendor == vendorClaude && checkSettings(s.alias) != nil {
+		return ErrArguments
+	}
+
 	args := []string{"--model", "claude-haiku-5-5", "/loop 5m " + s.options.Prompt}
 	if s.options.Vendor == vendorCodex {
 		args = []string{commandExec, "-m", "gpt-6-luna", s.options.Prompt}

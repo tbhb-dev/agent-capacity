@@ -5,6 +5,7 @@ package session //nolint:testpackage // Tests inject the clock and inspect priva
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -969,4 +970,122 @@ func TestFinishAtRestartLimit(t *testing.T) {
 	}
 
 	fixtureValue.wantStopped(t, state.finish(1, reasonStatusFailed), true, 0, reasonRestartLimit)
+}
+
+// writeSettings renders the safe settings, lets change edit the permissions and stores the result.
+func writeSettings(t *testing.T, fixtureValue fixture, change func(permissions map[string]any)) {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(fixtureValue.options.directory(), settingsPath))
+	must(t, err)
+
+	var settings map[string]any
+	must(t, json.Unmarshal(data, &settings))
+
+	permissions, ok := settings["permissions"].(map[string]any)
+	if !ok {
+		t.Fatal("rendered settings have no permissions")
+	}
+
+	change(permissions)
+
+	data, err = json.Marshal(settings)
+	must(t, err)
+	must(t, os.WriteFile(filepath.Join(fixtureValue.options.directory(), settingsPath), data, 0o600))
+}
+
+// wantRefusedLaunch checks that a status check result ends the runner without starting the child.
+func wantRefusedLaunch(t *testing.T, fixtureValue fixture) {
+	t.Helper()
+
+	state := stateFor(t, fixtureValue)
+	state.check = finished(nil)
+
+	code, done := state.pollStatusCheck()
+	fixtureValue.wantStopped(t, code, done, 1, "start_failed")
+
+	if state.child != nil || len(fixtureValue.calls(t)) != 0 {
+		t.Fatal("child started with unsafe settings")
+	}
+}
+
+func TestLaunchRefusesUnsafePermissions(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]func(permissions map[string]any){
+		"bypass not disabled": func(permissions map[string]any) { permissions["disableBypassPermissionsMode"] = "allow" },
+		"default mode wrong":  func(permissions map[string]any) { permissions["defaultMode"] = "acceptEdits" },
+		"deny entry missing":  func(permissions map[string]any) { permissions["deny"] = denyList()[1:] },
+		"deny not a list":     func(permissions map[string]any) { permissions["deny"] = "Bash" },
+		"no permissions":      func(permissions map[string]any) { clear(permissions) },
+	}
+
+	for name, change := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorClaude)
+			writeSettings(t, fixtureValue, change)
+			wantRefusedLaunch(t, fixtureValue)
+		})
+	}
+}
+
+func TestLaunchRefusesUnsafeSettingsFile(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]func(path string) error{
+		"missing":      os.Remove,
+		"invalid json": func(path string) error { return os.WriteFile(path, []byte("{"), 0o600) },
+		"unreadable":   func(path string) error { return os.Chmod(path, 0) },
+		"directory": func(path string) error {
+			return errors.Join(os.Remove(path), os.Mkdir(path, 0o700))
+		},
+		"symlink": func(path string) error {
+			return errors.Join(os.Rename(path, path+".real"), os.Symlink("settings.json.real", path))
+		},
+	}
+
+	for name, damage := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorClaude)
+			path := filepath.Join(fixtureValue.options.directory(), settingsPath)
+
+			must(t, damage(path))
+			t.Cleanup(func() {
+				os.Chmod(path, 0o600) //nolint:errcheck,gosec // The path may be gone or linked.
+			})
+			wantRefusedLaunch(t, fixtureValue)
+		})
+	}
+}
+
+func TestLaunchAcceptsRenderedSettingsWithExtraDeny(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	writeSettings(t, fixtureValue, func(permissions map[string]any) {
+		permissions["deny"] = append(denyList(), "Extra")
+	})
+
+	state := stateFor(t, fixtureValue)
+
+	err := state.launch()
+	if err != nil || state.child == nil {
+		t.Fatal("launch refused safe settings", err)
+	}
+}
+
+func TestCodexLaunchSkipsClaudeSettings(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorCodex)
+	state := stateFor(t, fixtureValue)
+
+	err := state.launch()
+	if err != nil || state.child == nil {
+		t.Fatal("codex launch needs no Claude settings", err)
+	}
 }
