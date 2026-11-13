@@ -29,7 +29,7 @@ jobs:
   bazel:
     name: "bazel (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
-    # Every job runs mutation testing for every package and needs the longer limit.
+    # Unmeasured without mutation testing: keep the 90-minute limit until a run shows the time.
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -69,7 +69,7 @@ jobs:
       # condition coverage, the docs bundle and REUSE checks, the import
       # contracts, and the preset staleness test.
       - name: Test
-        run: bazelisk test --config=ci //...
+        run: bazelisk test --config=ci -- //... -//:gomutants_test
 
       - name: Build the release binary
         env:
@@ -89,6 +89,30 @@ jobs:
           # The convenience links are dotfiles, which the action skips by default.
           include-hidden-files: true
           if-no-files-found: ignore
+
+  # Mutation testing of every package, on one OS leg. It ran inside the bazel job before.
+  mutation:
+    name: mutation
+    runs-on: ubuntu-26.04
+    # Unmeasured: no run has finished yet. Set this from the first finished run.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Bazel for CI
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@c7a8816b70deb33b5c23d4f78f225abcc2918c52  # main
+        with:
+          disk-cache: ${{ github.workflow }}-mutation
+          cache-save: ${{ github.event_name != 'pull_request' }}
+
+      - name: Test
+        run: bazelisk test --config=ci //:gomutants_test
 
   # Build both Linux images and check runtime defaults without a daemon.
   container:
@@ -191,7 +215,7 @@ jobs:
   conclusion:
     name: conclusion
     if: always()
-    needs: [bazel, repo, gomodscan, container]
+    needs: [bazel, repo, gomodscan, container, mutation]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
