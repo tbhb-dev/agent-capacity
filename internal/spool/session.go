@@ -93,13 +93,24 @@ func SnapshotTime(root *os.Root, vendor, account string) (time.Time, error) {
 	return info.ModTime(), nil
 }
 
+// Tests replace these four calls to fail the status directory or file after a check. No input
+// triggers that change inside one function. The hook lets tests trigger the seven outcomes it guards.
+//
+//nolint:gochecknoglobals // Tests replace the calls to simulate a concurrent filesystem change.
+var (
+	lstat  = (*os.Root).Lstat
+	stat   = (*os.Root).Stat
+	rename = (*os.Root).Rename
+	fstat  = (*os.File).Stat
+)
+
 func statusRoot(root *os.Root) (*os.Root, error) {
 	err := root.Mkdir("status", sessionDirectoryMode)
 	if err != nil && !errors.Is(err, fs.ErrExist) {
 		return nil, errSessionState
 	}
 
-	info, err := root.Lstat("status")
+	info, err := lstat(root, "status")
 	if err != nil || !info.IsDir() {
 		return nil, errSessionState
 	}
@@ -109,7 +120,7 @@ func statusRoot(root *os.Root) (*os.Root, error) {
 		return nil, errSessionState
 	}
 
-	opened, err := dir.Stat(".")
+	opened, err := stat(dir, ".")
 	if err != nil || !os.SameFile(info, opened) {
 		_ = dir.Close()
 
@@ -133,7 +144,7 @@ func WriteSession(root *os.Root, status SessionStatus) error {
 
 	name := status.Vendor + "-" + status.Alias + ".json"
 
-	info, err := dir.Lstat(name)
+	info, err := lstat(dir, name)
 	if err == nil && !info.Mode().IsRegular() {
 		return errSessionState
 	}
@@ -160,7 +171,7 @@ func WriteSession(root *os.Root, status SessionStatus) error {
 		return errSessionState
 	}
 
-	if dir.Rename(temporary, name) != nil {
+	if rename(dir, temporary, name) != nil {
 		return errSessionState
 	}
 
@@ -181,7 +192,7 @@ func ReadSession(root *os.Root, vendor, account string) (SessionStatus, error) {
 
 	name := vendor + "-" + account + ".json"
 
-	info, err := dir.Lstat(name)
+	info, err := lstat(dir, name)
 	if errors.Is(err, fs.ErrNotExist) {
 		var empty SessionStatus
 
@@ -198,7 +209,7 @@ func ReadSession(root *os.Root, vendor, account string) (SessionStatus, error) {
 	}
 	defer file.Close()
 
-	opened, err := file.Stat()
+	opened, err := fstat(file)
 	if err != nil || !os.SameFile(info, opened) {
 		return SessionStatus{}, errSessionState
 	}
