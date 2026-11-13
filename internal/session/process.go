@@ -80,6 +80,11 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 
 	go func() {
 		err := cmd.Wait()
+
+		if child.terminal == nil {
+			child.signalGroup(syscall.SIGKILL)
+		}
+
 		if errors.Is(err, exec.ErrWaitDelay) {
 			err = nil
 		}

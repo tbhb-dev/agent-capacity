@@ -48,6 +48,7 @@ type fakeControl struct {
 	IgnoreTerm bool `json:"ignoreTerm"`
 	HoldStatus bool `json:"holdStatus"`
 	Grandchild bool `json:"grandchild"`
+	SelfKill   bool `json:"selfKill"`
 }
 type fakeCall struct {
 	Dir  string   `json:"dir"`
@@ -84,6 +85,11 @@ func fakeVendor() int {
 
 	if control.Grandchild && startGrandchild() != nil {
 		return 9
+	}
+
+	if control.SelfKill {
+		//nolint:errcheck // The process ends from its own signal.
+		_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
 	}
 
 	fmt.Fprintln(os.Stdout, "discarded child output")
@@ -378,6 +384,7 @@ func TestSignedOutNeverStartsChild(t *testing.T) {
 					IgnoreTerm: false,
 					HoldStatus: false,
 					Grandchild: false,
+					SelfKill:   false,
 				},
 			)
 			_, result := fixtureValue.run(t)
@@ -414,6 +421,7 @@ func TestStopWinsAndTerminatesChild(t *testing.T) {
 					IgnoreTerm: false,
 					HoldStatus: false,
 					Grandchild: false,
+					SelfKill:   false,
 					ExecExit:   0,
 				},
 			)
@@ -456,6 +464,7 @@ func TestInitiallyStoppedSkipsStatus(t *testing.T) {
 			IgnoreTerm: false,
 			HoldStatus: false,
 			Grandchild: false,
+			SelfKill:   false,
 			ExecExit:   0,
 			Warning:    false,
 			Hold:       false,
@@ -599,6 +608,7 @@ func TestWarningFlagAndNoOutputStored(t *testing.T) {
 			IgnoreTerm: false,
 			HoldStatus: false,
 			Grandchild: false,
+			SelfKill:   false,
 			Status:     0,
 			ExecExit:   0,
 		},

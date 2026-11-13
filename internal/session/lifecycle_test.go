@@ -63,6 +63,7 @@ func TestOtherChildEndsRequestRestart(t *testing.T) {
 					IgnoreTerm: false,
 					HoldStatus: false,
 					Grandchild: false,
+					SelfKill:   false,
 				},
 			)
 			_, result := fixtureValue.run(t)
@@ -92,6 +93,7 @@ func TestStatusFailureAndTimeout(t *testing.T) {
 					Status:     2,
 					HoldStatus: hold,
 					Grandchild: false,
+					SelfKill:   false,
 					Hold:       false,
 					EndClaude:  false,
 					IgnoreTerm: false,
@@ -178,6 +180,7 @@ func TestCodexDoesNotOverlapExec(t *testing.T) {
 			IgnoreTerm: false,
 			HoldStatus: false,
 			Grandchild: false,
+			SelfKill:   false,
 			Status:     0,
 			ExecExit:   0,
 			Warning:    false,
@@ -1480,15 +1483,7 @@ func TestLoginEndsWhenGrandchildHoldsOutput(t *testing.T) {
 
 	grandchildFile := filepath.Join(fixtureValue.options.directory(), "grandchild")
 
-	t.Cleanup(func() {
-		data, readErr := os.ReadFile(grandchildFile)
-		pid, parseErr := strconv.Atoi(string(data))
-
-		if readErr == nil && parseErr == nil {
-			//nolint:errcheck // The process may have ended.
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-		}
-	})
+	killGrandchildAfter(t, grandchildFile)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan int, 1)
@@ -1600,6 +1595,23 @@ func TestPipeChildEndsWhenGrandchildHoldsOutput(t *testing.T) {
 	case <-time.After(5 * terminationGrace):
 		t.Fatal("wait blocked on the output pipe")
 	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "grandchild"))
+	must(t, err)
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	must(t, err)
+
+	// The grandchild ends shortly after the result.
+	for range 200 {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			return
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("grandchild survived the completed child")
 }
 
 func TestIdleStopRepublishesOnlyAfterTheInterval(t *testing.T) {
@@ -1647,12 +1659,15 @@ func TestHeldPipeResults(t *testing.T) {
 		endClaude    bool
 		wantDone     bool
 		wantRollout  bool
+		selfKill     bool
 	}{
-		{"codex status check exit zero", vendorCodex, reasonNone, 0, 0, 0, 0, true, false, false, true},
-		{"codex exec exit zero", vendorCodex, reasonNone, 0, 0, 1, 0, false, false, false, false},
-		{"claude child exit", vendorClaude, reasonChildExit, 0, 0, 1, 1, false, true, true, true},
-		{"codex status check exit one", vendorCodex, reasonSignedOut, 1, 0, 0, 0, true, false, true, true},
-		{"codex exec exit one", vendorCodex, reasonChildExit, 0, 1, 1, 1, false, false, true, true},
+		{"codex status check exit zero", vendorCodex, reasonNone, 0, 0, 0, 0, true, false, false, true, false},
+		{"codex exec exit zero", vendorCodex, reasonNone, 0, 0, 1, 0, false, false, false, false, false},
+		{"claude child exit", vendorClaude, reasonChildExit, 0, 0, 1, 1, false, true, true, true, false},
+		{"codex status check exit one", vendorCodex, reasonSignedOut, 1, 0, 0, 0, true, false, true, true, false},
+		{"codex exec exit one", vendorCodex, reasonChildExit, 0, 1, 1, 1, false, false, true, true, false},
+		{"codex exec killed by signal", vendorCodex, reasonChildExit, 0, 0, 1, 1, false, false, true, true, true},
+		{"codex status check exit two", vendorCodex, reasonStatusFailed, 2, 0, 1, 1, true, false, true, true, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -1661,8 +1676,10 @@ func TestHeldPipeResults(t *testing.T) {
 			fixtureValue.control(t, fakeControl{
 				Status: test.status, ExecExit: test.execExit, Warning: false, Hold: false,
 				EndClaude: test.endClaude, IgnoreTerm: false, HoldStatus: false, Grandchild: true,
+				SelfKill: test.selfKill,
 			})
-			killGrandchildAfter(t, filepath.Join(fixtureValue.options.directory(), "grandchild"))
+			grandchildFile := filepath.Join(fixtureValue.options.directory(), directoryWork, "grandchild")
+			killGrandchildAfter(t, grandchildFile)
 
 			sessions := filepath.Join(fixtureValue.options.directory(), vendorCodex, "sessions")
 			rollout := filepath.Join(sessions, "rollout.jsonl")
@@ -1680,6 +1697,11 @@ func TestHeldPipeResults(t *testing.T) {
 				len(state.status.Restarts) != test.wantRestarts || (err == nil) != test.wantRollout {
 				t.Fatal(code, done, state.status, err)
 			}
+
+			// The runner ends the process group of a completed child that has no terminal.
+			if test.vendor == vendorCodex && !processGone(grandchildPID(t, grandchildFile)) {
+				t.Fatal("grandchild survived the completed child")
+			}
 		})
 	}
 }
@@ -1693,11 +1715,44 @@ func killGrandchildAfter(t *testing.T, file string) {
 		}
 
 		pid, parseErr := strconv.Atoi(string(data))
-		if parseErr == nil {
-			//nolint:errcheck // The process may have ended.
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+		if parseErr != nil {
+			t.Error("unreadable grandchild pid", parseErr)
+
+			return
+		}
+
+		//nolint:errcheck // The process may have ended.
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+
+		if !processGone(pid) {
+			t.Error("grandchild survived the cleanup", pid)
 		}
 	})
+}
+
+// processGone polls up to two seconds for the process to end.
+func processGone(pid int) bool {
+	for range 200 {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			return true
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	return false
+}
+
+func grandchildPID(t *testing.T, file string) int {
+	t.Helper()
+
+	data, err := os.ReadFile(file)
+	must(t, err)
+
+	pid, err := strconv.Atoi(string(data))
+	must(t, err)
+
+	return pid
 }
 
 func driveHeldChild(t *testing.T, fixtureValue fixture, state *running, checkOnly bool) (int, bool) {
