@@ -1591,9 +1591,7 @@ func TestPipeChildEndsWhenGrandchildHoldsOutput(t *testing.T) {
 
 	select {
 	case err = <-child.done:
-		if !errors.Is(err, exec.ErrWaitDelay) {
-			t.Fatal(err)
-		}
+		must(t, err)
 	case <-time.After(5 * terminationGrace):
 		t.Fatal("wait blocked on the output pipe")
 	}

@@ -4,6 +4,7 @@
 package session
 
 import (
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -77,7 +78,14 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 		close(child.drained)
 	}
 
-	go func() { child.done <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		if errors.Is(err, exec.ErrWaitDelay) {
+			err = nil
+		}
+
+		child.done <- err
+	}()
 
 	return child, nil
 }

@@ -469,6 +469,18 @@ func TestInitiallyStoppedSkipsStatus(t *testing.T) {
 		t.Fatal("vendor ran")
 	}
 
+	// Two unchanged-clock ticks make the stopped loop pass the status interval check at least once.
+	published := fixtureValue.status(t).Time
+
+	for range 2 {
+		fixtureValue.clock.tick()
+		fixtureValue.until(t, func() bool { return len(fixtureValue.clock.ticks) == 0 })
+	}
+
+	if !fixtureValue.status(t).Time.Equal(published) {
+		t.Fatal("stopped runner republished before the interval")
+	}
+
 	cancel()
 }
 
