@@ -29,8 +29,8 @@ jobs:
   bazel:
     name: "bazel (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
-    # The macOS job runs mutation testing for every package and needs the longer limit.
-    timeout-minutes: ${{ matrix.os == 'macos-26' && 45 || 30 }}
+    # Every job runs mutation testing for every package and needs the longer limit.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
