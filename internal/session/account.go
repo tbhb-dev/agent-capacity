@@ -206,6 +206,12 @@ func loginAs(ctx context.Context, options Options, input *os.File, output, diagn
 	}
 	defer root.Close()
 
+	if checkDirectories(root, options.Vendor) != nil {
+		fmt.Fprintln(diagnostic, "login refused")
+
+		return 1
+	}
+
 	_, err = pty.GetsizeFull(input)
 	if err != nil {
 		fmt.Fprintln(diagnostic, "login requires a terminal")
@@ -232,6 +238,8 @@ func loginAs(ctx context.Context, options Options, input *os.File, output, diagn
 }
 
 func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
+	cmd.WaitDelay = terminationGrace
+
 	if cmd.Start() != nil {
 		return ErrArguments
 	}

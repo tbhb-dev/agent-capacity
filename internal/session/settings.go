@@ -4,7 +4,9 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -41,6 +43,10 @@ func checkSettings(alias *os.Root) error {
 		return ErrArguments
 	}
 
+	if checkKeys(json.NewDecoder(bytes.NewReader(data))) != nil {
+		return ErrArguments
+	}
+
 	var settings struct {
 		Permissions struct {
 			DefaultMode string   `json:"defaultMode"`
@@ -61,6 +67,66 @@ func checkSettings(alias *os.Root) error {
 		if !slices.Contains(permissions.Deny, tool) {
 			return ErrArguments
 		}
+	}
+
+	return nil
+}
+
+func checkKeys(dec *json.Decoder) error {
+	token, err := dec.Token()
+	if err != nil {
+		return ErrArguments
+	}
+
+	switch token {
+	case json.Delim('{'):
+		return checkObject(dec)
+	case json.Delim('['):
+		return checkArray(dec)
+	default:
+		return nil
+	}
+}
+
+func checkObject(dec *json.Decoder) error {
+	var seen []string
+
+	for dec.More() {
+		name, err := dec.Token()
+		if err != nil {
+			return ErrArguments
+		}
+
+		key := fmt.Sprint(name)
+
+		if slices.ContainsFunc(seen, func(other string) bool { return strings.EqualFold(other, key) }) {
+			return ErrArguments
+		}
+
+		seen = append(seen, key)
+
+		if checkKeys(dec) != nil {
+			return ErrArguments
+		}
+	}
+
+	return closeContainer(dec)
+}
+
+func checkArray(dec *json.Decoder) error {
+	for dec.More() {
+		if checkKeys(dec) != nil {
+			return ErrArguments
+		}
+	}
+
+	return closeContainer(dec)
+}
+
+func closeContainer(dec *json.Decoder) error {
+	_, err := dec.Token()
+	if err != nil {
+		return ErrArguments
 	}
 
 	return nil

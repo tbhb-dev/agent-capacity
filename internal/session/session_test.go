@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,9 +33,10 @@ const (
 	reasonRestartLimit = "restart_limit"
 	reasonSignedOut    = "signed_out"
 	reasonStatusFailed = "status_failed"
-	reasonInvalidDir   = "invalid_directory"
+	noStatus           = "no status"
 	reasonScheduled    = "scheduled_restart"
 	directoryWork      = "work"
+	directoryHome      = "home"
 )
 
 type fakeControl struct {
@@ -44,6 +47,7 @@ type fakeControl struct {
 	EndClaude  bool `json:"endClaude"`
 	IgnoreTerm bool `json:"ignoreTerm"`
 	HoldStatus bool `json:"holdStatus"`
+	Grandchild bool `json:"grandchild"`
 }
 type fakeCall struct {
 	Dir  string   `json:"dir"`
@@ -78,6 +82,10 @@ func fakeVendor() int {
 		}
 	}
 
+	if control.Grandchild && startGrandchild() != nil {
+		return 9
+	}
+
 	fmt.Fprintln(os.Stdout, "discarded child output")
 	fmt.Fprintln(os.Stderr, "discarded child diagnostic")
 
@@ -95,6 +103,23 @@ func fakeVendor() int {
 	fakeHold((len(os.Args) > 1 && os.Args[1] == "--model" && !control.EndClaude) || control.Hold)
 
 	return control.ExecExit
+}
+
+func startGrandchild() error {
+	grandchild := exec.CommandContext(context.Background(), "/bin/sleep", "30")
+	grandchild.Stdout, grandchild.Stderr = os.Stdout, os.Stderr
+
+	err := grandchild.Start()
+	if err != nil {
+		return ErrArguments
+	}
+
+	err = os.WriteFile("grandchild", []byte(strconv.Itoa(grandchild.Process.Pid)), privateMode)
+	if err != nil {
+		return ErrArguments
+	}
+
+	return nil
 }
 
 func fakeHold(hold bool) {
@@ -149,7 +174,7 @@ func setup(t *testing.T, vendor string) fixture {
 		Binary: filepath.Join(dir, "fake-vendor"), SpoolDir: filepath.Join(dir, "spool"), Prompt: "ping",
 	}
 	for _, sub := range []string{
-		options.directory(), filepath.Join(options.directory(), "work"), filepath.Join(options.directory(), "home"),
+		options.directory(), filepath.Join(options.directory(), "work"), filepath.Join(options.directory(), directoryHome),
 		filepath.Join(options.directory(), "config"), filepath.Join(options.directory(), vendorCodex), options.SpoolDir,
 	} {
 		must(t, os.Mkdir(sub, 0o700))
@@ -352,6 +377,7 @@ func TestSignedOutNeverStartsChild(t *testing.T) {
 					EndClaude:  false,
 					IgnoreTerm: false,
 					HoldStatus: false,
+					Grandchild: false,
 				},
 			)
 			_, result := fixtureValue.run(t)
@@ -387,6 +413,7 @@ func TestStopWinsAndTerminatesChild(t *testing.T) {
 					EndClaude:  false,
 					IgnoreTerm: false,
 					HoldStatus: false,
+					Grandchild: false,
 					ExecExit:   0,
 				},
 			)
@@ -428,6 +455,7 @@ func TestInitiallyStoppedSkipsStatus(t *testing.T) {
 			EndClaude:  false,
 			IgnoreTerm: false,
 			HoldStatus: false,
+			Grandchild: false,
 			ExecExit:   0,
 			Warning:    false,
 			Hold:       false,
@@ -570,6 +598,7 @@ func TestWarningFlagAndNoOutputStored(t *testing.T) {
 			EndClaude:  false,
 			IgnoreTerm: false,
 			HoldStatus: false,
+			Grandchild: false,
 			Status:     0,
 			ExecExit:   0,
 		},

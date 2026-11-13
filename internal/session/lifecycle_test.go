@@ -8,9 +8,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -54,6 +56,7 @@ func TestOtherChildEndsRequestRestart(t *testing.T) {
 					Hold:       false,
 					IgnoreTerm: false,
 					HoldStatus: false,
+					Grandchild: false,
 				},
 			)
 			_, result := fixtureValue.run(t)
@@ -82,6 +85,7 @@ func TestStatusFailureAndTimeout(t *testing.T) {
 				fakeControl{
 					Status:     2,
 					HoldStatus: hold,
+					Grandchild: false,
 					Hold:       false,
 					EndClaude:  false,
 					IgnoreTerm: false,
@@ -167,6 +171,7 @@ func TestCodexDoesNotOverlapExec(t *testing.T) {
 			EndClaude:  false,
 			IgnoreTerm: false,
 			HoldStatus: false,
+			Grandchild: false,
 			Status:     0,
 			ExecExit:   0,
 			Warning:    false,
@@ -593,19 +598,19 @@ func TestRunRefusals(t *testing.T) {
 			f.options.SpoolDir = filepath.Join(f.base, "none")
 
 			return nil
-		}, ""},
-		"missing directory": {func(f *fixture) error { return os.RemoveAll(f.options.directory()) }, reasonInvalidDir},
+		}, noStatus},
+		"missing directory": {func(f *fixture) error { return os.RemoveAll(f.options.directory()) }, noStatus},
 		"missing work": {
-			func(f *fixture) error { return os.Remove(filepath.Join(f.options.directory(), "work")) }, reasonInvalidDir,
+			func(f *fixture) error { return os.Remove(filepath.Join(f.options.directory(), "work")) }, noStatus,
 		},
 		"linked work": {func(f *fixture) error {
 			work := filepath.Join(f.options.directory(), "work")
 
 			return errors.Join(os.Remove(work), os.Symlink(f.base, work))
-		}, reasonInvalidDir},
+		}, noStatus},
 		"linked lock": {func(f *fixture) error {
 			return os.Symlink(f.base, filepath.Join(f.options.directory(), ".runner.lock"))
-		}, ""},
+		}, noStatus},
 		"corrupt status": {func(f *fixture) error {
 			status := filepath.Join(f.options.SpoolDir, "status")
 
@@ -622,7 +627,9 @@ func TestRunRefusals(t *testing.T) {
 			must(t, test.prepare(&fixtureValue))
 			checkRunnerExit(t, fixtureValue, 1)
 
-			if test.reason != "" && fixtureValue.status(t).Reason != test.reason {
+			if test.reason == noStatus {
+				fixtureValue.wantNoStatus(t)
+			} else if fixtureValue.status(t).Reason != test.reason {
 				t.Fatal(fixtureValue.status(t))
 			}
 		})
@@ -1108,10 +1115,10 @@ func TestRunRejectsLinkedSubdirectories(t *testing.T) {
 
 	for _, test := range []struct{ vendor, name string }{
 		{vendorClaude, directoryWork},
-		{vendorClaude, "home"},
+		{vendorClaude, directoryHome},
 		{vendorClaude, "config"},
 		{vendorCodex, directoryWork},
-		{vendorCodex, "home"},
+		{vendorCodex, directoryHome},
 		{vendorCodex, vendorCodex},
 	} {
 		t.Run(test.vendor+"/"+test.name, func(t *testing.T) {
@@ -1122,10 +1129,7 @@ func TestRunRejectsLinkedSubdirectories(t *testing.T) {
 			must(t, os.RemoveAll(target))
 			must(t, os.Symlink(fixtureValue.base, target))
 			checkRunnerExit(t, fixtureValue, 1)
-
-			if fixtureValue.status(t).Reason != reasonInvalidDir {
-				t.Fatal(fixtureValue.status(t))
-			}
+			fixtureValue.wantNoStatus(t)
 		})
 	}
 }
@@ -1139,14 +1143,14 @@ func TestCheckDirectoriesAllowsMissingOptionalDirectories(t *testing.T) {
 
 	defer alias.Close()
 
-	must(t, os.Remove(filepath.Join(fixtureValue.options.directory(), "home")))
+	must(t, os.Remove(filepath.Join(fixtureValue.options.directory(), directoryHome)))
 	must(t, os.Remove(filepath.Join(fixtureValue.options.directory(), vendorCodex)))
 
 	if checkDirectories(alias, vendorCodex) != nil {
 		t.Fatal("missing optional directories refused")
 	}
 
-	file := filepath.Join(fixtureValue.options.directory(), "home")
+	file := filepath.Join(fixtureValue.options.directory(), directoryHome)
 	must(t, os.WriteFile(file, nil, 0o600))
 
 	if checkDirectories(alias, vendorCodex) == nil {
@@ -1154,39 +1158,100 @@ func TestCheckDirectoriesAllowsMissingOptionalDirectories(t *testing.T) {
 	}
 }
 
+func writePreviousStatus(t *testing.T, fixtureValue fixture) spool.SessionStatus {
+	t.Helper()
+
+	root, err := spool.SessionRoot(fixtureValue.options.SpoolDir)
+	must(t, err)
+
+	var previous spool.SessionStatus
+
+	now := fixtureValue.clock.Now()
+	previous.Time, previous.Vendor, previous.Alias = now, vendorClaude, fixtureAlias
+	previous.Phase, previous.Reason = phaseStopped, reasonScheduled
+	previous.Restarts = []time.Time{
+		now.Add(-30 * time.Minute), now.Add(-20 * time.Minute), now.Add(-10 * time.Minute),
+	}
+	must(t, spool.WriteSession(root, previous))
+	must(t, root.Close())
+
+	return previous
+}
+
+func (fixtureValue fixture) statusFile() string {
+	name := fixtureValue.options.Vendor + "-" + fixtureValue.options.Account + ".json"
+
+	return filepath.Join(fixtureValue.options.SpoolDir, "status", name)
+}
+
+func (fixtureValue fixture) wantNoStatus(t *testing.T) {
+	t.Helper()
+
+	_, err := os.Lstat(fixtureValue.statusFile())
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("status file written", err)
+	}
+}
+
 func TestEarlyFailuresKeepRestartHistory(t *testing.T) {
 	t.Parallel()
 
-	for name, prepare := range map[string]func(*fixture) error{
-		"approval_unavailable": func(f *fixture) error { return os.Remove(f.options.AliasFile) },
-		reasonInvalidDir:       func(f *fixture) error { return os.RemoveAll(f.options.directory()) },
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
+	fixtureValue := setup(t, vendorClaude)
+	previous := writePreviousStatus(t, fixtureValue)
+	must(t, os.Remove(fixtureValue.options.AliasFile))
+	checkRunnerExit(t, fixtureValue, 1)
 
-			fixtureValue := setup(t, vendorClaude)
-			root, err := spool.SessionRoot(fixtureValue.options.SpoolDir)
-			must(t, err)
+	got := fixtureValue.status(t)
+	if got.Reason != "approval_unavailable" || len(got.Restarts) != len(previous.Restarts)+1 ||
+		!slices.Equal(got.Restarts[:len(previous.Restarts)], previous.Restarts) {
+		t.Fatal(got)
+	}
+}
 
-			var previous spool.SessionStatus
+func TestPreLockFailuresLeaveStatusUntouched(t *testing.T) {
+	t.Parallel()
 
-			now := fixtureValue.clock.Now()
-			previous.Time, previous.Vendor, previous.Alias = now, vendorClaude, fixtureAlias
-			previous.Phase, previous.Reason = phaseStopped, reasonScheduled
-			previous.Restarts = []time.Time{
-				now.Add(-30 * time.Minute), now.Add(-20 * time.Minute), now.Add(-10 * time.Minute),
-			}
-			must(t, spool.WriteSession(root, previous))
-			must(t, root.Close())
-			must(t, prepare(&fixtureValue))
-			checkRunnerExit(t, fixtureValue, 1)
+	fixtureValue := setup(t, vendorClaude)
+	writePreviousStatus(t, fixtureValue)
 
-			got := fixtureValue.status(t)
-			if got.Reason != name || len(got.Restarts) != len(previous.Restarts)+1 ||
-				!slices.Equal(got.Restarts[:len(previous.Restarts)], previous.Restarts) {
-				t.Fatal(got)
-			}
-		})
+	before, err := os.ReadFile(fixtureValue.statusFile())
+	must(t, err)
+	must(t, os.RemoveAll(fixtureValue.options.directory()))
+	checkRunnerExit(t, fixtureValue, 1)
+
+	after, err := os.ReadFile(fixtureValue.statusFile())
+	must(t, err)
+
+	if !bytes.Equal(before, after) {
+		t.Fatal("pre-lock failure changed the published status")
+	}
+}
+
+func TestSecondRunnerLeavesPublishedStatusUntouched(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	writePreviousStatus(t, fixtureValue)
+
+	alias, err := fixtureValue.options.openAlias()
+	must(t, err)
+
+	defer alias.Close()
+
+	lock, err := lockAlias(alias)
+	must(t, err)
+
+	defer lock.Close()
+
+	before, err := os.ReadFile(fixtureValue.statusFile())
+	must(t, err)
+	checkRunnerExit(t, fixtureValue, 1)
+
+	after, err := os.ReadFile(fixtureValue.statusFile())
+	must(t, err)
+
+	if !bytes.Equal(before, after) || len(fixtureValue.calls(t)) != 0 {
+		t.Fatal("second runner touched the published status")
 	}
 }
 
@@ -1259,5 +1324,141 @@ func TestLoginStartFailure(t *testing.T) {
 	var out, diagnostic bytes.Buffer
 	if Login(context.Background(), options, slave, &out, &diagnostic) != 1 {
 		t.Fatal("missing binary reported as success")
+	}
+}
+
+func TestLoginRejectsLinkedSubdirectories(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct{ vendor, name string }{
+		{vendorClaude, directoryWork},
+		{vendorClaude, directoryHome},
+		{vendorClaude, "config"},
+		{vendorCodex, directoryWork},
+		{vendorCodex, directoryHome},
+		{vendorCodex, vendorCodex},
+	} {
+		t.Run(test.vendor+"/"+test.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, test.vendor)
+			target := filepath.Join(fixtureValue.options.directory(), test.name)
+			must(t, os.RemoveAll(target))
+			must(t, os.Symlink(fixtureValue.base, target))
+
+			master, slave, err := pty.Open()
+			must(t, err)
+
+			defer master.Close()
+			defer slave.Close()
+
+			var out, diagnostic bytes.Buffer
+
+			got := Login(context.Background(), fixtureValue.options, slave, &out, &diagnostic)
+			if got != 1 || strings.Contains(out.String(), "login finished") || len(fixtureValue.calls(t)) != 0 {
+				t.Fatal(got, out.String())
+			}
+		})
+	}
+}
+
+func TestLaunchRefusesAmbiguousSettingsKeys(t *testing.T) {
+	t.Parallel()
+
+	const deny = `["Agent","Task","Bash","Read","Write","Edit","MultiEdit","Glob","Grep","LS","NotebookEdit",` +
+		`"WebFetch","WebSearch","TodoWrite","Skill","AskUserQuestion","EnterPlanMode","ExitPlanMode",` +
+		`"EnterWorktree","ExitWorktree","ToolSearch","mcp__*"]`
+
+	safe := `"defaultMode":"dontAsk","disableBypassPermissionsMode":"disable","deny":` + deny
+	bad := `"defaultMode":"acceptEdits","deny":[]`
+
+	tests := map[string]string{
+		"duplicate exact key":      `{"permissions":{` + bad + `},"permissions":{` + safe + `}}`,
+		"permissions case variant": `{"permissions":{` + bad + `},"Permissions":{` + safe + `}}`,
+		"defaultMode variant":      `{"permissions":{` + safe + `,"DefaultMode":"acceptEdits"}}`,
+		"deny variant":             `{"permissions":{` + safe + `,"Deny":[]}}`,
+		"nested duplicate":         `{"permissions":{` + safe + `},"other":[{"a":1,"A":2}]}`,
+		"non string key":           `{1:2}`,
+		"bad nested value":         `{"permissions":}`,
+		"bad array value":          `{"other":[}`,
+	}
+
+	for name, content := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorClaude)
+			path := filepath.Join(fixtureValue.options.directory(), settingsPath)
+			must(t, os.WriteFile(path, []byte(content), 0o600))
+			wantRefusedLaunch(t, fixtureValue)
+		})
+	}
+}
+
+func TestLaunchAcceptsSettingsWithDistinctKeysAndNestedObjects(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	writeSettings(t, fixtureValue, func(permissions map[string]any) {
+		permissions["extra"] = []any{map[string]any{"a": 1, "b": []any{}}}
+	})
+
+	state := stateFor(t, fixtureValue)
+
+	err := state.launch()
+	if err != nil || state.child == nil {
+		t.Fatal("launch refused distinct keys", err)
+	}
+}
+
+func TestLoginEndsWhenGrandchildHoldsOutput(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+
+	var control fakeControl
+
+	control.Hold, control.IgnoreTerm, control.Grandchild = true, true, true
+	fixtureValue.control(t, control)
+
+	master, slave, err := pty.Open()
+	must(t, err)
+
+	defer master.Close()
+	defer slave.Close()
+
+	grandchildFile := filepath.Join(fixtureValue.options.directory(), "grandchild")
+
+	t.Cleanup(func() {
+		data, readErr := os.ReadFile(grandchildFile)
+		pid, parseErr := strconv.Atoi(string(data))
+
+		if readErr == nil && parseErr == nil {
+			//nolint:errcheck // The process may have ended.
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan int, 1)
+
+	var out, diagnostic bytes.Buffer
+
+	go func() { result <- Login(ctx, fixtureValue.options, slave, &out, &diagnostic) }()
+
+	fixtureValue.until(t, func() bool {
+		_, statErr := os.Stat(grandchildFile)
+
+		return statErr == nil
+	})
+	cancel()
+
+	select {
+	case got := <-result:
+		if got != 1 || strings.Contains(out.String(), "login finished") {
+			t.Fatal(got, out.String())
+		}
+	case <-time.After(5 * terminationGrace):
+		t.Fatal("login blocked on the output pipe after cancellation")
 	}
 }
