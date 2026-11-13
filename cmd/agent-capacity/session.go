@@ -31,7 +31,7 @@ func accountFlags(name string) (*flag.FlagSet, *session.Options) {
 	return flags, options
 }
 
-func loginCommand(args []string, input *os.File, output, diagnostic io.Writer) int {
+func loginCommand(ctx context.Context, args []string, input *os.File, output, diagnostic io.Writer) int {
 	flags, options := accountFlags("login")
 	if flags.Parse(args) != nil || flags.NArg() != 0 {
 		fmt.Fprintln(diagnostic, "login refused")
@@ -39,7 +39,7 @@ func loginCommand(args []string, input *os.File, output, diagnostic io.Writer) i
 		return argumentExit
 	}
 
-	return session.Login(*options, input, output, diagnostic)
+	return session.Login(ctx, *options, input, output, diagnostic)
 }
 
 func sessionCommand(ctx context.Context, args []string, output io.Writer) int {

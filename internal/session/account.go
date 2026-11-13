@@ -6,14 +6,17 @@ package session
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 
@@ -118,11 +121,33 @@ func (options Options) openAliasAs(uid int) (*os.Root, error) {
 	return root, nil
 }
 
-// workDirectory rejects a missing or linked work directory.
-func workDirectory(alias *os.Root) error {
-	info, err := alias.Lstat("work")
+func realDirectory(alias *os.Root, name string, optional bool) error {
+	info, err := alias.Lstat(name)
+	if optional && errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+
 	if err != nil || !info.IsDir() {
 		return ErrArguments
+	}
+
+	return nil
+}
+
+func checkDirectories(alias *os.Root, vendor string) error {
+	vendorDirectory := "config"
+	if vendor == vendorCodex {
+		vendorDirectory = vendorCodex
+	}
+
+	if realDirectory(alias, "work", false) != nil {
+		return ErrArguments
+	}
+
+	for _, name := range []string{"home", vendorDirectory} {
+		if realDirectory(alias, name, true) != nil {
+			return ErrArguments
+		}
 	}
 
 	return nil
@@ -161,11 +186,11 @@ func (options Options) command(args ...string) *exec.Cmd {
 
 // Login delegates all authentication to the vendor and forwards terminal streams. Refusals print one fixed line.
 // It never captures vendor output.
-func Login(options Options, input *os.File, output, diagnostic io.Writer) int {
-	return loginAs(options, input, output, diagnostic, os.Getuid())
+func Login(ctx context.Context, options Options, input *os.File, output, diagnostic io.Writer) int {
+	return loginAs(ctx, options, input, output, diagnostic, os.Getuid())
 }
 
-func loginAs(options Options, input *os.File, output, diagnostic io.Writer, uid int) int {
+func loginAs(ctx context.Context, options Options, input *os.File, output, diagnostic io.Writer, uid int) int {
 	approved, err := options.Approved()
 	if err != nil || !approved {
 		fmt.Fprintln(diagnostic, "login refused")
@@ -197,13 +222,42 @@ func loginAs(options Options, input *os.File, output, diagnostic io.Writer, uid 
 	cmd.Dir = options.directory()
 
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = input, output, diagnostic
-	if cmd.Run() != nil {
+	if waitLogin(ctx, cmd) != nil {
 		return 1
 	}
 
 	fmt.Fprintf(output, "%s login finished\n", options.Account)
 
 	return 0
+}
+
+func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
+	if cmd.Start() != nil {
+		return ErrArguments
+	}
+
+	done := make(chan error, 1)
+
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		//nolint:errcheck // The child may already have exited.
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+
+		select {
+		case <-done: //nolint:errcheck // Shutdown only needs process completion.
+		case <-time.After(terminationGrace):
+			//nolint:errcheck // The child may already have exited.
+			_ = cmd.Process.Kill()
+
+			<-done //nolint:errcheck // Shutdown only needs process completion.
+		}
+
+		return ErrArguments
+	}
 }
 
 func lockAlias(root *os.Root) (*os.File, error) {

@@ -33,6 +33,7 @@ const (
 	reasonStatusFailed = "status_failed"
 	reasonInvalidDir   = "invalid_directory"
 	reasonScheduled    = "scheduled_restart"
+	directoryWork      = "work"
 )
 
 type fakeControl struct {
@@ -111,7 +112,7 @@ func fakeSetup() (fakeControl, error) {
 	}
 
 	base := dir
-	if filepath.Base(dir) == "work" {
+	if filepath.Base(dir) == directoryWork {
 		base = filepath.Dir(dir)
 	}
 
@@ -449,7 +450,7 @@ func TestUnapprovedNeverRunsVendor(t *testing.T) {
 	must(t, os.WriteFile(fixtureValue.options.AliasFile, []byte("codex sample\nclaude another\n"), 0o600))
 
 	var out bytes.Buffer
-	if Login(fixtureValue.options, os.Stdin, &out, &out) != 2 {
+	if Login(context.Background(), fixtureValue.options, os.Stdin, &out, &out) != 2 {
 		t.Fatal("login accepted")
 	}
 
@@ -475,13 +476,13 @@ func TestLoginDirectoryAndTerminal(t *testing.T) {
 
 	defer input.Close()
 
-	if Login(fixtureValue.options, input, &out, &out) != 2 {
+	if Login(context.Background(), fixtureValue.options, input, &out, &out) != 2 {
 		t.Fatal("accepted no terminal")
 	}
 
 	setMode(t, fixtureValue.options.directory(), 0o755)
 
-	if Login(fixtureValue.options, input, &out, &out) != 2 {
+	if Login(context.Background(), fixtureValue.options, input, &out, &out) != 2 {
 		t.Fatal("accepted public directory")
 	}
 
@@ -504,7 +505,7 @@ func TestLoginDirectoryAndTerminal(t *testing.T) {
 		t.Fatal("foreign ownership accepted")
 	}
 
-	if loginAs(fixtureValue.options, input, &out, &out, os.Getuid()+1) != 2 {
+	if loginAs(context.Background(), fixtureValue.options, input, &out, &out, os.Getuid()+1) != 2 {
 		t.Fatal("login accepted foreign ownership")
 	}
 
@@ -527,7 +528,7 @@ func TestLoginForwardsVendorAndUsesAliasEnvironment(t *testing.T) {
 			defer slave.Close()
 
 			var out, diagnostic bytes.Buffer
-			if Login(fixtureValue.options, slave, &out, &diagnostic) != 0 {
+			if Login(context.Background(), fixtureValue.options, slave, &out, &diagnostic) != 0 {
 				t.Fatal("login failed")
 			}
 

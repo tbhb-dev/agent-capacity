@@ -290,9 +290,9 @@ func TestReadSessionRejectsUnusableStatus(t *testing.T) {
 func swapHooks(t *testing.T) {
 	t.Helper()
 
-	origLstat, origStat, origRename, origFstat := lstat, stat, rename, fstat
+	origLstat, origStat, origRename, origFstat, origSync := lstat, stat, rename, fstat, syncDir
 
-	t.Cleanup(func() { lstat, stat, rename, fstat = origLstat, origStat, origRename, origFstat })
+	t.Cleanup(func() { lstat, stat, rename, fstat, syncDir = origLstat, origStat, origRename, origFstat, origSync })
 }
 
 func lstatFailing(target string) func(*os.Root, string) (fs.FileInfo, error) {
@@ -349,6 +349,37 @@ func TestWriteSessionRejectsStatusFileChanges(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(dir, "status"))
 	require.NoError(t, err)
 	require.Empty(t, entries)
+}
+
+//nolint:paralleltest // Swapped hooks are package variables.
+func TestWriteSessionSyncsStatusDirectory(t *testing.T) {
+	_, root := testSessionRoot(t)
+	swapHooks(t)
+
+	synced := 0
+	passthrough := syncDir
+	syncDir = func(dir *os.Root) error {
+		synced++
+
+		return passthrough(dir)
+	}
+
+	require.NoError(t, WriteSession(root, validStatus()))
+	require.Equal(t, 1, synced)
+
+	syncDir = func(*os.Root) error { return fs.ErrPermission }
+
+	require.ErrorIs(t, WriteSession(root, validStatus()), errSessionState)
+}
+
+func TestSyncRootReportsOpenFailure(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.OpenRoot(canonicalTempDir(t))
+	require.NoError(t, err)
+	require.NoError(t, syncRoot(root))
+	require.NoError(t, root.Close())
+	require.Error(t, syncRoot(root))
 }
 
 //nolint:paralleltest // Every test shares the hook variables.

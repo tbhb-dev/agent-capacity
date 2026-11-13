@@ -85,6 +85,10 @@ func (r Runner) Run(ctx context.Context) int {
 	state.status.Alias, state.status.Vendor = options.Account, options.Vendor
 
 	state.status.Phase, state.status.Reason = phaseChecking, reasonNone
+	if state.loadRestarts() != nil {
+		return state.finish(1, "invalid_state")
+	}
+
 	if code, done := state.initialApproval(); done {
 		return code
 	}
@@ -97,7 +101,7 @@ func (r Runner) Run(ctx context.Context) int {
 
 	state.alias = alias
 
-	if workDirectory(alias) != nil {
+	if checkDirectories(alias, options.Vendor) != nil {
 		return state.finish(1, "invalid_directory")
 	}
 
@@ -107,9 +111,6 @@ func (r Runner) Run(ctx context.Context) int {
 	}
 	defer lock.Close()
 
-	if state.loadRestarts() != nil {
-		return state.finish(1, "invalid_state")
-	}
 	defer state.stopChildren()
 
 	return state.loop(ctx)

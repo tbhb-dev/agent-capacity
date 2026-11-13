@@ -164,7 +164,7 @@ func runCommand(ctx context.Context, args []string, out io.Writer, logger *slog.
 	case "statusline":
 		return statusline(ctx, args[1:], os.Stdin, logger), true
 	case "login":
-		return loginCommand(args[1:], os.Stdin, out, os.Stderr), true
+		return loginCommand(ctx, args[1:], os.Stdin, out, os.Stderr), true
 	case "session":
 		return sessionCommand(ctx, args[1:], out), true
 	default:

@@ -93,16 +93,27 @@ func SnapshotTime(root *os.Root, vendor, account string) (time.Time, error) {
 	return info.ModTime(), nil
 }
 
-// Tests replace these four calls to fail the status directory or file after a check. No input
-// triggers that change inside one function. The hook lets tests trigger the seven outcomes it guards.
+// Tests replace these five calls to fail the status directory or file after a check. No input
+// triggers that change inside one function. The hook lets tests trigger the eight outcomes it guards.
 //
 //nolint:gochecknoglobals // Tests replace the calls to simulate a concurrent filesystem change.
 var (
-	lstat  = (*os.Root).Lstat
-	stat   = (*os.Root).Stat
-	rename = (*os.Root).Rename
-	fstat  = (*os.File).Stat
+	lstat   = (*os.Root).Lstat
+	stat    = (*os.Root).Stat
+	rename  = (*os.Root).Rename
+	fstat   = (*os.File).Stat
+	syncDir = syncRoot
 )
+
+// syncRoot flushes the directory entries of dir.
+func syncRoot(dir *os.Root) error {
+	handle, err := dir.Open(".")
+	if err != nil {
+		return errSessionState
+	}
+
+	return errors.Join(handle.Sync(), handle.Close())
+}
 
 func statusRoot(root *os.Root) (*os.Root, error) {
 	err := root.Mkdir("status", sessionDirectoryMode)
@@ -171,7 +182,7 @@ func WriteSession(root *os.Root, status SessionStatus) error {
 		return errSessionState
 	}
 
-	if rename(dir, temporary, name) != nil {
+	if rename(dir, temporary, name) != nil || syncDir(dir) != nil {
 		return errSessionState
 	}
 

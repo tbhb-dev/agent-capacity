@@ -4,11 +4,13 @@
 package session //nolint:testpackage // Tests inject the clock and inspect private process boundaries.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -256,6 +258,8 @@ func TestTerminationEscalatesAfterGrace(t *testing.T) {
 	}
 }
 
+const maximumAttempts = 200
+
 func TestRepeatedStatusFailuresReachRestartLimit(t *testing.T) {
 	t.Parallel()
 	fixtureValue := setup(t, vendorClaude)
@@ -265,7 +269,11 @@ func TestRepeatedStatusFailuresReachRestartLimit(t *testing.T) {
 	control.Status = 2
 	fixtureValue.control(t, control)
 
-	for len(fixtureValue.status(t).Restarts) < restartMaximum {
+	for attempt := 0; len(fixtureValue.status(t).Restarts) < restartMaximum; attempt++ {
+		if attempt == maximumAttempts {
+			t.Fatal("restart limit not reached after", maximumAttempts, "attempts")
+		}
+
 		before := len(fixtureValue.status(t).Restarts)
 		_, result := fixtureValue.run(t)
 		fixtureValue.until(t, func() bool { return len(result) == 1 })
@@ -273,6 +281,8 @@ func TestRepeatedStatusFailuresReachRestartLimit(t *testing.T) {
 		got := <-result
 		// A forked child of another parallel test can still hold the alias lock. The runner then refuses the run.
 		if len(fixtureValue.status(t).Restarts) == before {
+			time.Sleep(10 * time.Millisecond)
+
 			continue
 		}
 
@@ -515,7 +525,9 @@ func TestLoginRefusalAndVendorFailure(t *testing.T) {
 	invalid.Account = badAccount
 
 	var out, diagnostic strings.Builder
-	if Login(invalid, os.Stdin, &out, &diagnostic) != refusalExit || diagnostic.String() != "login refused\n" {
+
+	refused := Login(context.Background(), invalid, os.Stdin, &out, &diagnostic)
+	if refused != refusalExit || diagnostic.String() != "login refused\n" {
 		t.Fatal("invalid options not refused")
 	}
 
@@ -532,7 +544,8 @@ func TestLoginRefusalAndVendorFailure(t *testing.T) {
 
 	out.Reset()
 
-	if Login(fixtureValue.options, slave, &out, &diagnostic) != 1 || strings.Contains(out.String(), "login finished") {
+	exit := Login(context.Background(), fixtureValue.options, slave, &out, &diagnostic)
+	if exit != 1 || strings.Contains(out.String(), "login finished") {
 		t.Fatal("vendor failure reported as success")
 	}
 }
@@ -1087,5 +1100,164 @@ func TestCodexLaunchSkipsClaudeSettings(t *testing.T) {
 	err := state.launch()
 	if err != nil || state.child == nil {
 		t.Fatal("codex launch needs no Claude settings", err)
+	}
+}
+
+func TestRunRejectsLinkedSubdirectories(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct{ vendor, name string }{
+		{vendorClaude, directoryWork},
+		{vendorClaude, "home"},
+		{vendorClaude, "config"},
+		{vendorCodex, directoryWork},
+		{vendorCodex, "home"},
+		{vendorCodex, vendorCodex},
+	} {
+		t.Run(test.vendor+"/"+test.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, test.vendor)
+			target := filepath.Join(fixtureValue.options.directory(), test.name)
+			must(t, os.RemoveAll(target))
+			must(t, os.Symlink(fixtureValue.base, target))
+			checkRunnerExit(t, fixtureValue, 1)
+
+			if fixtureValue.status(t).Reason != reasonInvalidDir {
+				t.Fatal(fixtureValue.status(t))
+			}
+		})
+	}
+}
+
+func TestCheckDirectoriesAllowsMissingOptionalDirectories(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorCodex)
+	alias, err := fixtureValue.options.openAlias()
+	must(t, err)
+
+	defer alias.Close()
+
+	must(t, os.Remove(filepath.Join(fixtureValue.options.directory(), "home")))
+	must(t, os.Remove(filepath.Join(fixtureValue.options.directory(), vendorCodex)))
+
+	if checkDirectories(alias, vendorCodex) != nil {
+		t.Fatal("missing optional directories refused")
+	}
+
+	file := filepath.Join(fixtureValue.options.directory(), "home")
+	must(t, os.WriteFile(file, nil, 0o600))
+
+	if checkDirectories(alias, vendorCodex) == nil {
+		t.Fatal("regular file accepted as home")
+	}
+}
+
+func TestEarlyFailuresKeepRestartHistory(t *testing.T) {
+	t.Parallel()
+
+	for name, prepare := range map[string]func(*fixture) error{
+		"approval_unavailable": func(f *fixture) error { return os.Remove(f.options.AliasFile) },
+		reasonInvalidDir:       func(f *fixture) error { return os.RemoveAll(f.options.directory()) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorClaude)
+			root, err := spool.SessionRoot(fixtureValue.options.SpoolDir)
+			must(t, err)
+
+			var previous spool.SessionStatus
+
+			now := fixtureValue.clock.Now()
+			previous.Time, previous.Vendor, previous.Alias = now, vendorClaude, fixtureAlias
+			previous.Phase, previous.Reason = phaseStopped, reasonScheduled
+			previous.Restarts = []time.Time{
+				now.Add(-30 * time.Minute), now.Add(-20 * time.Minute), now.Add(-10 * time.Minute),
+			}
+			must(t, spool.WriteSession(root, previous))
+			must(t, root.Close())
+			must(t, prepare(&fixtureValue))
+			checkRunnerExit(t, fixtureValue, 1)
+
+			got := fixtureValue.status(t)
+			if got.Reason != name || len(got.Restarts) != len(previous.Restarts)+1 ||
+				!slices.Equal(got.Restarts[:len(previous.Restarts)], previous.Restarts) {
+				t.Fatal(got)
+			}
+		})
+	}
+}
+
+func TestLoginEndsWhenContextEnds(t *testing.T) {
+	t.Parallel()
+
+	for name, ignoreTerm := range map[string]bool{"terminated": false, "killed": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorClaude)
+
+			var control fakeControl
+
+			control.Hold, control.IgnoreTerm = true, ignoreTerm
+			fixtureValue.control(t, control)
+
+			master, slave, err := pty.Open()
+			must(t, err)
+
+			defer master.Close()
+			defer slave.Close()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			result := make(chan int, 1)
+
+			var out, diagnostic bytes.Buffer
+
+			go func() { result <- Login(ctx, fixtureValue.options, slave, &out, &diagnostic) }()
+
+			fixtureValue.until(t, func() bool { return len(fixtureValue.calls(t)) == 1 })
+
+			if ignoreTerm {
+				ready := filepath.Join(fixtureValue.options.directory(), "ready")
+				fixtureValue.until(t, func() bool {
+					_, statErr := os.Stat(ready)
+
+					return statErr == nil
+				})
+			}
+
+			pid := fixtureValue.calls(t)[0].PID
+
+			cancel()
+
+			if got := <-result; got != 1 || strings.Contains(out.String(), "login finished") {
+				t.Fatal(got, out.String())
+			}
+
+			if !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+				t.Fatal("login child survived cancellation")
+			}
+		})
+	}
+}
+
+func TestLoginStartFailure(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	options := fixtureValue.options
+	options.Binary = filepath.Join(fixtureValue.base, "missing")
+
+	master, slave, err := pty.Open()
+	must(t, err)
+
+	defer master.Close()
+	defer slave.Close()
+
+	var out, diagnostic bytes.Buffer
+	if Login(context.Background(), options, slave, &out, &diagnostic) != 1 {
+		t.Fatal("missing binary reported as success")
 	}
 }

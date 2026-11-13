@@ -45,15 +45,15 @@ func TestSessionCommandArguments(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if loginCommand([]string{unknownFlag}, os.Stdin, &out, &out) != 2 {
+	if loginCommand(context.Background(), []string{unknownFlag}, os.Stdin, &out, &out) != 2 {
 		t.Fatal("login accepted arguments")
 	}
 
-	if loginCommand([]string{extraArgument}, os.Stdin, &out, &out) != 2 {
+	if loginCommand(context.Background(), []string{extraArgument}, os.Stdin, &out, &out) != 2 {
 		t.Fatal("login accepted a positional argument")
 	}
 
-	if loginCommand(nil, os.Stdin, &out, &out) != 2 {
+	if loginCommand(context.Background(), nil, os.Stdin, &out, &out) != 2 {
 		t.Fatal("login accepted missing paths")
 	}
 }
