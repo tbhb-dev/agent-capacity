@@ -69,7 +69,7 @@ jobs:
       # condition coverage, the docs bundle and REUSE checks, the import
       # contracts, and the preset staleness test.
       - name: Test
-        run: bazelisk test --config=ci -- //... -//:gomutants_test
+        run: bazelisk test --config=ci --build_tests_only -- //... -//:gomutants_test
 
       - name: Build the release binary
         env:
