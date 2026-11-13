@@ -1,1 +1,3 @@
-# Refer to [AGENTS.md](AGENTS.md)
+# Claude Code
+
+@AGENTS.md
