@@ -185,6 +185,16 @@ func TestFailedRearmPreservesInvalidLatch(t *testing.T) {
 
 	t.Cleanup(func() { setSpoolMode(t, dir, 0o700) })
 	setSpoolMode(t, dir, 0o500)
+
+	calls := 0
+	keepalive.now = func() time.Time {
+		calls++
+		if calls == 2 {
+			setSpoolMode(t, dir, 0o700)
+		}
+
+		return now
+	}
 	require.ErrorIs(t, keepalive.Rearm(), ErrStateInvalid)
 	setSpoolMode(t, dir, 0o700)
 	unarmedStep(t, keepalive)
@@ -1276,6 +1286,159 @@ func TestRollbackBetweenAdapterSamples(t *testing.T) {
 	}
 }
 
+func TestRollbackBetweenSteps(t *testing.T) {
+	t.Parallel()
+
+	for _, fixture := range []struct {
+		name   string
+		sample int
+	}{
+		{"adapter", 2},
+		{"after save", 4},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := enrolledKeepalive(t, &now)
+			calls := 0
+			keepalive.now = func() time.Time {
+				calls++
+				if calls >= fixture.sample {
+					return now.Add(time.Second)
+				}
+
+				return now
+			}
+
+			step(t, keepalive, fixtureNone, fixtureAdmit)
+
+			now = now.Add(500 * time.Millisecond)
+			keepalive.now = func() time.Time { return now }
+
+			invalidStep(t, keepalive)
+			assert.True(t, keepalive.invalidState)
+
+			now = instant().Add(time.Second)
+
+			unarmedStep(t, keepalive)
+
+			now = instant().Add(6 * time.Hour)
+
+			unarmedStep(t, keepalive)
+			require.NoError(t, keepalive.Rearm())
+			step(t, keepalive, fixtureNone, fixtureAdmit)
+		})
+	}
+}
+
+func TestRollbackBetweenRearmAndStep(t *testing.T) {
+	t.Parallel()
+
+	now := instant()
+	keepalive := enrolledKeepalive(t, &now)
+	calls := 0
+	keepalive.now = func() time.Time {
+		calls++
+		if calls > 1 {
+			return now.Add(time.Second)
+		}
+
+		return now
+	}
+
+	require.NoError(t, keepalive.Rearm())
+
+	now = now.Add(500 * time.Millisecond)
+	keepalive.now = func() time.Time { return now }
+
+	invalidStep(t, keepalive)
+	assert.True(t, keepalive.invalidState)
+
+	now = instant().Add(time.Second)
+
+	unarmedStep(t, keepalive)
+	require.NoError(t, keepalive.Rearm())
+	step(t, keepalive, fixtureNone, fixtureAdmit)
+}
+
+func TestStepCheckpointFailureClosesGate(t *testing.T) {
+	t.Parallel()
+
+	for _, fixture := range []struct {
+		name    string
+		failure int
+	}{
+		{"first write", 1},
+		{"checkpoint", 2},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := enrolledKeepalive(t, &now)
+			keepalive.source = sourceFunc(func(_ context.Context, at time.Time) (Snapshot, error) {
+				now = now.Add(time.Second)
+
+				return snapshotAt(at), nil
+			})
+
+			save := keepalive.save
+			calls := 0
+			keepalive.save = func(state State, initial bool) error {
+				calls++
+				if calls == fixture.failure || (fixture.failure == 2 && calls > fixture.failure) {
+					return ErrStateInvalid
+				}
+
+				return save(state, initial)
+			}
+
+			invalidStep(t, keepalive)
+			keepalive.save = save
+			unarmedStep(t, keepalive)
+
+			if fixture.failure == 2 {
+				state, err := keepalive.store.load(keepalive.enrollment, now)
+				require.NoError(t, err)
+				assert.Equal(t, now, state.LastAt)
+			}
+
+			now = now.Add(6 * time.Hour)
+			keepalive.source = sourceFunc(readSnapshot)
+
+			require.NoError(t, keepalive.Rearm())
+			step(t, keepalive, fixtureNone, fixtureAdmit)
+		})
+	}
+}
+
+func TestRearmCheckpointFailureClosesGate(t *testing.T) {
+	t.Parallel()
+
+	now := instant()
+	keepalive := enrolledKeepalive(t, &now)
+	dir := keepalive.store.Dir
+
+	t.Cleanup(func() { setSpoolMode(t, dir, 0o700) })
+
+	calls := 0
+	keepalive.now = func() time.Time {
+		calls++
+		if calls == 2 {
+			setSpoolMode(t, dir, 0o500)
+		}
+
+		return now
+	}
+
+	require.ErrorIs(t, keepalive.Rearm(), ErrStateInvalid)
+	setSpoolMode(t, dir, 0o700)
+	unarmedStep(t, keepalive)
+	require.NoError(t, keepalive.Rearm())
+	step(t, keepalive, fixtureNone, fixtureAdmit)
+}
+
 func TestBudgetLatchThroughSixHours(t *testing.T) {
 	t.Parallel()
 
@@ -1402,9 +1565,8 @@ func TestSaveRecheckFailures(t *testing.T) {
 
 			save := keepalive.save
 			path := filepath.Join(keepalive.store.Dir, fixtureStop)
-			keepalive.save = func(state State, initial bool) error {
+			recheck := func(state State, initial bool) error {
 				keepalive.save = save
-				require.NoError(t, save(state, initial))
 
 				switch fixture.failure {
 				case fixtureStopRead:
@@ -1417,7 +1579,12 @@ func TestSaveRecheckFailures(t *testing.T) {
 					cancel()
 				}
 
-				return nil
+				return save(state, initial)
+			}
+			keepalive.save = func(state State, initial bool) error {
+				keepalive.save = recheck
+
+				return save(state, initial)
 			}
 
 			status, decision, err := keepalive.Step(ctx, false)

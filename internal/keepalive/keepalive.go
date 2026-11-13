@@ -103,7 +103,15 @@ func (keepalive *Keepalive) Rearm() error {
 		return ErrStateInvalid
 	}
 
-	if !validState(state, keepalive.enrollment, keepalive.now()) {
+	last := keepalive.now()
+	if !validState(state, keepalive.enrollment, last) {
+		return ErrStateInvalid
+	}
+
+	// Persist the sample from the write recheck.
+	state.LastAt = last
+
+	if keepalive.store.rearm(state) != nil {
 		return ErrStateInvalid
 	}
 
@@ -172,11 +180,21 @@ func (keepalive *Keepalive) Step(ctx context.Context, stopSignal bool) (Status, 
 func (keepalive *Keepalive) savedStep(
 	ctx context.Context, stopSignal bool, now, last time.Time, state State, decision Decision,
 ) (Status, Decision, error) {
+	state.LastAt = last
+
 	if keepalive.save(state, false) != nil {
 		return keepalive.invalid(ctx, stopSignal, now, &state)
 	}
 
-	if keepalive.now().Before(last) {
+	sampled := keepalive.now()
+	if sampled.Before(last) {
+		return keepalive.invalid(ctx, stopSignal, now, &state)
+	}
+
+	// Persist the sample from the write recheck.
+	state.LastAt = sampled
+
+	if keepalive.save(state, false) != nil {
 		return keepalive.invalid(ctx, stopSignal, now, &state)
 	}
 
