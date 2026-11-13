@@ -64,7 +64,7 @@ func New(store Store, enrollment Enrollment, allow []string, now func() time.Tim
 func (keepalive *Keepalive) Enroll() error {
 	keepalive.invalidState = true
 
-	now := keepalive.now()
+	now := keepalive.sample()
 
 	state := State{
 		Status: Status{
@@ -83,7 +83,7 @@ func (keepalive *Keepalive) Enroll() error {
 // Durable stops stay in place until the next armed Step succeeds.
 func (keepalive *Keepalive) Rearm() error {
 	keepalive.invalidState = true
-	now := keepalive.now()
+	now := keepalive.sample()
 
 	state, err := keepalive.store.load(keepalive.enrollment, now)
 	// gomutants:disable-next-line BRANCH_IF reason="Failed loads return empty state that also fails save."
@@ -103,7 +103,7 @@ func (keepalive *Keepalive) Rearm() error {
 		return ErrStateInvalid
 	}
 
-	last := keepalive.now()
+	last := keepalive.sample()
 	if !validState(state, keepalive.enrollment, last) {
 		return ErrStateInvalid
 	}
@@ -132,7 +132,7 @@ func (keepalive *Keepalive) Rearm() error {
 // Call at least once per second while running.
 // The caller must check stop controls again at delivery.
 func (keepalive *Keepalive) Step(ctx context.Context, stopSignal bool) (Status, Decision, error) {
-	now := keepalive.now()
+	now := keepalive.sample()
 
 	if keepalive.invalidState {
 		return keepalive.blocked(ctx, stopSignal, now)
@@ -168,6 +168,8 @@ func (keepalive *Keepalive) Step(ctx context.Context, stopSignal bool) (Status, 
 	if decision.Action == "observe" {
 		state, decision, err = keepalive.observe(ctx, state, now, &last)
 		if err != nil {
+			state.LastAt = last
+
 			return keepalive.invalid(ctx, stopSignal, now, &state)
 		}
 	}
@@ -175,6 +177,11 @@ func (keepalive *Keepalive) Step(ctx context.Context, stopSignal bool) (Status, 
 	keepalive.rememberInvalid(state.Status)
 
 	return keepalive.savedStep(ctx, stopSignal, now, last, state, decision)
+}
+
+func (keepalive *Keepalive) sample() time.Time {
+	// gomutants:disable-next-line INTEGER_INCREMENT,INTEGER_DECREMENT reason="Both mutants leave wall time unchanged."
+	return keepalive.now().Round(0)
 }
 
 func (keepalive *Keepalive) savedStep(
@@ -186,7 +193,7 @@ func (keepalive *Keepalive) savedStep(
 		return keepalive.invalid(ctx, stopSignal, now, &state)
 	}
 
-	sampled := keepalive.now()
+	sampled := keepalive.sample()
 	if sampled.Before(last) {
 		return keepalive.invalid(ctx, stopSignal, now, &state)
 	}
@@ -238,7 +245,7 @@ func (keepalive *Keepalive) observe(
 	ctx context.Context, state State, now time.Time, last *time.Time,
 ) (State, Decision, error) {
 	observation, err := keepalive.observer.Observe(ctx, now)
-	sampled := keepalive.now()
+	sampled := keepalive.sample()
 
 	if sampled.Before(*last) {
 		return state, Decision{}, ErrStateInvalid
@@ -276,7 +283,7 @@ func (keepalive *Keepalive) observe(
 	}
 
 	snapshot, err := keepalive.source.Read(ctx, now)
-	sampled = keepalive.now()
+	sampled = keepalive.sample()
 
 	if sampled.Before(*last) {
 		return state, Decision{}, ErrStateInvalid
@@ -333,7 +340,10 @@ func (keepalive *Keepalive) saveInvalid(state *State, now time.Time) error {
 	}
 
 	latch(state, "ledger_lost", now)
-	state.LastAt = now
+
+	if now.After(state.LastAt) {
+		state.LastAt = now
+	}
 
 	return keepalive.save(*state, false)
 }

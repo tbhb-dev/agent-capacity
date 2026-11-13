@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -196,6 +197,7 @@ func TestFailedRearmPreservesInvalidLatch(t *testing.T) {
 		return now
 	}
 	require.ErrorIs(t, keepalive.Rearm(), ErrStateInvalid)
+	assert.Equal(t, 1, calls)
 	setSpoolMode(t, dir, 0o700)
 	unarmedStep(t, keepalive)
 	require.NoError(t, keepalive.Rearm())
@@ -704,7 +706,7 @@ func unarmedStep(t *testing.T, keepalive *Keepalive) {
 
 	status, decision, err := keepalive.Step(t.Context(), false)
 	require.NoError(t, err)
-	assert.Equal(t, fixtureNotArmed, status.Reason)
+	require.Equal(t, fixtureNotArmed, status.Reason)
 	assert.Equal(t, phaseStopped, status.Phase)
 	assert.Equal(t, fixtureNone, decision.Action)
 	assert.True(t, decision.CheckAt.IsZero())
@@ -1477,7 +1479,7 @@ func TestBudgetLatchThroughSixHours(t *testing.T) {
 			stopped, err := keepalive.store.ReadStatus(fixtureWork)
 			require.NoError(t, err)
 			assert.Equal(t, phaseStopped, stopped.Phase)
-			assert.True(t, keepalive.invalidState)
+			require.True(t, keepalive.invalidState)
 
 			for elapsed := fixture.interval + time.Minute; elapsed <= 6*time.Hour; elapsed += time.Minute {
 				now = instant().Add(elapsed)
@@ -1604,6 +1606,143 @@ func TestSaveRecheckFailures(t *testing.T) {
 			}
 
 			unarmedStep(t, keepalive)
+		})
+	}
+}
+
+func failAfterClockSamples(t *testing.T, keepalive *Keepalive, start time.Time, failure string) {
+	t.Helper()
+
+	high := start.Add(2 * time.Second)
+	path := filepath.Join(keepalive.store.Dir, fixtureStop)
+	calls := 0
+	keepalive.now = func() time.Time {
+		calls++
+
+		samples := []time.Time{start, start.Add(time.Second), high}
+
+		if failure == fixtureClockRollback {
+			samples = []time.Time{start, high, start.Add(time.Second)}
+		}
+
+		return samples[calls-1]
+	}
+
+	if failure == fixtureStopRead {
+		keepalive.observer = observationAt(time.Time{}, errors.ErrUnsupported)
+		save := keepalive.save
+		writes := 0
+		keepalive.save = func(state State, initial bool) error {
+			writes++
+			if writes <= 2 {
+				assert.Equal(t, start.Add(time.Duration(writes)*time.Second), state.LastAt)
+			}
+
+			require.NoError(t, save(state, initial))
+
+			if writes == 2 {
+				require.NoError(t, os.Mkdir(path, 0o700))
+			}
+
+			return nil
+		}
+	}
+}
+
+func TestInvalidSavePreservesClockHighWater(t *testing.T) {
+	t.Parallel()
+
+	t.Run("later start", func(t *testing.T) {
+		t.Parallel()
+
+		now := instant()
+		keepalive := enrolledKeepalive(t, &now)
+		state, err := keepalive.store.load(keepalive.enrollment, now)
+		require.NoError(t, err)
+
+		now = now.Add(time.Second)
+
+		require.NoError(t, keepalive.saveInvalid(&state, now))
+		stored, err := keepalive.store.load(keepalive.enrollment, now)
+		require.NoError(t, err)
+		assert.Equal(t, now, stored.LastAt)
+		assert.Equal(t, fixtureStateInvalid, stored.Status.Reason)
+	})
+
+	for _, failure := range []string{fixtureStopRead, fixtureClockRollback} {
+		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
+
+			now := instant()
+			keepalive := enrolledKeepalive(t, &now)
+			start := now
+			high := start.Add(2 * time.Second)
+			path := filepath.Join(keepalive.store.Dir, fixtureStop)
+			failAfterClockSamples(t, keepalive, start, failure)
+
+			invalidStep(t, keepalive)
+
+			if failure == fixtureStopRead {
+				require.NoError(t, os.Remove(path))
+			}
+
+			state, err := keepalive.store.load(keepalive.enrollment, high)
+			require.NoError(t, err)
+			assert.Equal(t, high, state.LastAt)
+			assert.Equal(t, fixtureStateInvalid, state.Status.Reason)
+
+			now = start.Add(500 * time.Millisecond)
+			keepalive.now = func() time.Time { return now }
+			keepalive.observer = observationAt(now, nil)
+			require.ErrorIs(t, keepalive.Rearm(), ErrStateInvalid)
+			unarmedStep(t, keepalive)
+		})
+	}
+}
+
+func TestMonotonicClockRollback(t *testing.T) {
+	t.Parallel()
+
+	for _, fixture := range []struct {
+		name   string
+		sample int
+	}{
+		{"after observer", 2},
+		{"after source", 3},
+		{"after save", 4},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			t.Parallel()
+
+			start := time.Now().Add(time.Hour)
+			rolledBack := start.Add(-time.Nanosecond)
+			// Advance only the monotonic field while the wall clock rolls back.
+			field := reflect.ValueOf(&rolledBack).Elem().FieldByName("ext")
+			reflect.NewAt(field.Type(), field.Addr().UnsafePointer()).Elem().SetInt(field.Int() + int64(time.Second))
+			require.True(t, rolledBack.After(start))
+			require.True(t, rolledBack.Round(0).Before(start.Round(0)))
+
+			now := start.Round(0)
+			keepalive := enrolledKeepalive(t, &now)
+			keepalive.source = sourceFunc(readSnapshot)
+			keepalive.observer = observationAt(now, nil)
+			calls := 0
+			keepalive.now = func() time.Time {
+				calls++
+				if calls >= fixture.sample {
+					return rolledBack
+				}
+
+				return start
+			}
+
+			invalidStep(t, keepalive)
+			assert.True(t, keepalive.invalidState)
+			keepalive.now = func() time.Time { return now }
+			unarmedStep(t, keepalive)
+			state, err := keepalive.store.load(keepalive.enrollment, now)
+			require.NoError(t, err)
+			assert.Equal(t, fixtureStateInvalid, state.Status.Reason)
 		})
 	}
 }
