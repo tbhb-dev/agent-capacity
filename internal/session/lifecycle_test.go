@@ -25,6 +25,11 @@ import (
 	"go.tbhb.dev/agent-capacity/internal/spool"
 )
 
+const (
+	reasonOperatorStop = "operator_stop"
+	reasonChildExit    = "child_exit"
+)
+
 func TestOneRunnerPerAlias(t *testing.T) {
 	t.Parallel()
 	fixtureValue := setup(t, vendorClaude)
@@ -61,7 +66,7 @@ func TestOtherChildEndsRequestRestart(t *testing.T) {
 				},
 			)
 			_, result := fixtureValue.run(t)
-			fixtureValue.until(t, func() bool { return fixtureValue.status(t).Reason == "child_exit" })
+			fixtureValue.until(t, func() bool { return fixtureValue.status(t).Reason == reasonChildExit })
 
 			if <-result != 1 {
 				t.Fatal("exit")
@@ -1595,4 +1600,137 @@ func TestPipeChildEndsWhenGrandchildHoldsOutput(t *testing.T) {
 	case <-time.After(5 * terminationGrace):
 		t.Fatal("wait blocked on the output pipe")
 	}
+}
+
+func TestIdleStopRepublishesOnlyAfterTheInterval(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name      string
+		offset    time.Duration
+		wantCode  int
+		wantWrite bool
+	}{
+		{name: "next status in the future", offset: time.Second, wantCode: 0, wantWrite: false},
+		{name: "next status in the past", offset: -time.Second, wantCode: 1, wantWrite: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorCodex)
+			state := stateFor(t, fixtureValue)
+			state.status.Reason = reasonOperatorStop
+			state.nextStatus = state.clock.Now().Add(test.offset)
+
+			code, done := state.idleStop()
+
+			_, err := os.Lstat(filepath.Join(fixtureValue.options.SpoolDir, "status", "codex-sample.json"))
+			if code != test.wantCode || done || (err == nil) != test.wantWrite {
+				t.Fatal(code, done, err)
+			}
+		})
+	}
+}
+
+func TestHeldPipeResults(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name         string
+		vendor       string
+		wantReason   string
+		status       int
+		execExit     int
+		wantCode     int
+		wantRestarts int
+		checkOnly    bool
+		endClaude    bool
+		wantDone     bool
+		wantRollout  bool
+	}{
+		{"codex status check exit zero", vendorCodex, reasonNone, 0, 0, 0, 0, true, false, false, true},
+		{"codex exec exit zero", vendorCodex, reasonNone, 0, 0, 1, 0, false, false, false, false},
+		{"claude child exit", vendorClaude, reasonChildExit, 0, 0, 1, 1, false, true, true, true},
+		{"codex status check exit one", vendorCodex, reasonSignedOut, 1, 0, 0, 0, true, false, true, true},
+		{"codex exec exit one", vendorCodex, reasonChildExit, 0, 1, 1, 1, false, false, true, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, test.vendor)
+			fixtureValue.control(t, fakeControl{
+				Status: test.status, ExecExit: test.execExit, Warning: false, Hold: false,
+				EndClaude: test.endClaude, IgnoreTerm: false, HoldStatus: false, Grandchild: true,
+			})
+			killGrandchildAfter(t, filepath.Join(fixtureValue.options.directory(), "grandchild"))
+
+			sessions := filepath.Join(fixtureValue.options.directory(), vendorCodex, "sessions")
+			rollout := filepath.Join(sessions, "rollout.jsonl")
+			old := fixtureValue.clock.Now().Add(-3 * 24 * time.Hour)
+
+			must(t, os.Mkdir(sessions, 0o700))
+			must(t, os.WriteFile(rollout, nil, 0o600))
+			must(t, os.Chtimes(rollout, old, old))
+
+			state := stateFor(t, fixtureValue)
+			code, done := driveHeldChild(t, fixtureValue, state, test.checkOnly)
+
+			_, err := os.Lstat(rollout)
+			if code != test.wantCode || done != test.wantDone || state.status.Reason != test.wantReason ||
+				len(state.status.Restarts) != test.wantRestarts || (err == nil) != test.wantRollout {
+				t.Fatal(code, done, state.status, err)
+			}
+		})
+	}
+}
+
+func killGrandchildAfter(t *testing.T, file string) {
+	t.Helper()
+	t.Cleanup(func() {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return
+		}
+
+		pid, parseErr := strconv.Atoi(string(data))
+		if parseErr == nil {
+			//nolint:errcheck // The process may have ended.
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+}
+
+func driveHeldChild(t *testing.T, fixtureValue fixture, state *running, checkOnly bool) (int, bool) {
+	t.Helper()
+
+	var (
+		code int
+		done bool
+	)
+
+	if checkOnly {
+		state.nextExec = state.clock.Now().Add(time.Hour)
+
+		code, done = state.statusCheck()
+		if code != 0 || done || state.check == nil {
+			t.Fatal("status check not started", code, done)
+		}
+
+		fixtureValue.until(t, func() bool {
+			code, done = state.pollStatusCheck()
+
+			return state.check == nil
+		})
+
+		return code, done
+	}
+
+	must(t, state.launch())
+	fixtureValue.until(t, func() bool {
+		code, done = state.observeChild()
+
+		return state.child == nil
+	})
+
+	return code, done
 }

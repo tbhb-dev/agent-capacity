@@ -421,7 +421,7 @@ func TestStopWinsAndTerminatesChild(t *testing.T) {
 			before := time.Now()
 
 			must(t, os.WriteFile(filepath.Join(fixtureValue.options.SpoolDir, name), nil, 0o600))
-			fixtureValue.until(t, func() bool { return fixtureValue.status(t).Reason == "operator_stop" })
+			fixtureValue.until(t, func() bool { return fixtureValue.status(t).Reason == reasonOperatorStop })
 
 			if !errors.Is(syscall.Kill(fixtureValue.calls(t)[1].PID, 0), syscall.ESRCH) {
 				t.Fatal("child survived stop")
@@ -463,22 +463,10 @@ func TestInitiallyStoppedSkipsStatus(t *testing.T) {
 	)
 	must(t, os.WriteFile(filepath.Join(fixtureValue.options.SpoolDir, "stop"), nil, 0o600))
 	cancel, _ := fixtureValue.run(t)
-	fixtureValue.until(t, func() bool { return fixtureValue.status(t).Reason == "operator_stop" })
+	fixtureValue.until(t, func() bool { return fixtureValue.status(t).Reason == reasonOperatorStop })
 
 	if len(fixtureValue.calls(t)) != 0 {
 		t.Fatal("vendor ran")
-	}
-
-	// Two unchanged-clock ticks make the stopped loop pass the status interval check at least once.
-	published := fixtureValue.status(t).Time
-
-	for range 2 {
-		fixtureValue.clock.tick()
-		fixtureValue.until(t, func() bool { return len(fixtureValue.clock.ticks) == 0 })
-	}
-
-	if !fixtureValue.status(t).Time.Equal(published) {
-		t.Fatal("stopped runner republished before the interval")
 	}
 
 	cancel()
@@ -735,7 +723,7 @@ func TestRestartLimitPersists(t *testing.T) {
 				Vendor:   vendorClaude,
 				Alias:    fixtureAlias,
 				Phase:    phaseStopped,
-				Reason:   "child_exit",
+				Reason:   reasonChildExit,
 				Restarts: restarts, LoginExpiring: false,
 			},
 		),
