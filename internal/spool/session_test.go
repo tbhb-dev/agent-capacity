@@ -66,7 +66,7 @@ func TestSessionAliases(t *testing.T) {
 	t.Parallel()
 	_, root := testSessionRoot(t)
 
-	var status SessionStatus
+	status := validStatus()
 	for _, account := range []string{"../outside", "bad/name", "", "Upper"} {
 		status.Alias = account
 		require.Error(t, WriteSession(root, status))
@@ -669,4 +669,24 @@ func TestReadSessionRejectsWritableStatusEntries(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReadSessionRejectsIdentityOnlyState(t *testing.T) {
+	t.Parallel()
+	dir, root := testSessionRoot(t)
+
+	_, err := ReadSession(root, claudeVendor, sessionAlias)
+	require.NoError(t, err)
+	require.NoError(t, WriteSession(root, validStatus()))
+
+	path := filepath.Join(dir, "status", claudeVendor+"-"+sessionAlias+".json")
+	identity := []byte(`{"vendor":"` + claudeVendor + `","alias":"` + sessionAlias + `"}`)
+	require.NoError(t, os.WriteFile(path, identity, 0o600))
+
+	_, err = ReadSession(root, claudeVendor, sessionAlias)
+	require.ErrorIs(t, err, errSessionState)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, identity, data)
 }

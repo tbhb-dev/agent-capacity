@@ -408,7 +408,7 @@ func TestOptionsValidation(t *testing.T) {
 		t.Fatal("fixture options rejected")
 	}
 
-	valid.Vendor, valid.Binary = vendorCodex, ""
+	valid.Vendor, valid.Binary, valid.Exporter = vendorCodex, "", ""
 	if !valid.Valid() {
 		t.Fatal("codex without a binary rejected")
 	}
@@ -419,6 +419,7 @@ func TestOptionsValidation(t *testing.T) {
 		"alias file": func(o *Options) { o.AliasFile = "approved" },
 		"root":       func(o *Options) { o.Root = "relative" },
 		"binary":     func(o *Options) { o.Binary = "relative" },
+		"exporter":   func(o *Options) { o.Exporter = "relative/exporter" },
 	} {
 		options := fixtureValue.options
 		mutate(&options)
@@ -1048,7 +1049,7 @@ func TestStatusCheckResults(t *testing.T) {
 	state.nextExec = time.Time{}
 	state.options.Binary = filepath.Join(fixtureValue.base, "missing")
 	// The settings file needs the new binary path, or the launch stops at the settings check.
-	rendered, err := RenderSettings(vendorClaude, fixtureAlias, state.options.Binary, state.options.SpoolDir)
+	rendered, err := RenderSettings(vendorClaude, fixtureAlias, state.options.Exporter, state.options.SpoolDir)
 	must(t, err)
 	must(t, os.WriteFile(filepath.Join(fixtureValue.options.directory(), settingsPath), rendered, 0o600))
 
@@ -1464,7 +1465,7 @@ func TestCheckSettingsIsAFloorOfTheRenderedFile(t *testing.T) {
 			defer alias.Close()
 
 			options := fixtureValue.options
-			command := statusCommand(options.Binary, options.Account, options.SpoolDir)
+			command := statusCommand(options.Exporter, options.Account, options.SpoolDir)
 
 			if got := checkSettings(alias, command) == nil; got != test.ok {
 				t.Fatalf("checkSettings accepted %v, want %v", got, test.ok)
@@ -3481,7 +3482,7 @@ func TestSettingsSizeBound(t *testing.T) {
 	must(t, err)
 
 	state := stateFor(t, fixtureValue)
-	command := statusCommand(fixtureValue.options.Binary, fixtureAlias, fixtureValue.options.SpoolDir)
+	command := statusCommand(fixtureValue.options.Exporter, fixtureAlias, fixtureValue.options.SpoolDir)
 
 	for padding, want := range map[int]bool{maxSettingsBytes - len(data): true, maxSettingsBytes - len(data) + 1: false} {
 		padded := append(bytes.Clone(data), bytes.Repeat([]byte(" "), padding)...)
@@ -3492,4 +3493,29 @@ func TestSettingsSizeBound(t *testing.T) {
 			t.Fatal(padding, got)
 		}
 	}
+}
+
+func TestStatusLineCommandUsesTheExporterNotTheVendor(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	options := fixtureValue.options
+
+	alias, openErr := options.openAlias()
+	must(t, openErr)
+
+	defer alias.Close()
+
+	if options.Binary == options.Exporter {
+		t.Fatal("fixture uses one path for both binaries")
+	}
+
+	vendorCommand := statusCommand(options.Binary, options.Account, options.SpoolDir)
+	if checkSettings(alias, vendorCommand) == nil {
+		t.Fatal("the vendor path passed as the status line command")
+	}
+
+	exporterCommand := statusCommand(options.Exporter, options.Account, options.SpoolDir)
+	err := checkSettings(alias, exporterCommand)
+	must(t, err)
 }

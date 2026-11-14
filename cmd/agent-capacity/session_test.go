@@ -73,7 +73,7 @@ func TestRenderSettingsCommand(t *testing.T) {
 		"render-settings",
 		claudeFlag,
 		accountFlag,
-		"--binary=" + filepath.Join(dir, "binary"),
+		"--exporter=" + filepath.Join(dir, "binary"),
 		"--spool-dir=" + dir,
 	}
 	if sessionCommand(context.Background(), args, &out) != 0 {
@@ -110,7 +110,7 @@ func TestRenderSettingsWriteFailure(t *testing.T) {
 		renderSubcommand,
 		claudeFlag,
 		accountFlag,
-		"--binary=" + filepath.Join(dir, "binary"),
+		"--exporter=" + filepath.Join(dir, "binary"),
 		"--spool-dir=" + dir,
 	}
 	if sessionCommand(context.Background(), args, failingWriter{}) != 1 {
@@ -225,7 +225,7 @@ func TestRunCommandPassesSessionArguments(t *testing.T) {
 		renderSubcommand,
 		claudeFlag,
 		accountFlag,
-		"--binary=" + filepath.Join(dir, "binary"),
+		"--exporter=" + filepath.Join(dir, "binary"),
 		"--spool-dir=" + dir,
 	}
 
@@ -262,7 +262,7 @@ func TestSessionCommandRefusesInvalidCompanions(t *testing.T) {
 	dir := t.TempDir()
 	companions := []string{aliasFileFlag, aliasRootFlag}
 	renderArgs := []string{
-		renderSubcommand, claudeFlag, accountFlag, "--binary=" + filepath.Join(dir, "binary"), "--spool-dir=" + dir,
+		renderSubcommand, claudeFlag, accountFlag, "--exporter=" + filepath.Join(dir, "binary"), "--spool-dir=" + dir,
 	}
 
 	for _, args := range [][]string{
