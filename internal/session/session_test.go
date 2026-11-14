@@ -392,14 +392,20 @@ func TestSignedOutNeverStartsChild(t *testing.T) {
 				},
 			)
 			_, result := fixtureValue.run(t)
-			fixtureValue.until(t, func() bool { return fixtureValue.status(t).Reason == reasonSignedOut })
+			untilSignedOut(t, fixtureValue)
 
 			if got := <-result; got != 0 {
 				t.Fatal(got)
 			}
 
-			if len(fixtureValue.calls(t)) != 1 {
-				t.Fatal("child started")
+			for _, call := range fixtureValue.calls(t) {
+				if call.Args[0] != "auth" && call.Args[0] != commandLogin {
+					t.Fatal("child started", call.Args)
+				}
+			}
+
+			if len(fixtureValue.calls(t)) != 2 {
+				t.Fatal("unexpected calls", len(fixtureValue.calls(t)))
 			}
 		})
 	}
@@ -451,7 +457,7 @@ func TestStopWinsAndTerminatesChild(t *testing.T) {
 			}
 
 			must(t, os.Remove(filepath.Join(fixtureValue.options.SpoolDir, name)))
-			fixtureValue.until(t, func() bool { return fixtureValue.status(t).Reason == reasonSignedOut })
+			untilSignedOut(t, fixtureValue)
 			cancel()
 		})
 	}
@@ -939,7 +945,7 @@ func TestSettingsAndHardening(t *testing.T) {
 	data, err = RenderSettings(vendorCodex, fixtureAlias, binary, dir)
 	must(t, err)
 
-	if string(data) != "cli_auth_credentials_store = \"file\"\nmodel = \"gpt-6-luna\"\n" {
+	if string(data) != "cli_auth_credentials_store = \"file\"\nmodel = \"gpt-6.1-sol\"\n" {
 		t.Fatal(string(data))
 	}
 
@@ -1012,4 +1018,14 @@ func TestWallClockAfterFires(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("wall clock After never fired")
 	}
+}
+
+// untilSignedOut advances the clock one status interval per poll so the retry check runs.
+func untilSignedOut(t *testing.T, fixtureValue fixture) {
+	t.Helper()
+	fixtureValue.until(t, func() bool {
+		fixtureValue.clock.advance(statusInterval)
+
+		return fixtureValue.status(t).Reason == reasonSignedOut
+	})
 }
