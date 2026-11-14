@@ -74,6 +74,7 @@ func TestOtherChildEndsRequestRestart(t *testing.T) {
 					HoldStatus: false,
 					Grandchild: false,
 					SelfKill:   false,
+					NewSession: false,
 				},
 			)
 			_, result := fixtureValue.run(t)
@@ -104,6 +105,7 @@ func TestStatusFailureAndTimeout(t *testing.T) {
 					HoldStatus: hold,
 					Grandchild: false,
 					SelfKill:   false,
+					NewSession: false,
 					Hold:       false,
 					EndClaude:  false,
 					IgnoreTerm: false,
@@ -191,6 +193,7 @@ func TestCodexDoesNotOverlapExec(t *testing.T) {
 			HoldStatus: false,
 			Grandchild: false,
 			SelfKill:   false,
+			NewSession: false,
 			Status:     0,
 			ExecExit:   0,
 			Warning:    false,
@@ -758,6 +761,46 @@ func TestTerminalChildClosesTerminalOnTerminate(t *testing.T) {
 	}
 }
 
+func TestTerminateEndsWhenSessionLeaderHoldsTerminal(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+
+	var control fakeControl
+
+	control.Hold, control.Grandchild, control.NewSession = true, true, true
+	fixtureValue.control(t, control)
+
+	grandchildFile := filepath.Join(fixtureValue.options.directory(), directoryWork, "grandchild")
+	killGrandchildAfter(t, grandchildFile)
+
+	var warning atomic.Bool
+
+	child, err := start(fixtureValue.options.command(commandExec), true, &warning)
+	must(t, err)
+
+	defer child.signalGroup(syscall.SIGKILL)
+
+	fixtureValue.until(t, func() bool {
+		data, readErr := os.ReadFile(grandchildFile)
+
+		return readErr == nil && len(data) > 0
+	})
+
+	stopped := make(chan struct{})
+
+	go func() {
+		child.terminate()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("terminate hung on a descendant that kept the terminal open")
+	}
+}
+
 func TestCloseTerminalKillsGroupAndWaitsForDrain(t *testing.T) {
 	t.Parallel()
 
@@ -1011,6 +1054,11 @@ func TestStatusCheckResults(t *testing.T) {
 	state.child = nil
 	state.nextExec = time.Time{}
 	state.options.Binary = filepath.Join(fixtureValue.base, "missing")
+	// The settings file needs the new binary path, or the launch stops at the settings check.
+	rendered, err := RenderSettings(vendorClaude, fixtureAlias, state.options.Binary, state.options.SpoolDir)
+	must(t, err)
+	must(t, os.WriteFile(filepath.Join(fixtureValue.options.directory(), settingsPath), rendered, 0o600))
+
 	state.check = finished(nil)
 
 	code, done := state.pollStatusCheck()
@@ -1365,6 +1413,96 @@ func TestLaunchRefusesUnsafePermissions(t *testing.T) {
 	}
 }
 
+func TestCheckSettingsIsAFloorOfTheRenderedFile(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		change func(settings map[string]any)
+		ok     bool
+	}{
+		"rendered file": {func(map[string]any) {}, true},
+		"extra deny":    {func(s map[string]any) { setPermission(s, "deny", append(denyList(), "Extra")) }, true},
+		"extra top level key": {func(s map[string]any) {
+			s["hooks"] = map[string]any{}
+		}, false},
+		"extra env key":         {func(s map[string]any) { s["env"] = map[string]any{"A": "b"} }, false},
+		"apiKeyHelper":          {func(s map[string]any) { s["apiKeyHelper"] = "/bin/key" }, false},
+		"missing statusLine":    {func(s map[string]any) { delete(s, "statusLine") }, false},
+		"missing permissions":   {func(s map[string]any) { delete(s, "permissions") }, false},
+		"extra permissions key": {func(s map[string]any) { setPermission(s, "extra", 1) }, false},
+		"null allow":            {func(s map[string]any) { setPermission(s, "allow", nil) }, false},
+		"null deny element": {func(s map[string]any) {
+			setPermission(s, "deny", append([]any{nil}, anyStrings(denyList())...))
+		}, false},
+		"changed allow":     {func(s map[string]any) { setPermission(s, "allow", []string{"CronCreate"}) }, false},
+		"extra allow":       {func(s map[string]any) { setPermission(s, "allow", append(allowList(), "Bash")) }, false},
+		"allow not a list":  {func(s map[string]any) { setPermission(s, "allow", "CronCreate") }, false},
+		"changed command":   {func(s map[string]any) { setStatusLine(s, "command", "/bin/other") }, false},
+		"command not text":  {func(s map[string]any) { setStatusLine(s, "command", 1) }, false},
+		"changed type":      {func(s map[string]any) { setStatusLine(s, "type", "text") }, false},
+		"extra statusLine":  {func(s map[string]any) { setStatusLine(s, "refreshInterval", 1) }, false},
+		"statusLine absent": {func(s map[string]any) { s["statusLine"] = nil }, false},
+		"permissions null":  {func(s map[string]any) { s["permissions"] = nil }, false},
+		"statusLine array":  {func(s map[string]any) { s["statusLine"] = []any{} }, false},
+		"permissions array": {func(s map[string]any) { s["permissions"] = []any{} }, false},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorClaude)
+			path := filepath.Join(fixtureValue.options.directory(), settingsPath)
+
+			data, err := os.ReadFile(path)
+			must(t, err)
+
+			var settings map[string]any
+			must(t, json.Unmarshal(data, &settings))
+			test.change(settings)
+
+			data, err = json.Marshal(settings)
+			must(t, err)
+			must(t, os.WriteFile(path, data, 0o600))
+
+			alias, err := fixtureValue.options.openAlias()
+			must(t, err)
+
+			defer alias.Close()
+
+			options := fixtureValue.options
+			command := statusCommand(options.Binary, options.Account, options.SpoolDir)
+
+			if got := checkSettings(alias, command) == nil; got != test.ok {
+				t.Fatalf("checkSettings accepted %v, want %v", got, test.ok)
+			}
+		})
+	}
+}
+
+func setPermission(settings map[string]any, name string, value any) {
+	setSection(settings, "permissions", name, value)
+}
+
+func setStatusLine(settings map[string]any, name string, value any) {
+	setSection(settings, "statusLine", name, value)
+}
+
+func setSection(settings map[string]any, section, name string, value any) {
+	if object, ok := settings[section].(map[string]any); ok {
+		object[name] = value
+	}
+}
+
+func anyStrings(values []string) []any {
+	out := make([]any, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+
+	return out
+}
+
 func TestLaunchRefusesUnsafeSettingsFile(t *testing.T) {
 	t.Parallel()
 
@@ -1569,6 +1707,75 @@ func TestSecondRunnerLeavesPublishedStatusUntouched(t *testing.T) {
 	}
 }
 
+func TestLinkedLockToRegularFileFails(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	target := filepath.Join(fixtureValue.options.directory(), "other-file")
+
+	must(t, os.WriteFile(target, []byte("keep"), 0o600))
+	must(t, os.Symlink("other-file", filepath.Join(fixtureValue.options.directory(), ".runner.lock")))
+	checkRunnerExit(t, fixtureValue, 1)
+	fixtureValue.wantNoStatus(t)
+
+	got, err := os.ReadFile(target)
+	must(t, err)
+
+	info, err := os.Stat(target)
+	must(t, err)
+
+	if string(got) != "keep" || info.Mode() != 0o600 || len(fixtureValue.calls(t)) != 0 {
+		t.Fatal("linked lock target changed or a vendor started")
+	}
+}
+
+func TestVerifyLock(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	must(t, os.WriteFile(filepath.Join(dir, "a"), nil, 0o600))
+	must(t, os.WriteFile(filepath.Join(dir, "b"), nil, 0o600))
+	must(t, os.Symlink("a", filepath.Join(dir, "link")))
+	must(t, os.Mkdir(filepath.Join(dir, "sub"), 0o700))
+
+	root, err := os.OpenRoot(dir)
+	must(t, err)
+
+	t.Cleanup(func() { _ = root.Close() })
+
+	open := func(name string) *os.File {
+		file, openErr := root.Open(name)
+		must(t, openErr)
+		t.Cleanup(func() { _ = file.Close() })
+
+		return file
+	}
+
+	closed := open("a")
+	must(t, closed.Close())
+
+	for name, test := range map[string]struct {
+		file  *os.File
+		lstat string
+		ok    bool
+	}{
+		"same file":         {open("a"), "a", true},
+		"missing path":      {open("a"), "none", false},
+		"link path":         {open("a"), "link", false},
+		"directory path":    {open("sub"), "sub", false},
+		"different file":    {open("a"), "b", false},
+		"closed descriptor": {closed, "a", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := verifyLock(root, test.lstat, test.file) == nil; got != test.ok {
+				t.Fatalf("verifyLock ok = %v, want %v", got, test.ok)
+			}
+		})
+	}
+}
+
 func TestLoginEndsWhenContextEnds(t *testing.T) {
 	t.Parallel()
 
@@ -1733,25 +1940,18 @@ func TestSettingsNestingLimit(t *testing.T) {
 		"object": func(value any, level int) any { return map[string]any{fmt.Sprintf("level%d", level): value} },
 	}
 
-	// The top object and permissions add two levels, so 29 wrappers make 31 levels and 31 make 33.
+	// The top object adds one level, so 30 wrappers make 31 levels and 32 make 33.
 	for kind, wrap := range wrappers {
-		for levels, accepted := range map[int]bool{29: true, 30: true, 31: false} {
-			fixtureValue := setup(t, vendorClaude)
-			writeSettings(t, fixtureValue, func(permissions map[string]any) {
-				var value any = 1
-				for level := range levels {
-					value = wrap(value, level)
-				}
+		for levels, accepted := range map[int]bool{30: true, 31: true, 32: false} {
+			var value any = 1
+			for level := range levels {
+				value = wrap(value, level)
+			}
 
-				permissions["extra"] = value
-			})
-
-			alias, err := fixtureValue.options.openAlias()
+			data, err := json.Marshal(map[string]any{"extra": value})
 			must(t, err)
 
-			got := checkSettings(alias) == nil
-
-			must(t, alias.Close())
+			got := checkKeys(json.NewDecoder(bytes.NewReader(data)), 0) == nil
 
 			if got != accepted {
 				t.Fatalf("%d nested %ss: accepted %v, want %v", levels, kind, got, accepted)
@@ -1760,22 +1960,9 @@ func TestSettingsNestingLimit(t *testing.T) {
 	}
 }
 
-func TestLaunchAcceptsSettingsWithDistinctKeysAndNestedObjects(t *testing.T) {
-	t.Parallel()
-
-	fixtureValue := setup(t, vendorClaude)
-	writeSettings(t, fixtureValue, func(permissions map[string]any) {
-		permissions["extra"] = []any{map[string]any{"a": 1, "b": []any{}}}
-	})
-
-	state := stateFor(t, fixtureValue)
-
-	err := state.launch()
-	if err != nil || state.child == nil {
-		t.Fatal("launch refused distinct keys", err)
-	}
-}
-
+// Login signals only the login child. Its descendants keep running after cancellation, because the child shares the
+// caller's terminal and a new process group would break job control. This test checks only that Login returns, and
+// the cleanup below kills the leftover grandchild.
 func TestLoginEndsWhenGrandchildHoldsOutput(t *testing.T) {
 	t.Parallel()
 
@@ -1987,7 +2174,8 @@ func TestHeldPipeResults(t *testing.T) {
 			fixtureValue.control(t, fakeControl{
 				Status: test.status, ExecExit: test.execExit, Warning: false, Hold: false,
 				EndClaude: test.endClaude, IgnoreTerm: false, HoldStatus: false, Grandchild: true,
-				SelfKill: test.selfKill,
+				SelfKill:   test.selfKill,
+				NewSession: false,
 			})
 			grandchildFile := filepath.Join(fixtureValue.options.directory(), directoryWork, "grandchild")
 			killGrandchildAfter(t, grandchildFile)
@@ -2910,6 +3098,51 @@ func TestCloseTerminalWaitsOneHundredMillisecondsForDrain(t *testing.T) {
 
 		close(child.drained)
 		<-closed
+	})
+}
+
+func TestCloseTerminalGivesUpOnStuckReader(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		cmd := exec.CommandContext(context.Background(), "/bin/sleep", "30")
+		cmd.SysProcAttr = new(syscall.SysProcAttr)
+		cmd.SysProcAttr.Setpgid = true
+		must(t, cmd.Start())
+
+		defer cmd.Wait() //nolint:errcheck // The test only needs the child reaped.
+
+		reader, writer, err := os.Pipe()
+		must(t, err)
+
+		defer writer.Close()
+
+		// The drain channel never closes, as with a reader that a closed master doesn't unblock.
+		child := &process{cmd: cmd, done: make(chan error, 1), terminal: reader, drained: make(chan struct{})}
+		closed := make(chan struct{})
+
+		go func() {
+			child.closeTerminal()
+			close(closed)
+		}()
+
+		time.Sleep(terminalDrainWait + terminationGrace - time.Millisecond)
+		synctest.Wait()
+
+		select {
+		case <-closed:
+			t.Fatal("closeTerminal returned before the grace ended")
+		default:
+		}
+
+		time.Sleep(2 * time.Millisecond)
+		synctest.Wait()
+
+		select {
+		case <-closed:
+		default:
+			t.Fatal("closeTerminal still waits on a reader that never ends")
+		}
 	})
 }
 

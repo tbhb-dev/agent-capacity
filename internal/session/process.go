@@ -117,7 +117,12 @@ func (p *process) closeTerminal() {
 	}
 
 	_ = p.terminal.Close()
-	<-p.drained
+
+	// Closing the master normally ends the reader at once. The bound keeps shutdown finite if it doesn't.
+	select {
+	case <-p.drained:
+	case <-time.After(terminationGrace):
+	}
 }
 
 func (p *process) terminate() {

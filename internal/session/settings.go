@@ -21,7 +21,11 @@ const (
 	safeBypassMode  = "disable"
 	maxDepth        = 32
 	settingsPath    = "config/settings.json"
+	commandKey      = "command"
 )
+
+// allowList is the one source for the pre-approved tools.
+func allowList() []string { return []string{"CronCreate", "CronDelete", "CronList"} }
 
 // denyList is the one source for the refused tools.
 func denyList() []string {
@@ -32,12 +36,15 @@ func denyList() []string {
 	}
 }
 
-// checkSettings is the launch preflight. It refuses a linked settings file and any file
-// that lacks the safety permissions RenderSettings writes. Extra deny entries pass.
-// It guards against a stale or mis-rendered file and doesn't defend against a hostile writer. It skips the
-// `statusLine` command, hooks, `env`, `apiKeyHelper` and `permissions.allow`. The deny list is a snapshot of tool
-// names, and deny support for the `mcp__*` wildcard is unverified. The `dontAsk` mode is the real control.
-func checkSettings(alias *os.Root) error {
+// checkSettings is the launch preflight for the Claude settings file. It refuses a linked file, duplicate or
+// case-variant keys, and any file that differs from what RenderSettings writes in its keys, its `allow` list and its
+// `statusLine` command, which must equal command. The top level accepts only `statusLine` and `permissions`. The
+// `permissions` object accepts only `defaultMode`, `disableBypassPermissionsMode`, `allow` and `deny`. The
+// `statusLine` object accepts only `type`, `command` and `padding`. The `deny` list must include every refused tool,
+// and extra string entries pass. The check is a floor against a stale or mis-rendered file and doesn't defend against
+// a hostile writer. It doesn't check Codex's configuration, and deny support for the `mcp__*` wildcard is
+// unverified. The `dontAsk` mode is the real control.
+func checkSettings(alias *os.Root, command string) error {
 	info, err := alias.Lstat(settingsPath)
 	if err != nil || !info.Mode().IsRegular() {
 		return ErrArguments
@@ -53,28 +60,89 @@ func checkSettings(alias *os.Root) error {
 		return ErrArguments
 	}
 
-	var raw json.RawMessage
-	// gomutants:disable-next-line BRANCH_IF reason="Later lookups fail on the empty value."
-	if field(data, "permissions", &raw) != nil {
+	if onlyKeys(data, "statusLine", "permissions") != nil {
 		return ErrArguments
 	}
 
+	var permissions, statusLine json.RawMessage
+
+	if errors.Join(field(data, "permissions", &permissions), field(data, "statusLine", &statusLine)) != nil {
+		return ErrArguments
+	}
+
+	if checkStatusLine(statusLine, command) != nil || checkPermissions(permissions) != nil {
+		return ErrArguments
+	}
+
+	return nil
+}
+
+func checkStatusLine(statusLine json.RawMessage, command string) error {
+	var kind, got string
+
+	err := errors.Join(
+		onlyKeys(statusLine, "type", commandKey, "padding"),
+		field(statusLine, "type", &kind),
+		field(statusLine, commandKey, &got),
+	)
+	if err != nil || kind != commandKey || got != command {
+		return ErrArguments
+	}
+
+	return nil
+}
+
+func checkPermissions(permissions json.RawMessage) error {
 	var (
 		defaultMode, bypass string
-		deny                []string
+		allow               []string
+		deny                []*string
 	)
 
-	err = errors.Join(
-		field(raw, "defaultMode", &defaultMode),
-		field(raw, "disableBypassPermissionsMode", &bypass),
-		field(raw, "deny", &deny),
+	err := errors.Join(
+		onlyKeys(permissions, "defaultMode", "disableBypassPermissionsMode", "allow", "deny"),
+		field(permissions, "defaultMode", &defaultMode),
+		field(permissions, "disableBypassPermissionsMode", &bypass),
+		field(permissions, "allow", &allow),
+		field(permissions, "deny", &deny),
 	)
 	if err != nil || defaultMode != safeDefaultMode || bypass != safeBypassMode {
 		return ErrArguments
 	}
 
+	if !slices.Equal(allow, allowList()) {
+		return ErrArguments
+	}
+
+	names := make([]string, 0, len(deny))
+
+	for _, tool := range deny {
+		if tool == nil {
+			return ErrArguments
+		}
+
+		names = append(names, *tool)
+	}
+
 	for _, tool := range denyList() {
-		if !slices.Contains(deny, tool) {
+		if !slices.Contains(names, tool) {
+			return ErrArguments
+		}
+	}
+
+	return nil
+}
+
+// onlyKeys refuses a JSON object that has a member outside allowed.
+func onlyKeys(object json.RawMessage, allowed ...string) error {
+	var members map[string]json.RawMessage
+	// gomutants:disable-next-line BRANCH_IF reason="The field lookups that follow fail the same way."
+	if json.Unmarshal(object, &members) != nil {
+		return ErrArguments
+	}
+
+	for name := range members {
+		if !slices.Contains(allowed, name) {
 			return ErrArguments
 		}
 	}
@@ -166,6 +234,12 @@ func closeContainer(dec *json.Decoder) error {
 
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 
+// statusCommand is the status line command that RenderSettings writes.
+func statusCommand(binary, account, dir string) string {
+	return shellQuote(binary) + " statusline --vendor=claude " + shellQuote("--account="+account) + " " +
+		shellQuote("--spool-dir="+dir)
+}
+
 // RenderSettings returns the settings file.
 func RenderSettings(vendor, account, binary, dir string) ([]byte, error) {
 	if !spool.ValidAlias(account) || !filepath.IsAbs(binary) || !filepath.IsAbs(dir) {
@@ -180,19 +254,13 @@ func RenderSettings(vendor, account, binary, dir string) ([]byte, error) {
 		return nil, ErrArguments
 	}
 
-	command := shellQuote(
-		binary,
-	) + " statusline --vendor=claude " + shellQuote(
-		"--account="+account,
-	) + " " + shellQuote(
-		"--spool-dir="+dir,
-	)
+	command := statusCommand(binary, account, dir)
 	settings := map[string]any{
-		"statusLine": map[string]any{"type": "command", "command": command, "padding": 0},
+		"statusLine": map[string]any{"type": commandKey, commandKey: command, "padding": 0},
 		"permissions": map[string]any{
 			"defaultMode":                  safeDefaultMode,
 			"disableBypassPermissionsMode": safeBypassMode,
-			"allow":                        []string{"CronCreate", "CronDelete", "CronList"},
+			"allow":                        allowList(),
 			"deny":                         denyList(),
 		},
 	}
