@@ -1057,6 +1057,10 @@ func TestRestartLimitEndsRunner(t *testing.T) {
 			}
 
 			fixtureValue.wantStopped(t, code, done, 0, reasonRestartLimit)
+
+			if got := len(fixtureValue.status(t).Restarts); got != 5 {
+				t.Fatal("published restarts", got)
+			}
 		})
 	}
 }
@@ -2001,4 +2005,269 @@ func driveHeldChild(t *testing.T, fixtureValue fixture, state *running, checkOnl
 	})
 
 	return code, done
+}
+
+func TestStepAtRestartLimitKeepsHistory(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+
+	for range 5 {
+		state.status.Restarts = append(state.status.Restarts, state.clock.Now())
+	}
+
+	code, done := state.step(context.Background())
+	fixtureValue.wantStopped(t, code, done, 0, reasonRestartLimit)
+
+	if got := len(fixtureValue.status(t).Restarts); got != 5 {
+		t.Fatal("published restarts", got)
+	}
+}
+
+func TestStatusRepublishesOnlyAfterThirtySeconds(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	must(t, state.publish(phaseChecking, reasonNone))
+
+	state.nextCheck = start.Add(time.Hour)
+
+	for _, test := range []struct {
+		wantTime time.Time
+		advance  time.Duration
+	}{
+		{wantTime: start, advance: 10 * time.Second},
+		{wantTime: start, advance: 19 * time.Second},
+		{wantTime: start.Add(30 * time.Second), advance: time.Second},
+	} {
+		fixtureValue.clock.advance(test.advance)
+
+		code, done := state.step(context.Background())
+		if code != 0 || done || !fixtureValue.status(t).Time.Equal(test.wantTime) {
+			t.Fatal(code, done, fixtureValue.status(t).Time, test.wantTime)
+		}
+	}
+}
+
+func TestStatusCheckTimesOutAfterThirtySeconds(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+
+	var control fakeControl
+
+	control.HoldStatus = true
+	fixtureValue.control(t, control)
+
+	state := stateFor(t, fixtureValue)
+
+	if code, done := state.statusCheck(); code != 0 || done || state.check == nil {
+		t.Fatal("status check not started", code, done)
+	}
+
+	fixtureValue.clock.advance(29 * time.Second)
+
+	if code, done := state.pollStatusCheck(); code != 0 || done || state.check == nil {
+		t.Fatal("status check ended early", code, done)
+	}
+
+	fixtureValue.clock.advance(time.Second)
+
+	code, done := state.pollStatusCheck()
+	fixtureValue.wantStopped(t, code, done, 1, reasonStatusFailed)
+}
+
+func TestReadingRestartStartsAtFifteenMinutes(t *testing.T) {
+	t.Parallel()
+	checkRestartBoundary(t, 15*time.Minute, "reading_restart", false)
+}
+
+func TestScheduledRestartStartsAtSixDays(t *testing.T) {
+	t.Parallel()
+	checkRestartBoundary(t, 6*24*time.Hour, reasonScheduled, true)
+}
+
+// checkRestartBoundary expects the runner to stay up one second before the interval and to restart at the interval.
+// The scheduled case sets the reading time to the current time before each call, so only the session age can restart.
+func checkRestartBoundary(t *testing.T, interval time.Duration, reason string, scheduled bool) {
+	t.Helper()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	state.started, state.readingAt = state.clock.Now(), state.clock.Now()
+	state.nextCheck = state.clock.Now().Add(time.Hour)
+
+	advance := func(d time.Duration) {
+		fixtureValue.clock.advance(d)
+
+		if scheduled {
+			state.readingAt = state.clock.Now()
+		}
+	}
+
+	advance(interval - time.Second)
+
+	if code, done := state.considerRestart(); code != 0 || done || state.status.Reason != "" ||
+		len(state.status.Restarts) != 0 {
+		t.Fatal("restart before the boundary", code, done, state.status.Reason)
+	}
+
+	advance(time.Second)
+
+	if code, done := state.considerRestart(); code != 0 || done || state.status.Reason != reason ||
+		len(state.status.Restarts) != 1 {
+		t.Fatal("no restart at the boundary", code, done, state.status.Reason)
+	}
+
+	if code, done := state.statusCheck(); code != 0 || done || state.check == nil {
+		t.Fatal("status check did not start after the restart", code, done)
+	}
+}
+
+func TestCodexExecWaitsFiveMinutesAfterLaunch(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorCodex)
+	state := stateFor(t, fixtureValue)
+
+	must(t, state.launch())
+	fixtureValue.until(t, func() bool {
+		if state.child != nil {
+			state.observeChild()
+		}
+
+		return state.child == nil
+	})
+
+	state.nextCheck = state.clock.Now().Add(time.Hour)
+
+	fixtureValue.clock.advance(4*time.Minute + 59*time.Second)
+
+	if code, done := state.statusCheck(); code != 0 || done || state.check != nil {
+		t.Fatal("execution due too early", code, done)
+	}
+
+	fixtureValue.clock.advance(time.Second)
+
+	if code, done := state.statusCheck(); code != 0 || done || state.check == nil {
+		t.Fatal("execution not due after five minutes", code, done)
+	}
+}
+
+func TestStatusCheckStartsOnlyWhenDueOrResumed(t *testing.T) {
+	t.Parallel()
+
+	for name, resumed := range map[string]bool{"ordinary step": false, "resume from operator stop": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorClaude)
+			state := stateFor(t, fixtureValue)
+			state.nextCheck = state.clock.Now().Add(time.Hour)
+
+			if resumed {
+				state.status.Reason = reasonOperatorStop
+			}
+
+			if code, done := state.step(context.Background()); code != 0 || done || (state.check != nil) != resumed {
+				t.Fatal("status check start", resumed, code, done)
+			}
+		})
+	}
+}
+
+func TestResumeFromOperatorStopLaunchesCodexAtOnce(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorCodex)
+
+	var control fakeControl
+
+	control.Hold = true
+	fixtureValue.control(t, control)
+
+	state := stateFor(t, fixtureValue)
+	state.status.Reason = reasonOperatorStop
+	state.nextCheck = state.clock.Now().Add(time.Hour)
+	state.nextExec = state.clock.Now().Add(time.Hour)
+
+	fixtureValue.until(t, func() bool {
+		code, done := state.step(context.Background())
+		if code != 0 || done {
+			t.Fatal(code, done)
+		}
+
+		return state.child != nil
+	})
+
+	last := fixtureValue.calls(t)[len(fixtureValue.calls(t))-1]
+	if last.Args[0] != commandExec {
+		t.Fatal(last.Args)
+	}
+}
+
+func TestCodexChildIgnoresReadingInterval(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorCodex)
+
+	var control fakeControl
+
+	control.Hold = true
+	fixtureValue.control(t, control)
+
+	state := stateFor(t, fixtureValue)
+	must(t, state.launch())
+
+	fixtureValue.clock.advance(15 * time.Minute)
+
+	code, done := state.observeChild()
+	if code != 0 || done || state.child == nil || state.readingRestart || len(state.status.Restarts) != 0 {
+		t.Fatal(code, done, state.status)
+	}
+}
+
+func TestSnapshotOlderThanReadingKeepsReadingTime(t *testing.T) {
+	t.Parallel()
+	checkSnapshot(t, -2*time.Hour, 0, -time.Hour, 0, true)
+}
+
+func TestSnapshotNotNewerThanSnapshotKeepsReadingTime(t *testing.T) {
+	t.Parallel()
+
+	same := -5 * time.Minute
+	checkSnapshot(t, same, -10*time.Minute, same, -10*time.Minute, true)
+}
+
+func TestSnapshotNewerThanBothResetsReading(t *testing.T) {
+	t.Parallel()
+	checkSnapshot(t, -2*time.Hour, -10*time.Minute, -5*time.Minute, -5*time.Minute, false)
+}
+
+// checkSnapshot gives every time as an offset from the clock. The reading restart flag starts set.
+func checkSnapshot(t *testing.T, snapshotAt, readingAt, observed, wantReading time.Duration, wantRestarted bool) {
+	t.Helper()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	state.started, state.snapshotAt, state.readingAt = now, now.Add(snapshotAt), now.Add(readingAt)
+	state.readingRestart = true
+
+	path := filepath.Join(fixtureValue.options.SpoolDir, "claude-sample.json")
+	must(t, os.WriteFile(path, nil, 0o600))
+	must(t, os.Chtimes(path, now.Add(observed), now.Add(observed)))
+
+	if code, done := state.considerRestart(); code != 0 || done {
+		t.Fatal(code, done)
+	}
+
+	if !state.readingAt.Equal(now.Add(wantReading)) || state.readingRestart != wantRestarted ||
+		state.status.Reason != "" || len(state.status.Restarts) != 0 {
+		t.Fatal(state.readingAt, state.readingRestart, state.status.Reason)
+	}
 }
