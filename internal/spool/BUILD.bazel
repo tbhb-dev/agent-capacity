@@ -8,7 +8,10 @@ repo_files()
 
 go_library(
     name = "spool",
-    srcs = ["spool.go"],
+    srcs = [
+        "session.go",
+        "spool.go",
+    ],
     importpath = "go.tbhb.dev/agent-capacity/internal/spool",
     visibility = ["//:__subpackages__"],
     deps = ["//internal/capacity"],
@@ -16,7 +19,10 @@ go_library(
 
 go_test(
     name = "spool_test",
-    srcs = ["spool_test.go"],
+    srcs = [
+        "session_test.go",
+        "spool_test.go",
+    ],
     embed = [":spool"],
     visibility = ["//:__pkg__"],
     deps = [

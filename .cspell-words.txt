@@ -205,3 +205,6 @@ xgpt
 xhigh
 xsession
 zizmor
+creack
+noctx
+unopenable

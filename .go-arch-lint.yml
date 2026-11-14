@@ -14,6 +14,7 @@ components:
   capacity: {in: internal/capacity}
   keepalive: {in: internal/keepalive}
   spool: {in: internal/spool}
+  session: {in: internal/session}
   claude: {in: internal/source/claude}
   agy: {in: internal/source/agy}
   export: {in: internal/export}
@@ -22,11 +23,12 @@ components:
 vendors:
   otel: {in: go.opentelemetry.io/**}
   testify: {in: github.com/stretchr/testify/**}
+  pty: {in: github.com/creack/pty}
 
 # go-arch-lint requires a non-empty dependency list for each component.
 deps:
   cmd:
-    mayDependOn: [cmd, capacity, export, codex, spool, claude, agy]
+    mayDependOn: [cmd, capacity, export, codex, spool, claude, agy, session]
     canUse: [otel, testify]
   capacity:
     mayDependOn: [capacity]
@@ -40,6 +42,9 @@ deps:
   codex:
     mayDependOn: [capacity, codex]
     canUse: [testify]
+  session:
+    mayDependOn: [session, spool]
+    canUse: [pty]
   spool:
     mayDependOn: [spool, capacity]
     canUse: [testify]

@@ -16,6 +16,7 @@ go_library(
     srcs = [
         "main.go",
         "probe.go",
+        "session.go",
         "statusline.go",
     ],
     importpath = "go.tbhb.dev/agent-capacity/cmd/agent-capacity",
@@ -23,6 +24,7 @@ go_library(
     deps = [
         "//internal/capacity",
         "//internal/export",
+        "//internal/session",
         "//internal/source/agy",
         "//internal/source/claude",
         "//internal/source/codex",
@@ -45,6 +47,7 @@ go_test(
         "agy_test.go",
         "main_test.go",
         "probe_test.go",
+        "session_test.go",
         "statusline_test.go",
         "transcript_test.go",
     ],
@@ -54,6 +57,7 @@ go_test(
     deps = [
         "//internal/capacity",
         "//internal/export",
+        "//internal/session",
         "//internal/source/claude",
         "//internal/spool",
         "@com_github_stretchr_testify//assert",
