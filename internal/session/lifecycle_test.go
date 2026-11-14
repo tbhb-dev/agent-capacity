@@ -325,6 +325,8 @@ func TestRepeatedStatusFailuresReachRestartLimit(t *testing.T) {
 	}
 }
 
+var errTransient = errors.New("transient read error")
+
 var errPlain = errors.New("an error without an exit code")
 
 type codeError int
@@ -1327,7 +1329,8 @@ func TestLaunchRefusesUnsafePermissions(t *testing.T) {
 		"deny not a list":     func(permissions map[string]any) { permissions["deny"] = "Bash" },
 		"no permissions":      func(permissions map[string]any) { clear(permissions) },
 		"deny ends in a number": func(permissions map[string]any) {
-			deny := []any{}
+			deny := make([]any, 0, len(denyList())+1)
+
 			for _, tool := range denyList() {
 				deny = append(deny, tool)
 			}
@@ -2778,7 +2781,8 @@ func TestWaitLoginMissingExecutable(t *testing.T) {
 
 	cmd := exec.CommandContext(context.Background(), "/nonexistent/vendor")
 
-	if err := waitLogin(context.Background(), cmd); !errors.Is(err, ErrArguments) {
+	err := waitLogin(context.Background(), cmd)
+	if !errors.Is(err, ErrArguments) {
 		t.Fatal(err)
 	}
 
@@ -2835,14 +2839,16 @@ func TestCloseTerminalWaitsOneHundredMillisecondsForDrain(t *testing.T) {
 		time.Sleep(99*time.Millisecond + 500*time.Microsecond)
 		synctest.Wait()
 
-		if _, err := reader.Stat(); err != nil {
+		_, statErr := reader.Stat()
+		if statErr != nil {
 			t.Error("terminal closed before 100ms")
 		}
 
 		time.Sleep(time.Millisecond)
 		synctest.Wait()
 
-		if _, err := reader.Stat(); !errors.Is(err, os.ErrClosed) {
+		_, statErr = reader.Stat()
+		if !errors.Is(statErr, os.ErrClosed) {
 			t.Error("terminal still open after 100ms")
 		}
 
@@ -2880,7 +2886,7 @@ type readStep struct {
 // stepReader returns its steps one per read, so a test can place a read error between chunks.
 type stepReader struct{ steps []readStep }
 
-func (r *stepReader) Read(p []byte) (int, error) {
+func (r *stepReader) Read(buffer []byte) (int, error) {
 	if len(r.steps) == 0 {
 		return 0, io.EOF
 	}
@@ -2888,28 +2894,46 @@ func (r *stepReader) Read(p []byte) (int, error) {
 	step := r.steps[0]
 	r.steps = r.steps[1:]
 
-	return copy(p, step.data), step.err
+	return copy(buffer, step.data), step.err
 }
 
 func TestCheckKeysRejectsBrokenInput(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]io.Reader{
-		"empty":           strings.NewReader(""),
+		"empty input":     strings.NewReader(""),
 		"number as key":   strings.NewReader("{1:2}"),
 		"unclosed object": strings.NewReader("{"),
-		"read error inside object": &stepReader{steps: []readStep{
-			{err: nil, data: `[{"a":1,`}, {err: errors.New("transient"), data: ""}, {err: nil, data: `"b":2}]`},
-		}},
 	}
 
 	for name, reader := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			if err := checkKeys(json.NewDecoder(reader), 0); !errors.Is(err, ErrArguments) {
+			err := checkKeys(json.NewDecoder(reader), 0)
+			if !errors.Is(err, ErrArguments) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestCheckObjectRejectsReadErrorBetweenMembers(t *testing.T) {
+	t.Parallel()
+
+	dec := json.NewDecoder(&stepReader{steps: []readStep{
+		{err: nil, data: `[{"a":1,`}, {err: errTransient, data: ""}, {err: nil, data: `"b":2}]`},
+	}})
+
+	for range 2 {
+		_, err := dec.Token()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := checkObject(dec, 1)
+	if !errors.Is(err, ErrArguments) {
+		t.Fatal(err)
 	}
 }
