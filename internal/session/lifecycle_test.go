@@ -430,12 +430,16 @@ func TestOptionsValidation(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*Options){
-		"spool":    func(o *Options) { o.SpoolDir = "spool" },
-		"empty":    func(o *Options) { o.Prompt = "" },
-		"words":    func(o *Options) { o.Prompt = "two words" },
-		"control":  func(o *Options) { o.Prompt = "a\x00b" },
-		"option":   func(o *Options) { o.Prompt = "-p" },
-		"linefeed": func(o *Options) { o.Prompt = "a\nb" },
+		"spool":          func(o *Options) { o.SpoolDir = "spool" },
+		"empty":          func(o *Options) { o.Prompt = "" },
+		"words":          func(o *Options) { o.Prompt = "two words" },
+		"control":        func(o *Options) { o.Prompt = "a\x00b" },
+		"option":         func(o *Options) { o.Prompt = "-p" },
+		"linefeed":       func(o *Options) { o.Prompt = "a\nb" },
+		"vertical tab":   func(o *Options) { o.Prompt = "a\vb" },
+		"form feed":      func(o *Options) { o.Prompt = "a\fb" },
+		"no-break space": func(o *Options) { o.Prompt = "a\u00a0b" },
+		"next line":      func(o *Options) { o.Prompt = "a\u0085b" },
 	} {
 		options := fixtureValue.options
 		mutate(&options)
@@ -2269,5 +2273,387 @@ func checkSnapshot(t *testing.T, snapshotAt, readingAt, observed, wantReading ti
 	if !state.readingAt.Equal(now.Add(wantReading)) || state.readingRestart != wantRestarted ||
 		state.status.Reason != "" || len(state.status.Restarts) != 0 {
 		t.Fatal(state.readingAt, state.readingRestart, state.status.Reason)
+	}
+}
+
+// cancelClock cancels the context while the loop prepares to wait, so only the context can end the wait.
+type cancelClock struct {
+	*testClock
+
+	cancel context.CancelFunc
+}
+
+func (c cancelClock) After(time.Duration) <-chan time.Time {
+	c.cancel()
+
+	return nil
+}
+
+// liveChild starts the child and returns its process ID after the fake vendor records the start.
+func liveChild(t *testing.T, fixtureValue fixture, state *running) int {
+	t.Helper()
+	must(t, state.launch())
+	fixtureValue.until(t, func() bool { return len(fixtureValue.calls(t)) >= 1 })
+
+	pid := fixtureValue.calls(t)[0].PID
+
+	t.Cleanup(func() {
+		//nolint:errcheck // The child may have ended already.
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	})
+
+	return pid
+}
+
+func holdStatusControl() fakeControl {
+	var control fakeControl
+
+	control.HoldStatus = true
+
+	return control
+}
+
+func endingGrandchildControl() fakeControl {
+	var control fakeControl
+
+	control.EndClaude, control.Grandchild = true, true
+
+	return control
+}
+
+// wantEnded checks that the runner released the process and that the process ended.
+func wantEnded(t *testing.T, child *process, pid int) {
+	t.Helper()
+
+	if child != nil || !processGone(pid) {
+		t.Fatal("process kept running", child != nil, pid)
+	}
+}
+
+func TestRunRefusesPromptsBeforeAnyWork(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for name, prompt := range map[string]string{
+		"empty": "", "split": "two words", "option": "-p", "vertical tab": "a\vb", "no-break space": "a\u00a0b",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorClaude)
+			fixtureValue.options.Prompt = prompt
+
+			if code := (Runner{Options: fixtureValue.options, Clock: fixtureValue.clock}).Run(ctx); code != 1 {
+				t.Fatal(code)
+			}
+
+			fixtureValue.wantNoStatus(t)
+
+			if len(fixtureValue.calls(t)) != 0 {
+				t.Fatal("vendor ran")
+			}
+		})
+	}
+}
+
+func TestInitialApprovalUnreadableStopState(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	denyAccess(t, fixtureValue.options.SpoolDir, 0)
+
+	if code, done := state.initialApproval(); code != 1 || !done {
+		t.Fatal(code, done)
+	}
+}
+
+func TestInitialStopSkipsApproval(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+
+	must(t, os.WriteFile(fixtureValue.options.AliasFile, nil, 0o600))
+	must(t, os.WriteFile(filepath.Join(fixtureValue.options.SpoolDir, "stop"), nil, 0o600))
+
+	if code, done := state.initialApproval(); code != 0 || done {
+		t.Fatal(code, done)
+	}
+
+	fixtureValue.wantNoStatus(t)
+}
+
+func TestApprovalRevocationStopsChildBeforeFinishing(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	pid := liveChild(t, fixtureValue, state)
+
+	must(t, os.WriteFile(fixtureValue.options.AliasFile, nil, 0o600))
+
+	code, done := state.checkApproval()
+	fixtureValue.wantStopped(t, code, done, 0, "not_approved")
+	wantEnded(t, state.child, pid)
+}
+
+func TestMissingApprovalFileEndsStepWithOne(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+
+	must(t, os.Remove(fixtureValue.options.AliasFile))
+
+	code, done := state.step(context.Background())
+	fixtureValue.wantStopped(t, code, done, 1, "approval_unavailable")
+}
+
+func TestCancelledStepDoesNoWork(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	code, done := state.step(ctx)
+	fixtureValue.wantStopped(t, code, done, 1, "interrupted")
+
+	if state.check != nil {
+		t.Fatal("status check started")
+	}
+}
+
+func TestCancelWhileWaitingEndsInterrupted(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	defer cancel()
+
+	clock := cancelClock{testClock: fixtureValue.clock, cancel: cancel}
+	code := (Runner{Options: fixtureValue.options, Clock: clock}).Run(ctx)
+	status := fixtureValue.status(t)
+
+	if code != 1 || status.Phase != phaseStopped || status.Reason != "interrupted" || len(status.Restarts) != 1 {
+		t.Fatal(code, status)
+	}
+}
+
+func TestRestartLimitStopsChildBeforeFinishing(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	pid := liveChild(t, fixtureValue, state)
+
+	for range 5 {
+		state.status.Restarts = append(state.status.Restarts, state.clock.Now())
+	}
+
+	code, done := state.step(context.Background())
+	fixtureValue.wantStopped(t, code, done, 0, reasonRestartLimit)
+	wantEnded(t, state.child, pid)
+}
+
+func TestStopChildrenReleasesStatusCheck(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	fixtureValue.control(t, holdStatusControl())
+
+	state := stateFor(t, fixtureValue)
+
+	if code, done := state.statusCheck(); code != 0 || done || state.check == nil {
+		t.Fatal(code, done)
+	}
+
+	// The cleanup drops a kept reference. Otherwise the cleanup would wait for a process that already ended.
+	t.Cleanup(func() { state.check = nil })
+	state.stopChildren()
+
+	if state.check != nil {
+		t.Fatal("status check kept")
+	}
+}
+
+func TestStatusCheckNotDueStartsNothing(t *testing.T) {
+	t.Parallel()
+
+	for name, test := range map[string]struct {
+		vendor    string
+		withChild bool
+	}{
+		"claude with the execution time passed": {vendorClaude, false},
+		"codex with a child running":            {vendorCodex, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, test.vendor)
+			state := stateFor(t, fixtureValue)
+			state.nextCheck = state.clock.Now().Add(time.Hour)
+
+			if test.withChild {
+				state.child = finished(nil)
+
+				t.Cleanup(func() { state.child = nil })
+			}
+
+			if code, done := state.statusCheck(); code != 0 || done || state.check != nil {
+				t.Fatal("status check started", code, done)
+			}
+		})
+	}
+}
+
+func TestStatusCheckArgumentsByVendor(t *testing.T) {
+	t.Parallel()
+
+	for vendor, want := range map[string]string{vendorClaude: "auth status", vendorCodex: "login status"} {
+		t.Run(vendor, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendor)
+			state := stateFor(t, fixtureValue)
+
+			if code, done := state.statusCheck(); code != 0 || done {
+				t.Fatal(code, done)
+			}
+
+			fixtureValue.until(t, func() bool { return len(fixtureValue.calls(t)) == 1 })
+
+			if got := strings.Join(fixtureValue.calls(t)[0].Args, " "); got != want {
+				t.Fatal(got)
+			}
+		})
+	}
+}
+
+func TestPeriodicStatusCheckKeepsRunningPhase(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	liveChild(t, fixtureValue, state)
+
+	if code, done := state.statusCheck(); code != 0 || done || state.check == nil {
+		t.Fatal(code, done)
+	}
+
+	if phase := fixtureValue.status(t).Phase; phase != phaseRunning {
+		t.Fatal(phase)
+	}
+}
+
+func TestCompletedStatusCheckKeepsRunningChild(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	liveChild(t, fixtureValue, state)
+
+	original := state.child
+	state.nextExec = time.Time{}
+	state.check = finished(nil)
+
+	if code, done := state.pollStatusCheck(); code != 0 || done || state.child != original {
+		t.Fatal("status check replaced the child", code, done)
+	}
+}
+
+func TestStatusCheckTimeoutStopsChildren(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	fixtureValue.control(t, holdStatusControl())
+
+	state := stateFor(t, fixtureValue)
+	childPID := liveChild(t, fixtureValue, state)
+
+	if code, done := state.statusCheck(); code != 0 || done || state.check == nil {
+		t.Fatal(code, done)
+	}
+
+	fixtureValue.until(t, func() bool { return len(fixtureValue.calls(t)) == 2 })
+
+	checkPID := fixtureValue.calls(t)[1].PID
+
+	t.Cleanup(func() {
+		//nolint:errcheck // The check may have ended already.
+		_ = syscall.Kill(checkPID, syscall.SIGKILL)
+	})
+
+	fixtureValue.clock.advance(30 * time.Second)
+
+	code, done := state.pollStatusCheck()
+	fixtureValue.wantStopped(t, code, done, 1, reasonStatusFailed)
+	wantEnded(t, state.child, childPID)
+
+	if state.check != nil || !processGone(checkPID) {
+		t.Fatal("status check kept running")
+	}
+}
+
+func TestSignedOutStopsChildBeforeFinishing(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	pid := liveChild(t, fixtureValue, state)
+	state.check = finished(codeError(1))
+
+	code, done := state.pollStatusCheck()
+	fixtureValue.wantStopped(t, code, done, 0, reasonSignedOut)
+	wantEnded(t, state.child, pid)
+}
+
+func TestReadingUnavailableStopsChildBeforeFinishing(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	pid := liveChild(t, fixtureValue, state)
+	state.readingRestart = true
+
+	fixtureValue.clock.advance(15 * time.Minute)
+
+	code, done := state.considerRestart()
+	fixtureValue.wantStopped(t, code, done, 0, "reading_unavailable")
+	wantEnded(t, state.child, pid)
+}
+
+func TestClaudeChildEndClosesTerminalAndKillsGroup(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	fixtureValue.control(t, endingGrandchildControl())
+
+	grandchildFile := filepath.Join(fixtureValue.options.directory(), directoryWork, "grandchild")
+	killGrandchildAfter(t, grandchildFile)
+
+	state := stateFor(t, fixtureValue)
+	must(t, state.launch())
+
+	child := state.child
+
+	fixtureValue.until(t, func() bool {
+		state.observeChild()
+
+		return state.child == nil
+	})
+
+	if !processGone(grandchildPID(t, grandchildFile)) {
+		t.Fatal("grandchild survived the ended child")
+	}
+
+	_, err := child.terminal.Stat()
+	if !errors.Is(err, os.ErrClosed) {
+		t.Fatal("terminal still open", err)
 	}
 }
