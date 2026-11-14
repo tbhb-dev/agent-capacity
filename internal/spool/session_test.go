@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -398,6 +399,11 @@ func TestWriteSessionSyncsStatusDirectory(t *testing.T) {
 	}
 
 	require.NoError(t, WriteSession(root, validStatus()))
+	require.Equal(t, 2, synced)
+
+	synced = 0
+
+	require.NoError(t, WriteSession(root, validStatus()))
 	require.Equal(t, 1, synced)
 
 	syncDir = func(*os.Root) error { return fs.ErrPermission }
@@ -447,4 +453,220 @@ func canonicalTempDir(t *testing.T) string {
 	}
 
 	return dir
+}
+
+type foreignInfo struct {
+	fs.FileInfo
+
+	sys any
+}
+
+func (i foreignInfo) Sys() any { return i.sys }
+
+type modeCase struct {
+	mode    os.FileMode
+	private bool
+}
+
+func modeCases() []modeCase {
+	return []modeCase{
+		{0o600, true},
+		{0o644, true},
+		{0o640, true},
+		{0o666, false},
+		{0o660, false},
+		{0o606, false},
+		{0o620, false},
+		{0o602, false},
+	}
+}
+
+func TestPrivateEntryChecksOwnerAndWriteBits(t *testing.T) {
+	t.Parallel()
+
+	file := filepath.Join(t.TempDir(), "entry")
+	require.NoError(t, os.WriteFile(file, nil, sessionFileMode))
+
+	info, err := os.Stat(file)
+	require.NoError(t, err)
+	require.True(t, privateEntry(info))
+
+	for _, test := range modeCases() {
+		require.NoError(t, os.Chmod(file, test.mode))
+
+		info, err = os.Stat(file)
+		require.NoError(t, err)
+		require.Equal(t, test.private, privateEntry(info), test.mode.String())
+	}
+
+	require.NoError(t, os.Chmod(file, sessionFileMode))
+
+	info, err = os.Stat(file)
+	require.NoError(t, err)
+
+	var other syscall.Stat_t
+
+	owner, ok := info.Sys().(*syscall.Stat_t)
+	require.True(t, ok)
+
+	other = *owner
+	other.Uid++
+
+	require.False(t, privateEntry(foreignInfo{info, &other}))
+	require.False(t, privateEntry(foreignInfo{info, nil}))
+}
+
+func writeRawStatus(t *testing.T, dir, content string, mode os.FileMode) string {
+	t.Helper()
+
+	status := filepath.Join(dir, "status")
+	require.NoError(t, os.MkdirAll(status, sessionDirectoryMode))
+
+	path := filepath.Join(status, "codex-sample.json")
+	require.NoError(t, os.WriteFile(path, []byte(content), mode))
+	require.NoError(t, os.Chmod(path, mode))
+
+	return path
+}
+
+func statusJSON(t *testing.T, restarts int, extra string) string {
+	t.Helper()
+
+	status := validStatus()
+	for range restarts {
+		status.Restarts = append(status.Restarts, time.Now().UTC())
+	}
+
+	data, err := json.Marshal(status)
+	require.NoError(t, err)
+
+	return strings.TrimSuffix(string(data), "}") + extra + "}"
+}
+
+func TestReadSessionDecodesStrictlyAndBounded(t *testing.T) {
+	t.Parallel()
+
+	valid := statusJSON(t, 1, "")
+	exact := valid + strings.Repeat(" ", maxStatusBytes-len(valid))
+
+	for name, test := range map[string]struct {
+		content string
+		valid   bool
+	}{
+		"plain":                  {valid, true},
+		"exactly the bound":      {exact, true},
+		"one byte over":          {exact + " ", false},
+		"oversized":              {valid + strings.Repeat(" ", 2*maxStatusBytes), false},
+		"trailing value":         {valid + " {}", false},
+		"trailing garbage":       {valid + "x", false},
+		"duplicate key":          {statusJSON(t, 0, `,"phase":"stopped"`), false},
+		"case variant key":       {statusJSON(t, 0, `,"PHASE":"stopped"`), false},
+		"duplicate nested key":   {statusJSON(t, 0, `,"x":{"a":1,"a":2}`), false},
+		"duplicate in array":     {statusJSON(t, 0, `,"x":[1,{"a":1,"a":2}]`), false},
+		"distinct nested keys":   {statusJSON(t, 0, `,"x":[1,{"a":1,"b":2}]`), true},
+		"unterminated":           {strings.TrimSuffix(valid, "}"), false},
+		"unterminated nested":    {statusJSON(t, 0, `,"x":[1`), false},
+		"not an object":          {"1", false},
+		"non-string key":         {"{1:2}", false},
+		"at the history limit":   {statusJSON(t, maxRestartHistory, ""), true},
+		"over the history limit": {statusJSON(t, maxRestartHistory+1, ""), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir, root := testSessionRoot(t)
+			path := writeRawStatus(t, dir, test.content, sessionFileMode)
+
+			_, err := ReadSession(root, sessionVendor, sessionAlias)
+			if test.valid {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, errSessionState)
+			}
+
+			after, readErr := os.ReadFile(path)
+			require.NoError(t, readErr)
+			require.Equal(t, test.content, string(after))
+		})
+	}
+}
+
+func TestReadSessionRejectsPipeWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	dir, root := testSessionRoot(t)
+	status := filepath.Join(dir, "status")
+	require.NoError(t, os.Mkdir(status, sessionDirectoryMode))
+	require.NoError(t, syscall.Mkfifo(filepath.Join(status, "codex-sample.json"), sessionFileMode))
+
+	result := make(chan error, 1)
+
+	go func() {
+		_, err := ReadSession(root, sessionVendor, sessionAlias)
+		result <- err
+	}()
+
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, errSessionState)
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "read blocked on a pipe")
+	}
+}
+
+func TestReadBoundedRejectsUnusableFiles(t *testing.T) {
+	t.Parallel()
+	dir, root := testSessionRoot(t)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "plain"), []byte("abc"), sessionFileMode))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "directory"), sessionDirectoryMode))
+	require.NoError(t, os.Symlink("plain", filepath.Join(dir, "link")))
+
+	data, err := ReadBounded(root, "plain", 3)
+	require.NoError(t, err)
+	require.Equal(t, "abc", string(data))
+
+	_, err = ReadBounded(root, "plain", 2)
+	require.ErrorIs(t, err, errSessionState)
+
+	_, err = ReadBounded(root, "missing", 3)
+	require.ErrorIs(t, err, fs.ErrNotExist)
+
+	for _, name := range []string{"directory", "link"} {
+		_, err = ReadBounded(root, name, 3)
+		require.ErrorIs(t, err, errSessionState, name)
+	}
+}
+
+func TestReadSessionRejectsWritableStatusEntries(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range modeCases() {
+		t.Run(test.mode.String(), func(t *testing.T) {
+			t.Parallel()
+			dir, root := testSessionRoot(t)
+			writeRawStatus(t, dir, statusJSON(t, 0, ""), test.mode)
+
+			_, err := ReadSession(root, sessionVendor, sessionAlias)
+			if test.private {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, errSessionState)
+			}
+		})
+	}
+
+	for _, test := range modeCases() {
+		t.Run("directory "+test.mode.String(), func(t *testing.T) {
+			t.Parallel()
+			dir, root := testSessionRoot(t)
+			writeRawStatus(t, dir, statusJSON(t, 0, ""), sessionFileMode)
+			require.NoError(t, os.Chmod(filepath.Join(dir, "status"), test.mode|0o100))
+
+			_, err := ReadSession(root, sessionVendor, sessionAlias)
+			if test.private {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, errSessionState)
+			}
+		})
+	}
 }

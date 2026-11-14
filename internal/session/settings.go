@@ -20,8 +20,10 @@ const (
 	safeDefaultMode = "dontAsk"
 	safeBypassMode  = "disable"
 	maxDepth        = 32
-	settingsPath    = "config/settings.json"
-	commandKey      = "command"
+	// maxSettingsBytes bounds the settings read. The rendered file is about 1 KiB.
+	maxSettingsBytes = 64 << 10
+	settingsPath     = "config/settings.json"
+	commandKey       = "command"
 )
 
 // allowList is the one source for the pre-approved tools.
@@ -45,13 +47,7 @@ func denyList() []string {
 // a hostile writer. It doesn't check Codex's configuration, and deny support for the `mcp__*` wildcard is
 // unverified. The `dontAsk` mode is the real control.
 func checkSettings(alias *os.Root, command string) error {
-	info, err := alias.Lstat(settingsPath)
-	if err != nil || !info.Mode().IsRegular() {
-		return ErrArguments
-	}
-
-	data, err := alias.ReadFile(settingsPath)
-	// gomutants:disable-next-line BRANCH_IF reason="A failed read gives data that the key check rejects."
+	data, err := spool.ReadBounded(alias, settingsPath, maxSettingsBytes)
 	if err != nil {
 		return ErrArguments
 	}

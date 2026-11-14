@@ -881,13 +881,6 @@ func TestRunRefusals(t *testing.T) {
 		"linked lock": {func(f *fixture) error {
 			return os.Symlink(f.base, filepath.Join(f.options.directory(), ".runner.lock"))
 		}, noStatus},
-		"corrupt status": {func(f *fixture) error {
-			status := filepath.Join(f.options.SpoolDir, "status")
-
-			file := filepath.Join(status, "claude-sample.json")
-
-			return errors.Join(os.Mkdir(status, 0o700), os.WriteFile(file, []byte("{"), 0o600))
-		}, "invalid_state"},
 		"missing allow list": {func(f *fixture) error { return os.Remove(f.options.AliasFile) }, "approval_unavailable"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -3372,4 +3365,131 @@ func TestCodexLaunchPassesRestrictedArgs(t *testing.T) {
 
 		return false
 	})
+}
+
+// Malformed restart history ends the run and leaves the file unchanged. The restart budget is unchanged.
+func TestRunKeepsMalformedRestartState(t *testing.T) {
+	t.Parallel()
+
+	stamp := fixtureStamp()
+	valid := `{"time":"` + stamp + `","alias":"sample","vendor":"claude","phase":"stopped","reason":"none",` +
+		`"restarts":[],"login_expiring":false}`
+
+	tests := map[string]string{
+		"truncated":     "{",
+		"oversized":     valid + strings.Repeat(" ", 9000),
+		"trailing data": valid + " {}",
+		"duplicate key": strings.Replace(valid, `"phase":"stopped"`, `"phase":"stopped","Phase":"running"`, 1),
+		"too many entries": strings.Replace(valid, `"restarts":[]`,
+			`"restarts":[`+strings.TrimSuffix(strings.Repeat(`"`+stamp+`",`, 21), ",")+`]`, 1),
+	}
+
+	for name, content := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorClaude)
+			status := filepath.Join(fixtureValue.options.SpoolDir, "status")
+			file := filepath.Join(status, "claude-sample.json")
+			must(t, errors.Join(os.Mkdir(status, 0o700), os.WriteFile(file, []byte(content), 0o600)))
+
+			checkRunnerExit(t, fixtureValue, 1)
+
+			got, err := os.ReadFile(file)
+			must(t, err)
+
+			if string(got) != content || len(fixtureValue.calls(t)) != 0 {
+				t.Fatal("malformed state was replaced or a child started")
+			}
+		})
+	}
+}
+
+func fixtureStamp() string { return time.Unix(1_700_000_000, 0).UTC().Format(time.RFC3339) }
+
+// Future timestamps don't count toward the limit. A timestamp within the clock skew still counts.
+func TestLoadRestartsDropsFutureTimestamps(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	now := fixtureValue.clock.Now()
+
+	future := now.Add(2 * time.Hour)
+	history := []time.Time{future, future, future, future, future}
+
+	state := writeRestartHistory(t, fixtureValue, history)
+	must(t, state.loadRestarts())
+
+	if len(state.status.Restarts) != 0 || state.limitReached() {
+		t.Fatal("future timestamps counted", state.status.Restarts)
+	}
+
+	kept := []time.Time{now.Add(restartSkew), now, now.Add(-time.Minute)}
+	state = writeRestartHistory(t, fixtureValue, append([]time.Time{now.Add(restartSkew + time.Second)}, kept...))
+	must(t, state.loadRestarts())
+
+	if !slices.EqualFunc(state.status.Restarts, kept, time.Time.Equal) {
+		t.Fatal("skew boundary or past timestamps dropped", state.status.Restarts)
+	}
+}
+
+func writeRestartHistory(t *testing.T, fixtureValue fixture, history []time.Time) *running {
+	t.Helper()
+
+	root, err := spool.SessionRoot(fixtureValue.options.SpoolDir)
+	must(t, err)
+
+	var previous spool.SessionStatus
+
+	previous.Time, previous.Vendor, previous.Alias = fixtureValue.clock.Now(), vendorClaude, fixtureAlias
+	previous.Phase, previous.Reason, previous.Restarts = phaseStopped, reasonNone, history
+	must(t, spool.WriteSession(root, previous))
+	must(t, root.Close())
+
+	return stateFor(t, fixtureValue)
+}
+
+// A pipe in place of the settings file must be refused without blocking the open.
+func TestSettingsPipeIsRefusedWithoutBlocking(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	path := filepath.Join(fixtureValue.options.directory(), settingsPath)
+	must(t, errors.Join(os.Remove(path), syscall.Mkfifo(path, 0o600)))
+
+	state := stateFor(t, fixtureValue)
+	result := make(chan error, 1)
+
+	go func() { result <- checkSettings(state.alias, "command") }()
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrArguments) {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("settings read blocked on a pipe")
+	}
+}
+
+func TestSettingsSizeBound(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	path := filepath.Join(fixtureValue.options.directory(), settingsPath)
+	data, err := os.ReadFile(path)
+	must(t, err)
+
+	state := stateFor(t, fixtureValue)
+	command := statusCommand(fixtureValue.options.Binary, fixtureAlias, fixtureValue.options.SpoolDir)
+
+	for padding, want := range map[int]bool{maxSettingsBytes - len(data): true, maxSettingsBytes - len(data) + 1: false} {
+		padded := append(bytes.Clone(data), bytes.Repeat([]byte(" "), padding)...)
+		must(t, os.WriteFile(path, padded, 0o600)) //nolint:gosec // The path is a test fixture.
+
+		got := checkSettings(state.alias, command)
+		if (got == nil) != want {
+			t.Fatal(padding, got)
+		}
+	}
 }

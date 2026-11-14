@@ -4,12 +4,16 @@
 package spool
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -17,6 +21,12 @@ import (
 const (
 	sessionDirectoryMode = 0o700
 	sessionFileMode      = 0o600
+	// maxStatusBytes bounds a status read. A full status with its restart history is under 2 KiB.
+	maxStatusBytes = 8 << 10
+	// maxRestartHistory is four times the restart limit of five per hour.
+	maxRestartHistory = 20
+	// unsafeWriteBits are the group and world write permission bits.
+	unsafeWriteBits = 0o022
 )
 
 var errSessionState = errors.New("invalid session state")
@@ -123,8 +133,15 @@ func statusRoot(root *os.Root) (*os.Root, error) {
 		return nil, errSessionState
 	}
 
+	if err == nil && syncDir(root) != nil {
+		// Removing the directory makes a retry create and sync it again.
+		root.Remove("status") //nolint:errcheck,gosec // The failed sync is the error to report.
+
+		return nil, errSessionState
+	}
+
 	info, err := lstat(root, "status")
-	if err != nil || !info.IsDir() {
+	if err != nil || !info.IsDir() || !privateEntry(info) {
 		return nil, errSessionState
 	}
 
@@ -194,6 +211,60 @@ func WriteSession(root *os.Root, status SessionStatus) error {
 	return nil
 }
 
+// privateEntry reports whether the current user is the owner and the group and others can't write.
+func privateEntry(info fs.FileInfo) bool {
+	owner, ok := info.Sys().(*syscall.Stat_t)
+
+	return ok && int(owner.Uid) == os.Getuid() && info.Mode().Perm()&unsafeWriteBits == 0
+}
+
+// ReadBounded reads a regular file of at most limit bytes without following links or blocking on a pipe.
+func ReadBounded(root *os.Root, name string, limit int64) ([]byte, error) {
+	data, _, err := readRegular(root, name, limit)
+
+	return data, err
+}
+
+// readRegular returns fs.ErrNotExist for a missing file and errSessionState for every other failure.
+func readRegular(dir *os.Root, name string, limit int64) ([]byte, fs.FileInfo, error) {
+	info, err := lstat(dir, name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, err
+	}
+
+	if err != nil {
+		return nil, nil, errSessionState
+	}
+
+	// gomutants:disable-next-line INVERT_BITWISE,INTEGER_INCREMENT reason="Links resolve either way. The mode is unused."
+	file, err := dir.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	// gomutants:disable-next-line BRANCH_IF reason="The nil file also fails the Stat that follows."
+	if err != nil {
+		return nil, nil, errSessionState
+	}
+
+	defer file.Close()
+
+	opened, err := fstat(file)
+	// gomutants:disable-next-line EXPRESSION_REMOVE reason="SameFile rejects a nil Stat result."
+	if err != nil || !os.SameFile(info, opened) || !opened.Mode().IsRegular() {
+		return nil, nil, errSessionState
+	}
+
+	data, readErr := io.ReadAll(io.LimitReader(file, limit+1))
+
+	var oversize error
+	if int64(len(data)) > limit {
+		oversize = errSessionState
+	}
+
+	if errors.Join(readErr, oversize) != nil {
+		return nil, nil, errSessionState
+	}
+
+	return data, opened, nil
+}
+
 // ReadSession reads only the requested alias's status, for durable restart limits.
 func ReadSession(root *os.Root, vendor, account string) (SessionStatus, error) {
 	if !sessionIdentity(vendor, account) {
@@ -206,9 +277,7 @@ func ReadSession(root *os.Root, vendor, account string) (SessionStatus, error) {
 	}
 	defer dir.Close()
 
-	name := vendor + "-" + account + ".json"
-
-	info, err := lstat(dir, name)
+	data, info, err := readRegular(dir, vendor+"-"+account+".json", maxStatusBytes)
 	if errors.Is(err, fs.ErrNotExist) {
 		var empty SessionStatus
 
@@ -216,29 +285,85 @@ func ReadSession(root *os.Root, vendor, account string) (SessionStatus, error) {
 		return empty, nil
 	}
 
-	if err != nil || !info.Mode().IsRegular() {
-		return SessionStatus{}, errSessionState
-	}
-
-	// gomutants:disable-next-line INVERT_BITWISE,INTEGER_INCREMENT reason="Links resolve either way. The mode is unused."
-	file, err := dir.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	// gomutants:disable-next-line BRANCH_IF reason="The nil file also fails the Stat that follows."
-	if err != nil {
-		return SessionStatus{}, errSessionState
-	}
-
-	defer file.Close()
-
-	opened, err := fstat(file)
-	// gomutants:disable-next-line EXPRESSION_REMOVE reason="SameFile rejects a nil Stat result."
-	if err != nil || !os.SameFile(info, opened) {
+	if err != nil || !privateEntry(info) {
 		return SessionStatus{}, errSessionState
 	}
 
 	var status SessionStatus
-	if json.NewDecoder(file).Decode(&status) != nil || status.Vendor != vendor || status.Alias != account {
+	if strictJSON(data) != nil || json.Unmarshal(data, &status) != nil || len(status.Restarts) > maxRestartHistory ||
+		status.Vendor != vendor || status.Alias != account {
 		return SessionStatus{}, errSessionState
 	}
 
 	return status, nil
+}
+
+// strictJSON refuses duplicate or case-variant keys and any data after the one JSON value.
+func strictJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+
+	if checkValue(dec) != nil {
+		return errSessionState
+	}
+
+	_, err := dec.Token()
+	if !errors.Is(err, io.EOF) {
+		return errSessionState
+	}
+
+	return nil
+}
+
+func checkValue(dec *json.Decoder) error {
+	token, err := dec.Token()
+	if err != nil {
+		return errSessionState
+	}
+
+	switch token {
+	case json.Delim('{'):
+		return checkMembers(dec)
+	case json.Delim('['):
+		return checkElements(dec)
+	default:
+		return nil
+	}
+}
+
+func checkMembers(dec *json.Decoder) error {
+	seen := map[string]struct{}{}
+
+	for dec.More() {
+		name, err := dec.Token()
+		if err != nil {
+			return errSessionState
+		}
+
+		key := strings.ToLower(fmt.Sprint(name))
+		if _, duplicate := seen[key]; duplicate {
+			return errSessionState
+		}
+
+		seen[key] = struct{}{}
+
+		if checkValue(dec) != nil {
+			return errSessionState
+		}
+	}
+
+	_, err := dec.Token()
+
+	return errors.Join(err)
+}
+
+func checkElements(dec *json.Decoder) error {
+	for dec.More() {
+		if checkValue(dec) != nil {
+			return errSessionState
+		}
+	}
+
+	_, err := dec.Token()
+
+	return errors.Join(err)
 }
