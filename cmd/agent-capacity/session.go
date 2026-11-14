@@ -79,7 +79,9 @@ func sessionCommand(ctx context.Context, args []string, output io.Writer) int {
 	}
 
 	vendor, account, ok := strings.Cut(*instance, "-")
-	if !ok || options.Vendor != "" || options.Account != "" {
+	if options.Vendor != "" || options.Account != "" ||
+		// gomutants:disable-next-line EXPRESSION_REMOVE reason="A missing separator leaves the account empty."
+		!ok {
 		return argumentExit
 	}
 

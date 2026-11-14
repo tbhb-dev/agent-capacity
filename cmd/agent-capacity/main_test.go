@@ -347,7 +347,7 @@ func runCases() []runCase {
 			output:      "agent-capacity 0.0.0-dev\n",
 		},
 		{args: nil, setupErr: false, meterErr: false, shutdownErr: false, want: 1, output: ""},
-		{args: []string{"unknown"}, setupErr: false, meterErr: false, shutdownErr: false, want: 1, output: ""},
+		{args: []string{unknownCommand}, setupErr: false, meterErr: false, shutdownErr: false, want: 1, output: ""},
 		{
 			args:        []string{versionCommand, extraArgument},
 			setupErr:    false,
