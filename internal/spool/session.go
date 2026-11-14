@@ -53,9 +53,9 @@ func SessionRoot(dir string) (*os.Root, error) {
 		return nil, errSessionState
 	}
 
-	resolved, err := filepath.EvalSymlinks(dir)
-	// gomutants:disable-next-line EXPRESSION_REMOVE reason="An empty path from a failed resolution never matches."
-	if err != nil || resolved != filepath.Clean(dir) {
+	// A failed resolution returns an empty path, which never equals a cleaned absolute path.
+	resolved, _ := filepath.EvalSymlinks(dir) //nolint:errcheck // The empty path carries the error.
+	if resolved != filepath.Clean(dir) {
 		return nil, errSessionState
 	}
 
@@ -135,7 +135,7 @@ func statusRoot(root *os.Root) (*os.Root, error) {
 	}
 
 	// A runner that finds the directory already there syncs the parent too, because the creator may stop before its sync.
-	// Every read and write pays this one directory sync. That cost is intended.
+	// The cost is intended: one read at start and one write per status interval.
 	if syncDir(root) != nil {
 		if err == nil {
 			// Removing the directory makes a retry create and sync it again.
@@ -155,9 +155,9 @@ func statusRoot(root *os.Root) (*os.Root, error) {
 		return nil, errSessionState
 	}
 
-	opened, err := stat(dir, ".")
-	// gomutants:disable-next-line EXPRESSION_REMOVE reason="A nil Stat result also fails SameFile."
-	if err != nil || !os.SameFile(info, opened) {
+	// A failed Stat returns nil, which SameFile never matches.
+	opened, _ := stat(dir, ".") //nolint:errcheck // The nil result carries the error.
+	if !os.SameFile(info, opened) {
 		_ = dir.Close()
 
 		return nil, errSessionState
@@ -250,9 +250,9 @@ func readRegular(dir *os.Root, name string, limit int64) ([]byte, fs.FileInfo, e
 
 	defer file.Close()
 
-	opened, err := fstat(file)
-	// gomutants:disable-next-line EXPRESSION_REMOVE reason="SameFile rejects a nil Stat result."
-	if err != nil || !os.SameFile(info, opened) || !opened.Mode().IsRegular() {
+	// A failed Stat returns nil, which SameFile never matches.
+	opened, _ := fstat(file) //nolint:errcheck // The nil result carries the error.
+	if !os.SameFile(info, opened) || !opened.Mode().IsRegular() {
 		return nil, nil, errSessionState
 	}
 

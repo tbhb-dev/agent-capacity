@@ -22,6 +22,11 @@ const (
 	terminationGrace  = 2 * time.Second
 )
 
+// exited runs after a process result is queued on done. Tests replace it to wait for that point.
+//
+//nolint:gochecknoglobals // A package-level hook is the only way to reach a process the runner starts.
+var exited = func(int) {}
+
 type warningDrain struct {
 	flag *atomic.Bool
 	tail string
@@ -90,6 +95,8 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 		}
 
 		child.done <- err
+
+		exited(cmd.Process.Pid)
 	}()
 
 	return child, nil

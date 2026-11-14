@@ -69,6 +69,8 @@ func TestMain(m *testing.M) {
 	// Clearing the file creation mask keeps the file mode assertions independent of the invoking shell.
 	syscall.Umask(0)
 
+	exited = func(pid int) { exitedPIDs.Store(pid, true) }
+
 	os.Exit(m.Run())
 }
 
@@ -1044,24 +1046,21 @@ func TestWallClockAfterFires(t *testing.T) {
 	}
 }
 
-// untilSignedOut moves the clock one status interval per status check. It advances after the newest recorded check
-// has exited and the runner has run three loop passes. Then it waits for the next check to be recorded. A check
-// not yet recorded never sees the clock move. The caller records the in-flight check first.
+// exitedPIDs holds the process IDs whose results the runner's waiter has queued.
+var exitedPIDs sync.Map //nolint:gochecknoglobals // The hook in process.go has no other way to report to a test.
+
+// untilSignedOut moves the clock one status interval per status check. It advances only after the newest recorded
+// check's result is queued and the runner has then run two loop passes, so the runner has consumed that result. The
+// next check starts after the advance. The caller records the in-flight check first.
 func untilSignedOut(t *testing.T, fixtureValue fixture) {
 	t.Helper()
 
-	const (
-		passes = 3
-		guard  = 50 * time.Millisecond
-		// spawnWait is far longer than a spawned check needs to be recorded.
-		spawnWait = time.Second
-	)
+	const passes = 2
 
 	var (
-		advanced   int
-		base       int64
-		exitedAt   time.Time
-		advancedAt time.Time
+		seen     int
+		base     int64
+		advanced int
 	)
 
 	fixtureValue.until(t, func() bool {
@@ -1070,26 +1069,27 @@ func untilSignedOut(t *testing.T, fixtureValue fixture) {
 			return true
 		}
 
-		// If the runner took an advance before it read the finished check, it never starts another check. After a
-		// long wait with no new record, the helper treats the advance as spent and advances again.
-		if len(calls) == 0 || (len(calls) == advanced && time.Since(advancedAt) < spawnWait) ||
-			!errors.Is(syscall.Kill(calls[len(calls)-1].PID, 0), syscall.ESRCH) {
+		if len(calls) == 0 || len(calls) == advanced {
 			return false
 		}
 
-		if exitedAt.IsZero() {
-			base, exitedAt = fixtureValue.clock.steps.Load(), time.Now()
+		if _, ok := exitedPIDs.Load(calls[len(calls)-1].PID); !ok {
+			return false
+		}
+
+		if len(calls) != seen {
+			seen, base = len(calls), fixtureValue.clock.steps.Load()
 		}
 
 		fixtureValue.clock.tick()
 
-		if fixtureValue.clock.steps.Load() < base+passes || time.Since(exitedAt) < guard {
+		if fixtureValue.clock.steps.Load() < base+passes {
 			return false
 		}
 
 		fixtureValue.clock.advance(statusInterval)
 
-		advanced, exitedAt, advancedAt = len(calls), time.Time{}, time.Now()
+		advanced = len(calls)
 
 		return false
 	})

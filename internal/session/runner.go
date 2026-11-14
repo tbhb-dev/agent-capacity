@@ -540,9 +540,8 @@ func cleanRollouts(alias *os.Root, now time.Time) error {
 	}
 	defer root.Close()
 
-	opened, err := statRoot(root, ".")
-	// gomutants:disable-next-line EXPRESSION_REMOVE reason="A nil stat result makes the same-file test fail."
-	if err != nil || !os.SameFile(sessions, opened) {
+	opened, _ := statRoot(root, ".") //nolint:errcheck // The nil result carries the error.
+	if !os.SameFile(sessions, opened) {
 		return ErrArguments
 	}
 
