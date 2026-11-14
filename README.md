@@ -60,7 +60,7 @@ Claude Code headless `--output-format stream-json`: reported, not verified here.
 
 ## Session runner
 
-The session runner starts Claude Code with a fixed deny list of tools and the `dontAsk` permission mode, and it checks the rendered settings file before each launch. The check guards against a stale or mis-rendered file and doesn't defend against a hostile writer. The deny list is a snapshot of tool names, `mcp__*` wildcard support in the deny list is unverified, and `dontAsk` is the real control. Codex has no tool deny list. The runner starts `codex exec` with `--sandbox read-only` and the `never` approval policy, and those flags are the control.
+The session runner starts Claude Code with a fixed deny list of tools and the `dontAsk` permission mode. Each launch first checks the Claude settings file. A file passes only with the rendered keys, the rendered `allow` list and status line command, and every refused tool in `deny`. This floor guards against a stale or mis-rendered file and doesn't defend against a hostile writer. Since the deny list is a snapshot of tool names and `mcp__*` wildcard support in `deny` is unverified, `dontAsk` is the real control. Codex's config isn't checked, and it has no tool deny list. The runner starts `codex exec` with `--sandbox read-only` and the `never` approval policy, and those flags are the control.
 
 ## Export configuration
 

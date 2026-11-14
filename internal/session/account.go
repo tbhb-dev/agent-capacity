@@ -260,6 +260,8 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 	case err := <-done:
 		return err
 	case <-ctx.Done():
+		// Only the child gets the signal. It shares the caller's terminal, so a separate process group would
+		// stop it on terminal input. Descendants of the child keep running.
 		//nolint:errcheck // The child may already have exited.
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 
@@ -276,10 +278,18 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 	}
 }
 
+const lockName = ".runner.lock"
+
 func lockAlias(root *os.Root) (*os.File, error) {
-	file, err := root.OpenFile(".runner.lock", os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, privateMode)
+	file, err := root.OpenFile(lockName, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, privateMode)
 	// gomutants:disable-next-line BRANCH_IF reason="Same error."
 	if err != nil {
+		return nil, ErrArguments
+	}
+
+	if verifyLock(root, lockName, file) != nil {
+		_ = file.Close()
+
 		return nil, ErrArguments
 	}
 
@@ -290,4 +300,20 @@ func lockAlias(root *os.Root) (*os.File, error) {
 	}
 
 	return file, nil
+}
+
+// verifyLock rejects a lock path that links elsewhere. The os.Root type follows links that resolve inside the
+// root, so the O_NOFOLLOW flag alone doesn't stop a link to another file in the alias directory.
+func verifyLock(root *os.Root, name string, file *os.File) error {
+	linked, err := root.Lstat(name)
+	if err != nil || !linked.Mode().IsRegular() {
+		return ErrArguments
+	}
+
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(linked, opened) {
+		return ErrArguments
+	}
+
+	return nil
 }

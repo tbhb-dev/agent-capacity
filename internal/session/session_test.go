@@ -50,6 +50,7 @@ type fakeControl struct {
 	HoldStatus bool `json:"holdStatus"`
 	Grandchild bool `json:"grandchild"`
 	SelfKill   bool `json:"selfKill"`
+	NewSession bool `json:"newSession"`
 }
 type fakeCall struct {
 	Dir  string   `json:"dir"`
@@ -87,7 +88,7 @@ func fakeVendor() int {
 		}
 	}
 
-	if control.Grandchild && startGrandchild() != nil {
+	if control.Grandchild && startGrandchild(control.NewSession) != nil {
 		return 9
 	}
 
@@ -115,9 +116,11 @@ func fakeVendor() int {
 	return control.ExecExit
 }
 
-func startGrandchild() error {
+func startGrandchild(newSession bool) error {
 	grandchild := exec.CommandContext(context.Background(), "/bin/sleep", "30")
 	grandchild.Stdout, grandchild.Stderr = os.Stdout, os.Stderr
+	grandchild.SysProcAttr = new(syscall.SysProcAttr)
+	grandchild.SysProcAttr.Setsid = newSession
 
 	err := grandchild.Start()
 	if err != nil {
@@ -389,6 +392,7 @@ func TestSignedOutNeverStartsChild(t *testing.T) {
 					HoldStatus: false,
 					Grandchild: false,
 					SelfKill:   false,
+					NewSession: false,
 				},
 			)
 			_, result := fixtureValue.run(t)
@@ -432,6 +436,7 @@ func TestStopWinsAndTerminatesChild(t *testing.T) {
 					HoldStatus: false,
 					Grandchild: false,
 					SelfKill:   false,
+					NewSession: false,
 					ExecExit:   0,
 				},
 			)
@@ -475,6 +480,7 @@ func TestInitiallyStoppedSkipsStatus(t *testing.T) {
 			HoldStatus: false,
 			Grandchild: false,
 			SelfKill:   false,
+			NewSession: false,
 			ExecExit:   0,
 			Warning:    false,
 			Hold:       false,
@@ -669,6 +675,7 @@ func TestWarningFlagAndNoOutputStored(t *testing.T) {
 			HoldStatus: false,
 			Grandchild: false,
 			SelfKill:   false,
+			NewSession: false,
 			Status:     0,
 			ExecExit:   0,
 		},
