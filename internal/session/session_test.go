@@ -37,6 +37,7 @@ const (
 	reasonScheduled    = "scheduled_restart"
 	directoryWork      = "work"
 	directoryHome      = "home"
+	loginRefused       = "login refused\n"
 )
 
 type fakeControl struct {
@@ -62,6 +63,9 @@ func TestMain(m *testing.M) {
 	if filepath.Base(os.Args[0]) == "fake-vendor" {
 		exitAsFakeVendor()
 	}
+
+	// Clearing the file creation mask keeps the file mode assertions independent of the invoking shell.
+	syscall.Umask(0)
 
 	os.Exit(m.Run())
 }
@@ -486,13 +490,18 @@ func TestUnapprovedNeverRunsVendor(t *testing.T) {
 	fixtureValue := setup(t, vendorClaude)
 	must(t, os.WriteFile(fixtureValue.options.AliasFile, []byte("codex sample\nclaude another\n"), 0o600))
 
-	var out bytes.Buffer
-	if Login(context.Background(), fixtureValue.options, os.Stdin, &out, &out) != 2 {
-		t.Fatal("login accepted")
+	input, err := os.Open(os.DevNull)
+	must(t, err)
+
+	defer input.Close()
+
+	var out, diagnostic bytes.Buffer
+	if got := Login(context.Background(), fixtureValue.options, input, &out, &diagnostic); got != 2 {
+		t.Fatal("login accepted", got)
 	}
 
-	if strings.Count(out.String(), "\n") != 1 {
-		t.Fatal("refusal must be one line")
+	if diagnostic.String() != loginRefused || out.Len() != 0 {
+		t.Fatalf("refusal output %q and %q", diagnostic.String(), out.String())
 	}
 
 	checkRunnerExit(t, fixtureValue, 0)
@@ -506,21 +515,30 @@ func TestLoginDirectoryAndTerminal(t *testing.T) {
 	t.Parallel()
 	fixtureValue := setup(t, vendorClaude)
 
-	var out bytes.Buffer
+	var out, diagnostic bytes.Buffer
 
 	input, err := os.Open(os.DevNull)
 	must(t, err)
 
 	defer input.Close()
 
-	if Login(context.Background(), fixtureValue.options, input, &out, &out) != 2 {
+	if Login(context.Background(), fixtureValue.options, input, &out, &diagnostic) != 2 {
 		t.Fatal("accepted no terminal")
 	}
 
-	setMode(t, fixtureValue.options.directory(), 0o755)
+	if diagnostic.String() != "login requires a terminal\n" || out.Len() != 0 {
+		t.Fatalf("terminal output %q and %q", diagnostic.String(), out.String())
+	}
 
-	if Login(context.Background(), fixtureValue.options, input, &out, &out) != 2 {
+	setMode(t, fixtureValue.options.directory(), 0o755)
+	diagnostic.Reset()
+
+	if Login(context.Background(), fixtureValue.options, input, &out, &diagnostic) != 2 {
 		t.Fatal("accepted public directory")
+	}
+
+	if diagnostic.String() != loginRefused {
+		t.Fatalf("public directory output %q", diagnostic.String())
 	}
 
 	if len(fixtureValue.calls(t)) != 0 {
@@ -542,12 +560,48 @@ func TestLoginDirectoryAndTerminal(t *testing.T) {
 		t.Fatal("foreign ownership accepted")
 	}
 
-	if loginAs(context.Background(), fixtureValue.options, input, &out, &out, os.Getuid()+1) != 2 {
+	diagnostic.Reset()
+
+	if loginAs(context.Background(), fixtureValue.options, input, &out, &diagnostic, os.Getuid()+1) != 2 {
 		t.Fatal("login accepted foreign ownership")
+	}
+
+	if diagnostic.String() != loginRefused || out.Len() != 0 {
+		t.Fatalf("foreign ownership output %q and %q", diagnostic.String(), out.String())
 	}
 
 	if len(fixtureValue.calls(t)) != 0 {
 		t.Fatal("vendor ran for foreign ownership")
+	}
+}
+
+func TestEnvironmentContents(t *testing.T) {
+	t.Parallel()
+
+	for vendor, want := range map[string][]string{
+		vendorClaude: {
+			"TERM=xterm-256color", "HOME=%s/claude-sample/home", "XDG_CONFIG_HOME=%s/claude-sample/home/.config",
+			"CLAUDE_CONFIG_DIR=%s/claude-sample/config", "CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000",
+		},
+		vendorCodex: {
+			"TERM=xterm-256color", "HOME=%s/codex-sample/home", "XDG_CONFIG_HOME=%s/codex-sample/home/.config",
+			"CODEX_HOME=%s/codex-sample/codex",
+		},
+	} {
+		fixtureValue := setup(t, vendor)
+		env := fixtureValue.options.environment()
+
+		if len(env) == 0 || !strings.HasPrefix(env[0], "PATH=") {
+			t.Fatal(vendor, "first entry is not PATH:", env)
+		}
+
+		for index, entry := range want {
+			want[index] = strings.ReplaceAll(entry, "%s", fixtureValue.base)
+		}
+
+		if !reflect.DeepEqual(env[1:], want) {
+			t.Fatalf("%s environment %q, want %q", vendor, env[1:], want)
+		}
 	}
 }
 

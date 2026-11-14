@@ -42,6 +42,13 @@ func TestOneRunnerPerAlias(t *testing.T) {
 		t.Fatal("duplicate vendor")
 	}
 
+	info, err := os.Stat(filepath.Join(fixtureValue.options.directory(), ".runner.lock"))
+	must(t, err)
+
+	if info.Mode() != 0o600 {
+		t.Fatalf("lock file mode %v, want -rw-------", info.Mode())
+	}
+
 	cancel()
 }
 
@@ -460,6 +467,30 @@ func TestApprovedReadFailures(t *testing.T) {
 	}
 }
 
+func TestApprovedFieldCounts(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	options := fixtureValue.options
+
+	for name, test := range map[string]struct {
+		content string
+		want    bool
+	}{
+		"two fields":   {"claude sample\n", true},
+		"three fields": {"claude sample extra\n", true},
+		"one field":    {"claude\n", false},
+		"blank line":   {"\n\n", false},
+	} {
+		must(t, os.WriteFile(options.AliasFile, []byte(test.content), 0o600))
+
+		approved, err := options.Approved()
+		if err != nil || approved != test.want {
+			t.Fatal(name, "approved:", approved, "error:", err)
+		}
+	}
+}
+
 func TestOwnedPrivateRejectsOtherShapes(t *testing.T) {
 	t.Parallel()
 
@@ -494,7 +525,33 @@ func TestOwnedPrivateRejectsOtherShapes(t *testing.T) {
 	if ownedPrivate(unknownOwner{info}, uid) {
 		t.Fatal("unknown owner accepted")
 	}
+
+	// Each case sets the reported mode because a sandbox can strip special bits from real directories.
+	for name, test := range map[string]struct {
+		mode os.FileMode
+		want bool
+	}{
+		"private directory": {os.ModeDir | 0o700, true},
+		"setuid":            {os.ModeDir | os.ModeSetuid | 0o700, false},
+		"setgid":            {os.ModeDir | os.ModeSetgid | 0o700, false},
+		"sticky":            {os.ModeDir | os.ModeSticky | 0o700, false},
+		"regular file":      {0o700, false},
+	} {
+		if ownedPrivate(shaped{info, test.mode}, uid) != test.want {
+			t.Fatal(name, "wrong verdict")
+		}
+	}
 }
+
+// shaped reports a chosen mode and the owner of the wrapped entry.
+type shaped struct {
+	os.FileInfo
+
+	mode os.FileMode
+}
+
+func (s shaped) Mode() os.FileMode { return s.mode }
+func (s shaped) IsDir() bool       { return s.mode.IsDir() }
 
 func TestOpenAliasRejects(t *testing.T) {
 	t.Parallel()
@@ -516,6 +573,25 @@ func TestOpenAliasRejects(t *testing.T) {
 	_, err = options.openAlias()
 	if !errors.Is(err, ErrArguments) {
 		t.Fatal("missing directory accepted")
+	}
+
+	fixtureValue = setup(t, vendorClaude)
+	options = fixtureValue.options
+
+	root, err := options.openAliasAs(os.Getuid())
+	must(t, err)
+	must(t, root.Close())
+
+	root, err = options.openAliasAs(os.Getuid() + 1)
+	if !errors.Is(err, ErrArguments) || root != nil {
+		t.Fatal("foreign owner accepted")
+	}
+
+	setMode(t, options.directory(), 0o755)
+
+	root, err = options.openAliasAs(os.Getuid())
+	if !errors.Is(err, ErrArguments) || root != nil {
+		t.Fatal("public directory accepted")
 	}
 }
 
@@ -541,7 +617,7 @@ func TestLoginRefusalAndVendorFailure(t *testing.T) {
 	var out, diagnostic strings.Builder
 
 	refused := Login(context.Background(), invalid, os.Stdin, &out, &diagnostic)
-	if refused != refusalExit || diagnostic.String() != "login refused\n" {
+	if refused != refusalExit || diagnostic.String() != loginRefused {
 		t.Fatal("invalid options not refused")
 	}
 
@@ -1366,6 +1442,10 @@ func TestLoginRejectsLinkedSubdirectories(t *testing.T) {
 			got := Login(context.Background(), fixtureValue.options, slave, &out, &diagnostic)
 			if got != 1 || strings.Contains(out.String(), "login finished") || len(fixtureValue.calls(t)) != 0 {
 				t.Fatal(got, out.String())
+			}
+
+			if diagnostic.String() != loginRefused {
+				t.Fatalf("diagnostic %q", diagnostic.String())
 			}
 		})
 	}
