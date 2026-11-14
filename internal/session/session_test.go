@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -214,6 +215,7 @@ func setup(t *testing.T, vendor string) fixture {
 		clock: &testClock{
 			now:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 			ticks: make(chan time.Time, 1),
+			steps: atomic.Int64{},
 			mu:    sync.Mutex{},
 		},
 	}
@@ -297,6 +299,7 @@ func (fixtureValue fixture) status(t *testing.T) spool.SessionStatus {
 type testClock struct {
 	now   time.Time
 	ticks chan time.Time
+	steps atomic.Int64
 	mu    sync.Mutex
 }
 
@@ -306,7 +309,13 @@ func (c *testClock) Now() time.Time {
 
 	return c.now
 }
-func (c *testClock) After(time.Duration) <-chan time.Time { return c.ticks }
+
+func (c *testClock) After(time.Duration) <-chan time.Time {
+	c.steps.Add(1)
+
+	return c.ticks
+}
+
 func (c *testClock) advance(d time.Duration) {
 	c.mu.Lock()
 	c.now = c.now.Add(d)
@@ -1028,14 +1037,37 @@ func TestWallClockAfterFires(t *testing.T) {
 	}
 }
 
-// untilSignedOut advances the clock one status interval per poll so the retry check runs. It advances only while
-// no status check is running, because a check that sees a whole interval pass stops the run.
+// untilSignedOut advances the clock one status interval at a time. A check that sees a whole interval pass stops the
+// run. The clock moves only when the last status check's process is gone and no new check has started for a
+// settle period. The loop ticks let the runner reap the check and start the next one during that period. The
+// fake records a check a few milliseconds after the runner starts it, so the period must outlast that delay.
 func untilSignedOut(t *testing.T, fixtureValue fixture) {
 	t.Helper()
+
+	const settle = 300 * time.Millisecond
+
+	var (
+		seen    int
+		quietAt time.Time
+	)
+
 	fixtureValue.until(t, func() bool {
 		calls := fixtureValue.calls(t)
-		if len(calls) > 0 && errors.Is(syscall.Kill(calls[len(calls)-1].PID, 0), syscall.ESRCH) {
-			fixtureValue.clock.advance(statusInterval)
+		if len(calls) != seen {
+			seen, quietAt = len(calls), time.Time{}
+		}
+
+		if seen > 0 && errors.Is(syscall.Kill(calls[seen-1].PID, 0), syscall.ESRCH) {
+			switch {
+			case quietAt.IsZero():
+				quietAt = time.Now()
+			case time.Since(quietAt) < settle:
+				fixtureValue.clock.tick()
+			default:
+				fixtureValue.clock.advance(statusInterval)
+
+				quietAt = time.Now()
+			}
 		}
 
 		return fixtureValue.status(t).Reason == reasonSignedOut

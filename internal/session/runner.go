@@ -121,7 +121,7 @@ func (r Runner) Run(ctx context.Context) int {
 }
 
 func (options Options) validRun() bool {
-	return options.Valid() && filepath.IsAbs(options.SpoolDir) &&
+	return options.Valid() && options.hasExporter() && filepath.IsAbs(options.SpoolDir) &&
 		len(strings.Fields(options.Prompt)) == 1 && !strings.ContainsAny(options.Prompt, "\x00\r\n\t ") &&
 		!strings.HasPrefix(options.Prompt, "-")
 }
@@ -161,9 +161,10 @@ func (s *running) loadRestarts() error {
 	}
 
 	latest := s.clock.Now().Add(restartSkew)
+	cutoff := s.clock.Now().Add(-restartWindow)
 
 	for _, at := range previous.Restarts {
-		if !at.After(latest) {
+		if !at.After(latest) && !at.Before(cutoff) {
 			s.status.Restarts = append(s.status.Restarts, at)
 		}
 	}
@@ -191,6 +192,10 @@ func (s *running) loop(ctx context.Context) int {
 }
 
 func (s *running) publish(phase, reason string) error {
+	if extra := len(s.status.Restarts) - spool.MaxRestartHistory; extra > 0 {
+		s.status.Restarts = s.status.Restarts[extra:]
+	}
+
 	s.status.Time = s.clock.Now().UTC()
 	s.status.Phase, s.status.Reason = phase, reason
 	s.status.LoginExpiring = s.warning.Load()

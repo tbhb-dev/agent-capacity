@@ -404,9 +404,21 @@ func TestWriteSessionSyncsStatusDirectory(t *testing.T) {
 	synced = 0
 
 	require.NoError(t, WriteSession(root, validStatus()))
-	require.Equal(t, 1, synced)
+	require.Equal(t, 2, synced)
 
 	syncDir = func(*os.Root) error { return fs.ErrPermission }
+
+	require.ErrorIs(t, WriteSession(root, validStatus()), errSessionState)
+	_, err := root.Lstat("status")
+	require.NoError(t, err)
+
+	syncDir = func(dir *os.Root) error {
+		if dir == root {
+			return nil
+		}
+
+		return fs.ErrPermission
+	}
 
 	require.ErrorIs(t, WriteSession(root, validStatus()), errSessionState)
 }
@@ -568,8 +580,8 @@ func TestReadSessionDecodesStrictlyAndBounded(t *testing.T) {
 		"unterminated nested":    {statusJSON(t, 0, `,"x":[1`), false},
 		"not an object":          {"1", false},
 		"non-string key":         {"{1:2}", false},
-		"at the history limit":   {statusJSON(t, maxRestartHistory, ""), true},
-		"over the history limit": {statusJSON(t, maxRestartHistory+1, ""), false},
+		"at the history limit":   {statusJSON(t, MaxRestartHistory, ""), true},
+		"over the history limit": {statusJSON(t, MaxRestartHistory+1, ""), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

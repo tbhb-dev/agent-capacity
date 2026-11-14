@@ -104,10 +104,11 @@ func TestReadSessionRequiresRegularStatusFile(t *testing.T) {
 	require.ErrorIs(t, err, errSessionState)
 }
 
-// A new status directory needs its entry synced into the spool root. An existing one doesn't.
+// The spool root is synced whether the status directory is new or already there, because its creator may have died
+// before syncing. A failed sync removes only a directory this call created.
 //
 //nolint:paralleltest // Replacing the sync hook mutates package state.
-func TestStatusRootSyncsParentOnlyWhenCreated(t *testing.T) {
+func TestStatusRootSyncsParent(t *testing.T) {
 	dir, root := testSessionRoot(t)
 	swapHooks(t)
 
@@ -130,7 +131,15 @@ func TestStatusRootSyncsParentOnlyWhenCreated(t *testing.T) {
 	status, err = statusRoot(root)
 	require.NoError(t, err)
 	require.NoError(t, status.Close())
-	require.Empty(t, synced)
+	require.Equal(t, []*os.Root{root}, synced)
+
+	syncDir = func(*os.Root) error { return fs.ErrPermission }
+
+	_, err = statusRoot(root)
+	require.ErrorIs(t, err, errSessionState)
+	require.DirExists(t, filepath.Join(dir, "status"))
+
+	syncDir = passthrough
 
 	require.NoError(t, os.Remove(filepath.Join(dir, "status")))
 

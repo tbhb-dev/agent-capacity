@@ -23,8 +23,8 @@ const (
 	sessionFileMode      = 0o600
 	// maxStatusBytes bounds a status read. A full status with its restart history is under 2 KiB.
 	maxStatusBytes = 8 << 10
-	// maxRestartHistory is four times the restart limit of five per hour.
-	maxRestartHistory = 20
+	// MaxRestartHistory is four times the restart limit of five per hour.
+	MaxRestartHistory = 20
 	// unsafeWriteBits are the group and world write permission bits.
 	unsafeWriteBits = 0o022
 )
@@ -133,9 +133,12 @@ func statusRoot(root *os.Root) (*os.Root, error) {
 		return nil, errSessionState
 	}
 
-	if err == nil && syncDir(root) != nil {
-		// Removing the directory makes a retry create and sync it again.
-		root.Remove("status") //nolint:errcheck,gosec // The failed sync is the error to report.
+	// A runner that finds the directory already there syncs the parent too, because the creator may stop before its sync.
+	if syncDir(root) != nil {
+		if err == nil {
+			// Removing the directory makes a retry create and sync it again.
+			root.Remove("status") //nolint:errcheck,gosec // The failed sync is the error to report.
+		}
 
 		return nil, errSessionState
 	}
@@ -290,7 +293,7 @@ func ReadSession(root *os.Root, vendor, account string) (SessionStatus, error) {
 	}
 
 	var status SessionStatus
-	if strictJSON(data) != nil || json.Unmarshal(data, &status) != nil || len(status.Restarts) > maxRestartHistory ||
+	if strictJSON(data) != nil || json.Unmarshal(data, &status) != nil || len(status.Restarts) > MaxRestartHistory ||
 		status.Vendor != vendor || status.Alias != account || status.Time.IsZero() {
 		return SessionStatus{}, errSessionState
 	}
