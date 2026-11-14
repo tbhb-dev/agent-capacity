@@ -5,7 +5,6 @@
 package session
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -24,17 +23,18 @@ import (
 )
 
 const (
-	vendorClaude  = "claude"
-	vendorCodex   = "codex"
-	commandLogin  = "login"
-	commandExec   = "exec"
-	phaseRunning  = "running"
-	phaseChecking = "checking"
-	phaseStopped  = "stopped"
-	phaseIdle     = "idle"
-	reasonNone    = "none"
-	refusalExit   = 2
-	privateMode   = 0o600
+	maxAllowListBytes = 64 << 10
+	vendorClaude      = "claude"
+	vendorCodex       = "codex"
+	commandLogin      = "login"
+	commandExec       = "exec"
+	phaseRunning      = "running"
+	phaseChecking     = "checking"
+	phaseStopped      = "stopped"
+	phaseIdle         = "idle"
+	reasonNone        = "none"
+	refusalExit       = 2
+	privateMode       = 0o600
 )
 
 // ErrArguments is safe to print without revealing configuration.
@@ -66,17 +66,13 @@ func (options Options) Approved() (bool, error) {
 		return false, ErrArguments
 	}
 
-	file, err := os.Open(options.AliasFile)
-	// gomutants:disable-next-line BRANCH_IF reason="Same error."
+	data, err := readAllowList(options.AliasFile)
 	if err != nil {
 		return false, ErrArguments
 	}
 
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for line := range strings.Lines(string(data)) {
+		line = strings.TrimSpace(line)
 		// gomutants:disable-next-line BRANCH_IF reason="Never matches."
 		if strings.HasPrefix(line, "#") {
 			continue
@@ -88,11 +84,24 @@ func (options Options) Approved() (bool, error) {
 		}
 	}
 
-	if scanner.Err() != nil {
-		return false, ErrArguments
+	return false, nil
+}
+
+// readAllowList reads a regular file without following links or blocking on a pipe.
+func readAllowList(path string) ([]byte, error) {
+	dir, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return nil, ErrArguments
 	}
 
-	return false, nil
+	defer dir.Close()
+
+	data, err := spool.ReadBounded(dir, filepath.Base(path), maxAllowListBytes)
+	if err != nil {
+		return nil, ErrArguments
+	}
+
+	return data, nil
 }
 
 func (options Options) directory() string {

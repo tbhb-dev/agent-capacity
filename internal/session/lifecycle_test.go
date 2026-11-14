@@ -1911,7 +1911,9 @@ func TestLaunchRefusesAmbiguousSettingsKeys(t *testing.T) {
 		"defaultMode variant":      `{"permissions":{` + safe + `,"DefaultMode":"acceptEdits"}}`,
 		"deny variant":             `{"permissions":{` + safe + `,"Deny":[]}}`,
 		"nested duplicate":         `{"permissions":{` + safe + `},"other":[{"a":1,"A":2}]}`,
-		"only Permissions":         `{"Permissions":{` + safe + `}}`,
+		"folded duplicate": `{"permissions":{` + bad + `},` + strings.Replace(`"permissions"`, "s", "\u017f", 1) +
+			`:{` + safe + `}}`,
+		"only Permissions": `{"Permissions":{` + safe + `}}`,
 		"only DefaultMode": `{"permissions":{"DefaultMode":"dontAsk","disableBypassPermissionsMode":"disable",` +
 			`"deny":` + deny + `}}`,
 		"only DisableBypassPermissionsMode": `{"permissions":{"defaultMode":"dontAsk",` +
@@ -3393,6 +3395,8 @@ func TestRunKeepsMalformedRestartState(t *testing.T) {
 		"oversized":     valid + strings.Repeat(" ", 9000),
 		"trailing data": valid + " {}",
 		"duplicate key": strings.Replace(valid, `"phase":"stopped"`, `"phase":"stopped","Phase":"running"`, 1),
+		"folded duplicate key": strings.Replace(valid, `"restarts":[]`,
+			`"restarts":["`+stamp+`"],`+strings.Replace(`"restarts"`, "s", "\u017f", 1)+`:[]`, 1),
 		"too many entries": strings.Replace(valid, `"restarts":[]`,
 			`"restarts":[`+strings.TrimSuffix(strings.Repeat(`"`+stamp+`",`, 21), ",")+`]`, 1),
 	}
@@ -3524,9 +3528,17 @@ func TestSettingsPipeIsRefusedWithoutBlocking(t *testing.T) {
 	must(t, errors.Join(os.Remove(path), syscall.Mkfifo(path, 0o600)))
 
 	state := stateFor(t, fixtureValue)
+
+	refusedWithoutBlocking(t, func() error { return checkSettings(state.alias, "command") })
+}
+
+// refusedWithoutBlocking fails the test unless read returns ErrArguments within a short deadline.
+func refusedWithoutBlocking(t *testing.T, read func() error) {
+	t.Helper()
+
 	result := make(chan error, 1)
 
-	go func() { result <- checkSettings(state.alias, "command") }()
+	go func() { result <- read() }()
 
 	select {
 	case err := <-result:
@@ -3534,7 +3546,7 @@ func TestSettingsPipeIsRefusedWithoutBlocking(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("settings read blocked on a pipe")
+		t.Fatal("read blocked on a pipe")
 	}
 }
 
@@ -3583,4 +3595,48 @@ func TestStatusLineCommandUsesTheExporterNotTheVendor(t *testing.T) {
 	exporterCommand := statusCommand(options.Exporter, options.Account, options.SpoolDir)
 	err := checkSettings(alias, exporterCommand)
 	must(t, err)
+}
+
+// A pipe in place of the allow list must be refused without blocking the open.
+func TestApprovedPipeIsRefusedWithoutBlocking(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	options := fixtureValue.options
+	must(t, errors.Join(os.Remove(options.AliasFile), syscall.Mkfifo(options.AliasFile, 0o600)))
+
+	refusedWithoutBlocking(t, func() error {
+		_, err := options.Approved()
+
+		return err
+	})
+}
+
+func TestApprovedSizeBoundAndDirectory(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	options := fixtureValue.options
+	line := "claude " + options.Account + "\n"
+
+	must(t, os.WriteFile(options.AliasFile, []byte(line+strings.Repeat("#", maxAllowListBytes)), 0o600))
+
+	approved, err := options.Approved()
+	if approved || !errors.Is(err, ErrArguments) {
+		t.Fatal("oversized allow list accepted")
+	}
+
+	must(t, os.WriteFile(options.AliasFile, []byte(line+strings.Repeat("#", maxAllowListBytes-len(line))), 0o600))
+
+	approved, err = options.Approved()
+	if !approved || err != nil {
+		t.Fatal("allow list at the bound refused", err)
+	}
+
+	options.AliasFile = filepath.Join(options.Root, "missing", "approved")
+
+	approved, err = options.Approved()
+	if approved || !errors.Is(err, ErrArguments) {
+		t.Fatal("allow list in a missing directory accepted")
+	}
 }

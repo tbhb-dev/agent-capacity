@@ -472,6 +472,13 @@ func TestStopWinsAndTerminatesChild(t *testing.T) {
 			}
 
 			must(t, os.Remove(filepath.Join(fixtureValue.options.SpoolDir, name)))
+			// Removing the stop file makes a check due. Tick the loop and wait for its record before the helper moves
+			// the clock.
+			fixtureValue.until(t, func() bool {
+				fixtureValue.clock.tick()
+
+				return len(fixtureValue.calls(t)) > calls
+			})
 			untilSignedOut(t, fixtureValue)
 			cancel()
 		})
@@ -1037,39 +1044,53 @@ func TestWallClockAfterFires(t *testing.T) {
 	}
 }
 
-// untilSignedOut advances the clock one status interval at a time. A check that sees a whole interval pass stops the
-// run. The clock moves only when the last status check's process is gone and no new check has started for a
-// settle period. The loop ticks let the runner reap the check and start the next one during that period. The
-// fake records a check a few milliseconds after the runner starts it, so the period must outlast that delay.
+// untilSignedOut moves the clock one status interval per status check. It advances after the newest recorded check
+// has exited and the runner has run three loop passes. Then it waits for the next check to be recorded. A check
+// not yet recorded never sees the clock move. The caller records the in-flight check first.
 func untilSignedOut(t *testing.T, fixtureValue fixture) {
 	t.Helper()
 
-	const settle = 300 * time.Millisecond
+	const (
+		passes = 3
+		guard  = 50 * time.Millisecond
+		// spawnWait is far longer than a spawned check needs to be recorded.
+		spawnWait = time.Second
+	)
 
 	var (
-		seen    int
-		quietAt time.Time
+		advanced   int
+		base       int64
+		exitedAt   time.Time
+		advancedAt time.Time
 	)
 
 	fixtureValue.until(t, func() bool {
 		calls := fixtureValue.calls(t)
-		if len(calls) != seen {
-			seen, quietAt = len(calls), time.Time{}
+		if fixtureValue.status(t).Reason == reasonSignedOut {
+			return true
 		}
 
-		if seen > 0 && errors.Is(syscall.Kill(calls[seen-1].PID, 0), syscall.ESRCH) {
-			switch {
-			case quietAt.IsZero():
-				quietAt = time.Now()
-			case time.Since(quietAt) < settle:
-				fixtureValue.clock.tick()
-			default:
-				fixtureValue.clock.advance(statusInterval)
-
-				quietAt = time.Now()
-			}
+		// If the runner took an advance before it read the finished check, it never starts another check. After a
+		// long wait with no new record, the helper treats the advance as spent and advances again.
+		if len(calls) == 0 || (len(calls) == advanced && time.Since(advancedAt) < spawnWait) ||
+			!errors.Is(syscall.Kill(calls[len(calls)-1].PID, 0), syscall.ESRCH) {
+			return false
 		}
 
-		return fixtureValue.status(t).Reason == reasonSignedOut
+		if exitedAt.IsZero() {
+			base, exitedAt = fixtureValue.clock.steps.Load(), time.Now()
+		}
+
+		fixtureValue.clock.tick()
+
+		if fixtureValue.clock.steps.Load() < base+passes || time.Since(exitedAt) < guard {
+			return false
+		}
+
+		fixtureValue.clock.advance(statusInterval)
+
+		advanced, exitedAt, advancedAt = len(calls), time.Time{}, time.Now()
+
+		return false
 	})
 }
