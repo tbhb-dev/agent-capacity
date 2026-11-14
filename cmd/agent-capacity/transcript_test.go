@@ -141,8 +141,8 @@ func TestTranscriptMetrics(t *testing.T) {
 		count := 0
 		values := map[string]float64{
 			utilizationGauge:                   0.25,
-			"afakt.capacity.window.reset_time": 200000,
-			"afakt.capacity.snapshot.age":      max(fixture.age, 0).Seconds(),
+			"agent.capacity.window.reset_time": 200000,
+			"agent.capacity.snapshot.age":      max(fixture.age, 0).Seconds(),
 		}
 
 		for _, scope := range data.ScopeMetrics {
@@ -155,11 +155,11 @@ func TestTranscriptMetrics(t *testing.T) {
 				require.Len(t, gauge.DataPoints, 1)
 				assert.InDelta(t, values[measurement.Name], gauge.DataPoints[0].Value, 0)
 				assert.Equal(t, attribute.NewSet(
-					attribute.String("afakt.plan.vendor", "anthropic"),
-					attribute.String("afakt.plan.window", "7d"),
-					attribute.String("afakt.capacity.source", "claude_transcript"),
-					attribute.String("afakt.capacity.freshness", fixture.freshness),
-					attribute.String("afakt.account", transcriptAccount),
+					attribute.String("agent.plan.vendor", "anthropic"),
+					attribute.String("agent.plan.window", "7d"),
+					attribute.String("agent.capacity.source", "claude_transcript"),
+					attribute.String("agent.capacity.freshness", fixture.freshness),
+					attribute.String("agent.account", transcriptAccount),
 				), gauge.DataPoints[0].Attributes)
 			}
 		}

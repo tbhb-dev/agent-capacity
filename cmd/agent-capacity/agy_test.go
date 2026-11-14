@@ -81,8 +81,8 @@ func assertAGYGauges(t *testing.T, data metricdata.ResourceMetrics, freshness st
 
 	values := map[string]float64{
 		utilizationGauge:                   0.25,
-		"afakt.capacity.window.reset_time": 200000,
-		"afakt.capacity.snapshot.age":      age.Seconds(),
+		"agent.capacity.window.reset_time": 200000,
+		"agent.capacity.snapshot.age":      age.Seconds(),
 	}
 	count := 0
 
@@ -96,11 +96,11 @@ func assertAGYGauges(t *testing.T, data metricdata.ResourceMetrics, freshness st
 			require.Len(t, gauge.DataPoints, 1)
 			assert.InDelta(t, values[measurement.Name], gauge.DataPoints[0].Value, 0)
 			assert.Equal(t, attribute.NewSet(
-				attribute.String("afakt.plan.vendor", "google"),
-				attribute.String("afakt.plan.window", "5h"),
-				attribute.String("afakt.capacity.source", "agy_statusline"),
-				attribute.String("afakt.capacity.freshness", freshness),
-				attribute.String("afakt.account", "work"),
+				attribute.String("agent.plan.vendor", "google"),
+				attribute.String("agent.plan.window", "5h"),
+				attribute.String("agent.capacity.source", "agy_statusline"),
+				attribute.String("agent.capacity.freshness", freshness),
+				attribute.String("agent.account", "work"),
 			), gauge.DataPoints[0].Attributes)
 		}
 	}

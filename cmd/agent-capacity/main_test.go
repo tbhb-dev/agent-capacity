@@ -32,7 +32,7 @@ const (
 	freshLabel       = "fresh"
 	carriedLabel     = "carried"
 	droppedLabel     = "dropped"
-	utilizationGauge = "afakt.capacity.window.utilization"
+	utilizationGauge = "agent.capacity.window.utilization"
 	serveCommand     = "serve"
 	processTest      = "AGENT_CAPACITY_PROCESS_TEST"
 	versionCommand   = "version"
