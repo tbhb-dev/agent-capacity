@@ -12,18 +12,20 @@ rules:
         "*": hash-pin
   # tbhb-dev/renovate-config and tbhb-dev/rules are pinned by commit to their
   # main branches, which have no release tags by design; Renovate bumps the
-  # pins. The two Renovate caller workflows and ci.yml reference them. Each
-  # move of a branch leaves the `# main` comment naming a newer commit until
+  # pins. The two Renovate caller workflows, ci.yml and mutation-nightly.yml
+  # reference them. Each move of a branch leaves the `# main` comment naming a newer commit until
   # Renovate's bump merges, which is Renovate's job to catch, not a failure
   # for every pull request.
   stale-action-refs:
     ignore:
       - ci.yml
+      - mutation-nightly.yml
       - renovate.yaml
       - renovate-config-validator.yaml
   ref-version-mismatch:
     ignore:
       - ci.yml
+      - mutation-nightly.yml
       - renovate.yaml
       - renovate-config-validator.yaml
   # Off until actionlint accepts GitHub's `$/` self-repository syntax

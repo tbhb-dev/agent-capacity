@@ -90,7 +90,7 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
-  # Mutation testing of every package, on one OS leg. It ran inside the bazel job before.
+  # Mutation testing on one OS leg: the changed code on a pull request, every package otherwise.
   mutation:
     name: mutation
     runs-on: ubuntu-26.04
@@ -111,7 +111,27 @@ jobs:
           disk-cache: ${{ github.workflow }}-mutation
           cache-save: ${{ github.event_name != 'pull_request' }}
 
-      - name: Test
+      # A pull request mutates only what its change set reaches. A change to a
+      # test, data file, go.mod or go.sum widens a unit to its full scope. The
+      # push to main runs in full, and the nightly workflow does too.
+      - name: Write the change set
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          mkdir -p .mutation
+          bazelisk run --config=ci @tbhb_rules//quality:mutation_changes -- \
+            --base "origin/${BASE_REF}" --out .mutation/changes.json
+
+      - name: Test the changed code
+        if: github.event_name == 'pull_request'
+        run: >-
+          bazelisk test --config=ci
+          --@tbhb_rules//quality:changes=//:mutation_changes
+          //:gomutants_test
+
+      - name: Test in full
+        if: github.event_name != 'pull_request'
         run: bazelisk test --config=ci //:gomutants_test
 
   # Build both Linux images and check runtime defaults without a daemon.

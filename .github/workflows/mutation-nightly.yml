@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Tony Burns
+
+---
+# Mutation testing of every package in full, once a day. A pull request runs
+# only the changed code (see ci.yml), so this run finds a survivor that a
+# change set missed.
+name: mutation-nightly
+
+on:
+  schedule:
+    # An off-peak minute, so the run avoids the busiest scheduler slots.
+    - cron: "37 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mutation:
+    name: mutation
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Bazel for CI
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@c90ce38c84b6a00fa0f61888799499f32f22f9d4  # main
+        with:
+          disk-cache: ${{ github.workflow }}-mutation
+          cache-save: true
+
+      - name: Test in full
+        run: bazelisk test --config=ci //:gomutants_test
