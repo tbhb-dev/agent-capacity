@@ -1654,7 +1654,9 @@ func TestLoginRejectsLinkedSubdirectories(t *testing.T) {
 			var out, diagnostic bytes.Buffer
 
 			got := Login(context.Background(), fixtureValue.options, slave, &out, &diagnostic)
-			if got != 1 || strings.Contains(out.String(), "login finished") || len(fixtureValue.calls(t)) != 0 {
+			if got != refusalExit ||
+				strings.Contains(out.String(), "login finished") ||
+				len(fixtureValue.calls(t)) != 0 {
 				t.Fatal(got, out.String())
 			}
 
@@ -3052,4 +3054,35 @@ func TestReadingRestartResetsTheReadingClock(t *testing.T) {
 	if code, done := state.considerRestart(); code != 0 || !done || state.status.Reason != "reading_unavailable" {
 		t.Fatal("no stop after the second deadline", code, done, state.status.Reason)
 	}
+}
+
+func TestCodexExecArgsRestrictSandboxAndApproval(t *testing.T) {
+	t.Parallel()
+
+	want := []string{
+		commandExec, "-m", "gpt-6-luna", "--sandbox", "read-only", "-c", `approval_policy="never"`, "ping",
+	}
+	if got := codexExecArgs("ping"); !slices.Equal(got, want) {
+		t.Fatalf("args %q", got)
+	}
+}
+
+func TestCodexLaunchPassesRestrictedArgs(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorCodex)
+	cancel, _ := fixtureValue.run(t)
+
+	defer cancel()
+
+	want := codexExecArgs(fixtureValue.options.Prompt)
+	fixtureValue.until(t, func() bool {
+		for _, call := range fixtureValue.calls(t) {
+			if call.Args[0] == commandExec {
+				return slices.Equal(call.Args, want)
+			}
+		}
+
+		return false
+	})
 }

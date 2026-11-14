@@ -34,6 +34,9 @@ func denyList() []string {
 
 // checkSettings is the launch preflight. It refuses a linked settings file and any file
 // that lacks the safety permissions RenderSettings writes. Extra deny entries pass.
+// It guards against a stale or mis-rendered file and doesn't defend against a hostile writer. It skips the
+// `statusLine` command, hooks, `env`, `apiKeyHelper` and `permissions.allow`. The deny list is a snapshot of tool
+// names, and deny support for the `mcp__*` wildcard is unverified. The `dontAsk` mode is the real control.
 func checkSettings(alias *os.Root) error {
 	info, err := alias.Lstat(settingsPath)
 	if err != nil || !info.Mode().IsRegular() {

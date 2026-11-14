@@ -209,7 +209,7 @@ func TestRunCommandPassesLoginArguments(t *testing.T) {
 	args := append([]string{"login"}, loginFixture(t, false)...)
 
 	code, handled := runCommand(context.Background(), args, io.Discard, slog.New(slog.DiscardHandler))
-	if !handled || code != 1 {
+	if !handled || code != 2 {
 		t.Fatalf("login returned %d, %t", code, handled)
 	}
 }

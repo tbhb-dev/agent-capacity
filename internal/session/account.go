@@ -216,7 +216,7 @@ func loginAs(ctx context.Context, options Options, input *os.File, output, diagn
 	if checkDirectories(root, options.Vendor) != nil {
 		fmt.Fprintln(diagnostic, "login refused")
 
-		return 1
+		return refusalExit
 	}
 
 	_, err = pty.GetsizeFull(input)

@@ -58,6 +58,10 @@ Each collection skips files with modification times older than 6 hours. It reads
 
 Claude Code headless `--output-format stream-json`: reported, not verified here. Fixtures establish parser support only. Tests don't verify event emission by any Claude output mode.
 
+## Session runner
+
+The session runner starts Claude Code with a fixed deny list of tools and the `dontAsk` permission mode, and it checks the rendered settings file before each launch. The check guards against a stale or mis-rendered file and doesn't defend against a hostile writer. The deny list is a snapshot of tool names, `mcp__*` wildcard support in the deny list is unverified, and `dontAsk` is the real control. Codex has no tool deny list. The runner starts `codex exec` with `--sandbox read-only` and the `never` approval policy, and those flags are the control.
+
 ## Export configuration
 
 `--interval` sets the source read interval, which defaults to 60 seconds. Control the SDK export interval through `OTEL_METRIC_EXPORT_INTERVAL`. A process interrupt or termination signal flushes pending metrics and shuts down.

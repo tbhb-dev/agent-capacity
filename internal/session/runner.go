@@ -361,6 +361,12 @@ func (s *running) limitReached() bool {
 	return len(recent) >= restartMaximum
 }
 
+func codexExecArgs(prompt string) []string {
+	return []string{
+		commandExec, "-m", "gpt-6-luna", "--sandbox", "read-only", "-c", `approval_policy="never"`, prompt,
+	}
+}
+
 func (s *running) launch() error {
 	if s.options.Vendor == vendorClaude && checkSettings(s.alias) != nil {
 		return ErrArguments
@@ -368,7 +374,7 @@ func (s *running) launch() error {
 
 	args := []string{"--model", "claude-haiku-5-5", "/loop 5m " + s.options.Prompt}
 	if s.options.Vendor == vendorCodex {
-		args = []string{commandExec, "-m", "gpt-6-luna", s.options.Prompt}
+		args = codexExecArgs(s.options.Prompt)
 	}
 
 	child, err := start(s.options.command(args...), s.options.Vendor == vendorClaude, &s.warning)
