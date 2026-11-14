@@ -270,7 +270,7 @@ func TestTerminationEscalatesAfterGrace(t *testing.T) {
 
 	child.terminate()
 
-	if time.Since(before) < terminationGrace {
+	if time.Since(before) < 2*time.Second {
 		t.Fatal("termination skipped the grace period")
 	}
 
@@ -664,11 +664,144 @@ func TestWarningShortWrite(t *testing.T) {
 
 	drain := warningDrain{flag: &flag, tail: ""}
 
-	_, err := drain.Write([]byte("hi"))
+	count, err := drain.Write([]byte("hi"))
 	must(t, err)
 
-	if flag.Load() || drain.tail != "hi" {
-		t.Fatal("short write mishandled")
+	if count != 2 || flag.Load() || drain.tail != "hi" {
+		t.Fatal("short write mishandled", count)
+	}
+}
+
+func TestWarningTailKeepsOneByteLess(t *testing.T) {
+	t.Parallel()
+
+	const warning = "Your login expires in 3 days"
+
+	for _, test := range []struct{ name, input, tail string }{
+		{"exact length", "[" + strings.Repeat("=", 27), strings.Repeat("=", 27)},
+		{"long chunk", strings.Repeat("-", 100) + strings.Repeat("=", 27), strings.Repeat("=", 27)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			var flag atomic.Bool
+
+			drain := warningDrain{flag: &flag, tail: ""}
+
+			count, err := drain.Write([]byte(test.input))
+			must(t, err)
+
+			if count != len(test.input) || len(drain.tail) != 27 || drain.tail != test.tail {
+				t.Fatalf("count %d tail %q", count, drain.tail)
+			}
+		})
+	}
+
+	for split := 1; split < len(warning); split++ {
+		var flag atomic.Bool
+
+		drain := warningDrain{flag: &flag, tail: ""}
+
+		_, err := drain.Write([]byte("padding " + warning[:split]))
+		must(t, err)
+
+		_, err = drain.Write([]byte(warning[split:] + " end"))
+		must(t, err)
+
+		if !flag.Load() {
+			t.Fatal("warning split at", split, "missed")
+		}
+	}
+}
+
+func TestTerminalChildClosesTerminalOnTerminate(t *testing.T) {
+	t.Parallel()
+	fixtureValue := setup(t, vendorClaude)
+
+	var control fakeControl
+
+	control.Hold = true
+	fixtureValue.control(t, control)
+
+	var warning atomic.Bool
+
+	child, err := start(fixtureValue.options.command(commandExec), true, &warning)
+	must(t, err)
+
+	defer child.signalGroup(syscall.SIGKILL)
+
+	if child.terminal == nil {
+		t.Fatal("terminal child has no terminal")
+	}
+
+	terminal := child.terminal
+
+	child.terminate()
+
+	if !errors.Is(terminal.Close(), os.ErrClosed) {
+		t.Fatal("terminate left the terminal open")
+	}
+
+	select {
+	case <-child.drained:
+	default:
+		t.Fatal("terminate returned before the drain ended")
+	}
+}
+
+func TestCloseTerminalKillsGroupAndWaitsForDrain(t *testing.T) {
+	t.Parallel()
+
+	cmd := exec.CommandContext(context.Background(), "/bin/sleep", "30")
+	cmd.SysProcAttr = new(syscall.SysProcAttr)
+	cmd.SysProcAttr.Setpgid = true
+	must(t, cmd.Start())
+
+	pid := cmd.Process.Pid
+
+	reaped := make(chan struct{})
+
+	go func() {
+		//nolint:errcheck // The test only needs the child reaped.
+		_ = cmd.Wait()
+
+		close(reaped)
+	}()
+
+	t.Cleanup(func() {
+		//nolint:errcheck // The process may have ended.
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+	})
+
+	reader, writer, err := os.Pipe()
+	must(t, err)
+
+	defer writer.Close()
+
+	child := &process{cmd: cmd, done: make(chan error, 1), terminal: reader, drained: make(chan struct{})}
+
+	// The drain ends well after the wait for it times out, as with a slow terminal reader.
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		close(child.drained)
+	}()
+
+	child.closeTerminal()
+
+	select {
+	case <-child.drained:
+	default:
+		t.Fatal("closeTerminal returned before the drain ended")
+	}
+
+	select {
+	case <-reaped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("closeTerminal left the process group running")
+	}
+
+	if !processGone(pid) {
+		t.Fatal("process survived")
 	}
 }
 
