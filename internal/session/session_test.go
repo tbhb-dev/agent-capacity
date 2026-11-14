@@ -353,10 +353,10 @@ func (fixtureValue fixture) until(t *testing.T, predicate func() bool) {
 
 // running reports that the child started and the runner recorded its start time.
 // Advancing the clock earlier would move the start time instead of the clock reading.
-func (fixtureValue fixture) running(t *testing.T, calls int) bool {
+func (fixtureValue fixture) running(t *testing.T) bool {
 	t.Helper()
 
-	return len(fixtureValue.calls(t)) == calls && fixtureValue.status(t).Phase == phaseRunning
+	return len(fixtureValue.calls(t)) == 2 && fixtureValue.status(t).Phase == phaseRunning
 }
 
 func (fixtureValue fixture) run(t *testing.T) (context.CancelFunc, <-chan int) {
@@ -747,7 +747,7 @@ func TestReadingRestartThenStayDown(t *testing.T) {
 	t.Parallel()
 	fixtureValue := setup(t, vendorClaude)
 	_, result := fixtureValue.run(t)
-	fixtureValue.until(t, func() bool { return fixtureValue.running(t, 2) })
+	fixtureValue.until(t, func() bool { return fixtureValue.running(t) })
 	fixtureValue.clock.advance(readingInterval)
 	fixtureValue.until(t, func() bool { return len(fixtureValue.status(t).Restarts) == 1 })
 	fixtureValue.until(

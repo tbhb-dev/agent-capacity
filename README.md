@@ -71,7 +71,7 @@ The session runner starts Claude Code with a fixed deny list of tools and the `d
 
 A Claude run and `session render-settings` require `--exporter`, the absolute path of the agent-capacity binary that the status line runs. `--binary` names only the vendor binary. A Claude run without `--exporter` refuses to start.
 
-Cancelling a login signals only the login child. Descendants of that child keep running, because the child shares the caller's terminal and can't join a separate process group. A follow-up change can add a terminal handoff so the login child gets its own group.
+Cancelling a login signals the login child and then kills its descendants by process ID, found before the signal. A separate process group is out, because the child shares the caller's terminal. The cancel leaves alone anything the child starts after that lookup.
 
 ## Export configuration
 

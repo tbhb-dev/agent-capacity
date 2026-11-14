@@ -4,7 +4,7 @@
 package session
 
 import (
-	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -73,9 +73,8 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 		cmd.SysProcAttr = new(syscall.SysProcAttr)
 		cmd.SysProcAttr.Setpgid = true
 
-		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
-		cmd.WaitDelay = terminationGrace
-
+		// Output goes to the null device, so Wait can't block on a descendant's open pipe. The group signal
+		// below then follows the reap at once.
 		if cmd.Start() != nil {
 			return nil, ErrArguments
 		}
@@ -90,10 +89,6 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 			child.signalGroup(syscall.SIGKILL)
 		}
 
-		if errors.Is(err, exec.ErrWaitDelay) {
-			err = nil
-		}
-
 		child.done <- err
 
 		exited(cmd.Process.Pid)
@@ -104,8 +99,10 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 
 // signalGroup signals the process group of the leader. It also runs after the leader exits and cmd.Wait
 // reaps it, because children left behind by a dead leader still need the signal. In that window the kernel
-// could reuse the process ID for an unrelated group. The window is accepted since skipping the signal would leave
-// those orphaned children running.
+// could reuse the process ID for an unrelated group. The waiter signals right after the reap. The window lasts
+// microseconds, and macOS offers Go no wait-without-reap call to close it. The kills by process ID in the stop
+// path share that small risk. The window is accepted since skipping the signal would leave those orphaned
+// children running.
 func (p *process) signalGroup(signal syscall.Signal) {
 	//nolint:errcheck // The process group may already have exited.
 	_ = syscall.Kill(-p.cmd.Process.Pid, signal)
@@ -132,10 +129,46 @@ func (p *process) closeTerminal() {
 	}
 }
 
+// descendants lists the processes below a process ID, found from the parent links that ps reports. A process in
+// a new session has left the group but keeps its parent link until the parent ends.
+func descendants(pid int) []int {
+	//nolint:errcheck,noctx // A failed listing leaves no output. The listing is short and needs no deadline.
+	out, _ := exec.Command("/bin/ps", "-A", "-o", "pid=,ppid=").Output()
+
+	children := map[int][]int{}
+
+	for line := range strings.SplitSeq(string(out), "\n") {
+		var child, parent int
+
+		_, scanErr := fmt.Sscan(line, &child, &parent)
+		if scanErr == nil {
+			children[parent] = append(children[parent], child)
+		}
+	}
+
+	var found []int
+
+	for queue := []int{pid}; len(queue) > 0; queue = queue[1:] {
+		found = append(found, children[queue[0]]...)
+		queue = append(queue, children[queue[0]]...)
+	}
+
+	return found
+}
+
+func killAll(ids []int) {
+	for _, pid := range ids {
+		//nolint:errcheck // The process may already have exited.
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+}
+
 func (p *process) terminate() {
 	if p == nil {
 		return
 	}
+
+	below := descendants(p.cmd.Process.Pid)
 
 	p.signalGroup(syscall.SIGTERM)
 
@@ -151,5 +184,7 @@ func (p *process) terminate() {
 
 	// gomutants:disable-next-line STATEMENT_REMOVE reason="Earlier steps already end the group."
 	p.signalGroup(syscall.SIGKILL)
+
+	killAll(below)
 	p.closeTerminal()
 }

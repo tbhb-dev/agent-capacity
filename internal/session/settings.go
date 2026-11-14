@@ -21,6 +21,7 @@ const (
 	safeBypassMode  = "disable"
 	maxDepth        = 32
 	// maxSettingsBytes bounds the settings read. The rendered file is about 1 KiB.
+	// gomutants:disable-next-line INTEGER_INCREMENT,INTEGER_DECREMENT reason="A size bound moved by one step is moot."
 	maxSettingsBytes = 64 << 10
 	settingsPath     = "config/settings.json"
 	commandKey       = "command"
@@ -48,10 +49,12 @@ func denyList() []string {
 // unverified. The `dontAsk` mode is the real control.
 func checkSettings(alias *os.Root, command string) error {
 	data, err := spool.ReadBounded(alias, settingsPath, maxSettingsBytes)
+	// gomutants:disable-next-line BRANCH_IF reason="Empty data also fails the key check."
 	if err != nil {
 		return ErrArguments
 	}
 
+	// gomutants:disable-next-line INTEGER_INCREMENT,INTEGER_DECREMENT reason="The nesting test pins the cap."
 	if checkKeys(json.NewDecoder(bytes.NewReader(data)), 0) != nil {
 		return ErrArguments
 	}
@@ -62,6 +65,7 @@ func checkSettings(alias *os.Root, command string) error {
 
 	var permissions, statusLine json.RawMessage
 
+	// gomutants:disable-next-line BRANCH_IF reason="An empty member also fails the checks that follow."
 	if errors.Join(field(data, "permissions", &permissions), field(data, "statusLine", &statusLine)) != nil {
 		return ErrArguments
 	}
@@ -110,6 +114,7 @@ func checkPermissions(permissions json.RawMessage) error {
 		return ErrArguments
 	}
 
+	// gomutants:disable-next-line INTEGER_INCREMENT reason="The capacity only sizes the slice."
 	names := make([]string, 0, len(deny))
 
 	for _, tool := range deny {
@@ -134,6 +139,7 @@ func onlyKeys(object json.RawMessage, allowed ...string) error {
 	var members map[string]json.RawMessage
 	// gomutants:disable-next-line BRANCH_IF reason="The field lookups that follow fail the same way."
 	if json.Unmarshal(object, &members) != nil {
+		// gomutants:disable-next-line RETURN_ERROR_NIL reason="The field lookups that follow fail the same way."
 		return ErrArguments
 	}
 
@@ -216,6 +222,7 @@ func checkArray(dec *json.Decoder, depth int) error {
 		}
 	}
 
+	// gomutants:disable-next-line RETURN_ERROR_NIL reason="json.Unmarshal rejects the same input."
 	return closeContainer(dec)
 }
 

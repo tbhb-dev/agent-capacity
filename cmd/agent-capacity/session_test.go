@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"go.tbhb.dev/agent-capacity/internal/session"
 )
 
 const (
@@ -128,6 +130,27 @@ func TestRunCommandRoutesSessionCommands(t *testing.T) {
 		if !handled || code != 2 {
 			t.Fatalf("command %v returned %d, %t", args, code, handled)
 		}
+	}
+}
+
+func TestAccountFlagsSetEveryOption(t *testing.T) {
+	t.Parallel()
+
+	flags, options := accountFlags("sample")
+	args := []string{
+		"--vendor=v", "--account=a", "--alias-file=f", "--alias-root=r", "--binary=b", "--exporter=e", "--spool-dir=s",
+	}
+
+	err := flags.Parse(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := session.Options{
+		Vendor: "v", Account: "a", AliasFile: "f", Root: "r", Binary: "b", Exporter: "e", SpoolDir: "s", Prompt: "",
+	}
+	if *options != want {
+		t.Fatalf("options %+v", *options)
 	}
 }
 

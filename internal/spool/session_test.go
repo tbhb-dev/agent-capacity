@@ -239,6 +239,11 @@ func TestWriteSessionValidatesStatus(t *testing.T) {
 
 	status.Time = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
 	require.Error(t, WriteSession(root, status))
+
+	status = validStatus()
+	status.Phase = ""
+
+	require.ErrorIs(t, WriteSession(root, status), errSessionState)
 }
 
 func TestWriteSessionReplacesRegularFilesOnly(t *testing.T) {
@@ -307,6 +312,16 @@ func TestReadSessionRejectsUnusableStatus(t *testing.T) {
 
 	_, err = ReadSession(root, sessionVendor, sessionAlias)
 	require.Error(t, err)
+
+	for _, partial := range []string{
+		`{"time":"2026-01-02T03:04:05Z","vendor":"codex","alias":"sample"}`,
+		`{"time":"2026-01-02T03:04:05Z","vendor":"codex","alias":"sample","phase":null}`,
+	} {
+		require.NoError(t, os.WriteFile(path, []byte(partial), sessionFileMode))
+
+		_, err = ReadSession(root, sessionVendor, sessionAlias)
+		require.ErrorIs(t, err, errSessionState)
+	}
 
 	vendorMismatch, aliasMismatch := validStatus(), validStatus()
 	vendorMismatch.Vendor, aliasMismatch.Alias = claudeVendor, "other"
@@ -485,6 +500,7 @@ func modeCases() []modeCase {
 		{0o600, true},
 		{0o644, true},
 		{0o640, true},
+		{0o641, true},
 		{0o666, false},
 		{0o660, false},
 		{0o606, false},
@@ -559,7 +575,7 @@ func TestReadSessionDecodesStrictlyAndBounded(t *testing.T) {
 	t.Parallel()
 
 	valid := statusJSON(t, 1, "")
-	exact := valid + strings.Repeat(" ", maxStatusBytes-len(valid))
+	exact := valid + strings.Repeat(" ", 8192-len(valid))
 
 	for name, test := range map[string]struct {
 		content string
@@ -580,8 +596,8 @@ func TestReadSessionDecodesStrictlyAndBounded(t *testing.T) {
 		"unterminated nested":    {statusJSON(t, 0, `,"x":[1`), false},
 		"not an object":          {"1", false},
 		"non-string key":         {"{1:2}", false},
-		"at the history limit":   {statusJSON(t, MaxRestartHistory, ""), true},
-		"over the history limit": {statusJSON(t, MaxRestartHistory+1, ""), false},
+		"at the history limit":   {statusJSON(t, 20, ""), true},
+		"over the history limit": {statusJSON(t, 21, ""), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

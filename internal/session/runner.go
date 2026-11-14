@@ -23,6 +23,7 @@ const (
 	readingInterval = 15 * time.Minute
 	sessionLifetime = 6 * 24 * time.Hour
 	execInterval    = 5 * time.Minute
+	execTimeout     = 30 * time.Minute
 	restartWindow   = time.Hour
 	restartMaximum  = 5
 	restartSkew     = time.Minute
@@ -192,9 +193,7 @@ func (s *running) loop(ctx context.Context) int {
 }
 
 func (s *running) publish(phase, reason string) error {
-	if extra := len(s.status.Restarts) - spool.MaxRestartHistory; extra > 0 {
-		s.status.Restarts = s.status.Restarts[extra:]
-	}
+	s.status.Restarts = s.status.Restarts[max(0, len(s.status.Restarts)-spool.MaxRestartHistory):]
 
 	s.status.Time = s.clock.Now().UTC()
 	s.status.Phase, s.status.Reason = phase, reason
@@ -354,7 +353,16 @@ func (s *running) pollStatusCheck() (int, bool) {
 }
 
 func (s *running) statusFailure(err error) (int, bool) {
+	restarted := s.child != nil
+
 	s.stopChildren()
+
+	if restarted && exitCode(err) == 1 {
+		s.status.Restarts = append(s.status.Restarts, s.clock.Now())
+		if s.limitReached() {
+			return s.finish(0, "restart_limit"), true
+		}
+	}
 
 	if exitCode(err) == 1 {
 		s.signedOutCount++
@@ -389,7 +397,8 @@ func (s *running) limitReached() bool {
 
 func codexExecArgs(prompt string) []string {
 	return []string{
-		commandExec, "-m", "gpt-6.1-sol", "--sandbox", "read-only", "-c", `approval_policy="never"`, prompt,
+		commandExec, "-m", "gpt-6.1-sol", "--skip-git-repo-check", "--sandbox", "read-only",
+		"-c", `approval_policy="never"`, prompt,
 	}
 }
 
@@ -428,6 +437,12 @@ func (s *running) observeChild() (int, bool) {
 	}
 
 	if s.options.Vendor != vendorClaude {
+		if s.clock.Now().Sub(s.started) >= execTimeout {
+			s.child.terminate()
+
+			return s.childEnded(errExecTimeout)
+		}
+
 		return 0, false
 	}
 
@@ -514,6 +529,8 @@ func exitCode(err error) int {
 
 	return -1
 }
+
+var errExecTimeout = errors.New("execution timed out")
 
 //nolint:gochecknoglobals // Tests replace the call to simulate a concurrent filesystem change.
 var statRoot = (*os.Root).Stat
