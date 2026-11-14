@@ -41,6 +41,7 @@ func checkSettings(alias *os.Root) error {
 	}
 
 	data, err := alias.ReadFile(settingsPath)
+	// gomutants:disable-next-line BRANCH_IF reason="A failed read gives data that the key check rejects."
 	if err != nil {
 		return ErrArguments
 	}
@@ -50,6 +51,7 @@ func checkSettings(alias *os.Root) error {
 	}
 
 	var raw json.RawMessage
+	// gomutants:disable-next-line BRANCH_IF reason="Later lookups fail on the empty value."
 	if field(data, "permissions", &raw) != nil {
 		return ErrArguments
 	}
@@ -79,6 +81,7 @@ func checkSettings(alias *os.Root) error {
 
 func field(object json.RawMessage, name string, target any) error {
 	var members map[string]json.RawMessage
+	// gomutants:disable-next-line BRANCH_IF reason="The same failure follows."
 	if json.Unmarshal(object, &members) != nil {
 		return ErrArguments
 	}

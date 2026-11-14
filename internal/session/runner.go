@@ -117,7 +117,7 @@ func (r Runner) Run(ctx context.Context) int {
 }
 
 func (options Options) validRun() bool {
-	return options.Valid() && filepath.IsAbs(options.SpoolDir) && options.Prompt != "" &&
+	return options.Valid() && filepath.IsAbs(options.SpoolDir) &&
 		len(strings.Fields(options.Prompt)) == 1 && !strings.ContainsAny(options.Prompt, "\x00\r\n\t ") &&
 		!strings.HasPrefix(options.Prompt, "-")
 }
@@ -508,6 +508,7 @@ func cleanRollouts(alias *os.Root, now time.Time) error {
 	defer root.Close()
 
 	opened, err := statRoot(root, ".")
+	// gomutants:disable-next-line EXPRESSION_REMOVE reason="A nil stat result makes the same-file test fail."
 	if err != nil || !os.SameFile(sessions, opened) {
 		return ErrArguments
 	}
@@ -517,6 +518,7 @@ func cleanRollouts(alias *os.Root, now time.Time) error {
 			return ErrArguments
 		}
 
+		// gomutants:disable-next-line BRANCH_IF reason="The later check skips these entries too."
 		if !entry.Type().IsRegular() {
 			return nil
 		}

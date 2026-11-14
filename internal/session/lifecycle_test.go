@@ -2937,3 +2937,33 @@ func TestCheckObjectRejectsReadErrorBetweenMembers(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStatusCheckEndClosesTerminal(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	state.nextExec = state.clock.Now().Add(time.Hour)
+
+	var warning atomic.Bool
+
+	check, err := start(exec.CommandContext(context.Background(), "/bin/sh", "-c", "exit 0"), true, &warning)
+	must(t, err)
+
+	terminal := check.terminal
+	state.check = check
+	state.checkAt = state.clock.Now()
+
+	fixtureValue.until(t, func() bool {
+		code, done := state.pollStatusCheck()
+		if code != 0 || done {
+			t.Fatal(code, done)
+		}
+
+		return state.check == nil
+	})
+
+	if !errors.Is(terminal.Close(), os.ErrClosed) {
+		t.Fatal("status check end left the terminal open")
+	}
+}

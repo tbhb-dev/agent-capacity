@@ -133,6 +133,7 @@ func (p *process) terminate() {
 		<-p.done //nolint:errcheck // Shutdown only needs process completion.
 	}
 
+	// gomutants:disable-next-line STATEMENT_REMOVE reason="Earlier steps already end the group."
 	p.signalGroup(syscall.SIGKILL)
 	p.closeTerminal()
 }

@@ -65,14 +65,17 @@ func (options Options) Approved() (bool, error) {
 	}
 
 	file, err := os.Open(options.AliasFile)
+	// gomutants:disable-next-line BRANCH_IF reason="Same error."
 	if err != nil {
 		return false, ErrArguments
 	}
+
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
+		// gomutants:disable-next-line BRANCH_IF reason="Never matches."
 		if strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -244,6 +247,7 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 		return ErrArguments
 	}
 
+	// gomutants:disable-next-line INTEGER_DECREMENT,INTEGER_INCREMENT reason="Size is moot."
 	done := make(chan error, 1)
 
 	go func() { done <- cmd.Wait() }()
@@ -270,6 +274,7 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 
 func lockAlias(root *os.Root) (*os.File, error) {
 	file, err := root.OpenFile(".runner.lock", os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, privateMode)
+	// gomutants:disable-next-line BRANCH_IF reason="Same error."
 	if err != nil {
 		return nil, ErrArguments
 	}
