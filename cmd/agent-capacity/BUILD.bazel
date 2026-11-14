@@ -10,6 +10,7 @@ go_library(
     name = "agent-capacity_lib",
     srcs = [
         "main.go",
+        "session.go",
         "statusline.go",
     ],
     importpath = "go.tbhb.dev/agent-capacity/cmd/agent-capacity",
@@ -17,6 +18,7 @@ go_library(
     deps = [
         "//internal/capacity",
         "//internal/export",
+        "//internal/session",
         "//internal/source/agy",
         "//internal/source/claude",
         "//internal/source/codex",
@@ -38,6 +40,7 @@ go_test(
     srcs = [
         "agy_test.go",
         "main_test.go",
+        "session_test.go",
         "statusline_test.go",
         "transcript_test.go",
     ],
