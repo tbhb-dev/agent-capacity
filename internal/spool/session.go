@@ -168,7 +168,7 @@ func statusRoot(root *os.Root) (*os.Root, error) {
 
 // WriteSession replaces an alias's private status atomically.
 func WriteSession(root *os.Root, status SessionStatus) error {
-	if !sessionIdentity(status.Vendor, status.Alias) || status.Time.IsZero() {
+	if !sessionIdentity(status.Vendor, status.Alias) || status.Time.IsZero() || status.Phase == "" {
 		return errSessionState
 	}
 
@@ -237,11 +237,12 @@ func readRegular(dir *os.Root, name string, limit int64) ([]byte, fs.FileInfo, e
 		return nil, nil, err
 	}
 
+	// gomutants:disable-next-line BRANCH_IF reason="A nil stat result also fails SameFile."
 	if err != nil {
 		return nil, nil, errSessionState
 	}
 
-	// gomutants:disable-next-line INTEGER_INCREMENT reason="The mode argument is ignored when no file is created."
+	// gomutants:disable-next-line INTEGER_INCREMENT,INVERT_BITWISE reason="SameFile refuses a followed link."
 	file, err := dir.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	// gomutants:disable-next-line BRANCH_IF reason="The nil file also fails the Stat that follows."
 	if err != nil {
@@ -256,6 +257,7 @@ func readRegular(dir *os.Root, name string, limit int64) ([]byte, fs.FileInfo, e
 		return nil, nil, errSessionState
 	}
 
+	// gomutants:disable-next-line INTEGER_INCREMENT reason="Any length past the limit fails the same check."
 	data, readErr := io.ReadAll(io.LimitReader(file, limit+1))
 
 	var oversize error
@@ -296,7 +298,7 @@ func ReadSession(root *os.Root, vendor, account string) (SessionStatus, error) {
 
 	var status SessionStatus
 	if strictJSON(data) != nil || json.Unmarshal(data, &status) != nil || len(status.Restarts) > MaxRestartHistory ||
-		status.Vendor != vendor || status.Alias != account || status.Time.IsZero() {
+		status.Vendor != vendor || status.Alias != account || status.Time.IsZero() || status.Phase == "" {
 		return SessionStatus{}, errSessionState
 	}
 
@@ -307,12 +309,15 @@ func ReadSession(root *os.Root, vendor, account string) (SessionStatus, error) {
 func strictJSON(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 
+	// gomutants:disable-next-line BRANCH_IF reason="The trailing-data check rejects the misaligned stream."
 	if checkValue(dec) != nil {
 		return errSessionState
 	}
 
 	_, err := dec.Token()
+	// gomutants:disable-next-line BRANCH_IF reason="json.Unmarshal rejects the same input."
 	if !errors.Is(err, io.EOF) {
+		// gomutants:disable-next-line RETURN_ERROR_NIL reason="json.Unmarshal rejects the same input."
 		return errSessionState
 	}
 
@@ -321,7 +326,9 @@ func strictJSON(data []byte) error {
 
 func checkValue(dec *json.Decoder) error {
 	token, err := dec.Token()
+	// gomutants:disable-next-line BRANCH_IF reason="json.Unmarshal rejects the same input."
 	if err != nil {
+		// gomutants:disable-next-line RETURN_ERROR_NIL reason="json.Unmarshal rejects the same input."
 		return errSessionState
 	}
 
@@ -340,7 +347,9 @@ func checkMembers(dec *json.Decoder) error {
 
 	for dec.More() {
 		name, err := dec.Token()
+		// gomutants:disable-next-line BRANCH_IF reason="json.Unmarshal rejects the same input."
 		if err != nil {
+			// gomutants:disable-next-line RETURN_ERROR_NIL reason="json.Unmarshal rejects the same input."
 			return errSessionState
 		}
 
@@ -352,24 +361,29 @@ func checkMembers(dec *json.Decoder) error {
 		seen[key] = struct{}{}
 
 		if checkValue(dec) != nil {
+			// gomutants:disable-next-line RETURN_ERROR_NIL reason="The trailing-data check rejects the misaligned stream."
 			return errSessionState
 		}
 	}
 
 	_, err := dec.Token()
 
+	// gomutants:disable-next-line RETURN_ERROR_NIL reason="json.Unmarshal rejects the same input."
 	return errors.Join(err)
 }
 
 func checkElements(dec *json.Decoder) error {
 	for dec.More() {
+		// gomutants:disable-next-line BRANCH_IF reason="The trailing-data check rejects the misaligned stream."
 		if checkValue(dec) != nil {
+			// gomutants:disable-next-line RETURN_ERROR_NIL reason="The trailing-data check rejects the misaligned stream."
 			return errSessionState
 		}
 	}
 
 	_, err := dec.Token()
 
+	// gomutants:disable-next-line RETURN_ERROR_NIL reason="json.Unmarshal rejects the same input."
 	return errors.Join(err)
 }
 

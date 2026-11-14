@@ -23,6 +23,7 @@ import (
 )
 
 const (
+	// gomutants:disable-next-line INTEGER_INCREMENT,INTEGER_DECREMENT reason="A size bound moved by one step is moot."
 	maxAllowListBytes = 64 << 10
 	vendorClaude      = "claude"
 	vendorCodex       = "codex"
@@ -72,6 +73,7 @@ func (options Options) Approved() (bool, error) {
 	}
 
 	for line := range strings.Lines(string(data)) {
+		// gomutants:disable-next-line STATEMENT_REMOVE reason="Fields skips the whitespace."
 		line = strings.TrimSpace(line)
 		// gomutants:disable-next-line BRANCH_IF reason="Never matches."
 		if strings.HasPrefix(line, "#") {
@@ -269,8 +271,11 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 	case err := <-done:
 		return err
 	case <-ctx.Done():
-		// Only the child gets the signal. It shares the caller's terminal, so a separate process group would
-		// stop it on terminal input. Descendants of the child keep running.
+		// The child shares the caller's terminal, so a separate process group would stop it on terminal input.
+		// Its descendants are found first and killed by process ID after it ends.
+		below := descendants(cmd.Process.Pid)
+		defer killAll(below)
+
 		//nolint:errcheck // The child may already have exited.
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 
@@ -320,6 +325,7 @@ func verifyLock(root *os.Root, name string, file *os.File) error {
 	}
 
 	opened, err := file.Stat()
+	// gomutants:disable-next-line EXPRESSION_REMOVE reason="Only a swap after the open can fail either operand."
 	if err != nil || !os.SameFile(linked, opened) {
 		return ErrArguments
 	}

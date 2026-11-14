@@ -200,7 +200,7 @@ func TestCodexDoesNotOverlapExec(t *testing.T) {
 		},
 	)
 	cancel, _ := fixtureValue.run(t)
-	fixtureValue.until(t, func() bool { return fixtureValue.running(t, 2) })
+	fixtureValue.until(t, func() bool { return fixtureValue.running(t) })
 	fixtureValue.clock.advance(2 * execInterval)
 	fixtureValue.until(t, func() bool { return len(fixtureValue.calls(t)) == 3 })
 
@@ -794,11 +794,7 @@ func TestTerminateEndsWhenSessionLeaderHoldsTerminal(t *testing.T) {
 
 	defer child.signalGroup(syscall.SIGKILL)
 
-	fixtureValue.until(t, func() bool {
-		data, readErr := os.ReadFile(grandchildFile)
-
-		return readErr == nil && len(data) > 0
-	})
+	fixtureValue.untilFile(t, grandchildFile)
 
 	stopped := make(chan struct{})
 
@@ -1940,6 +1936,34 @@ func TestLaunchRefusesAmbiguousSettingsKeys(t *testing.T) {
 	}
 }
 
+func TestLaunchRefusesDuplicateKeysWithValidValues(t *testing.T) {
+	t.Parallel()
+
+	for name, change := range map[string][2]string{
+		"statusLine type": {`"type": "command"`, `"type": "command", "type": "command"`},
+		"defaultMode":     {`"defaultMode": "dontAsk"`, `"defaultMode": "dontAsk", "defaultMode": "dontAsk"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorClaude)
+			path := filepath.Join(fixtureValue.options.directory(), settingsPath)
+
+			data, err := os.ReadFile(path)
+			must(t, err)
+
+			changed := strings.Replace(string(data), change[0], change[1], 1)
+			if changed == string(data) {
+				t.Fatal("the rendered settings lack", change[0])
+			}
+
+			//nolint:gosec // The test rewrites its own temporary file.
+			must(t, os.WriteFile(path, []byte(changed), 0o600))
+			wantRefusedLaunch(t, fixtureValue)
+		})
+	}
+}
+
 func TestSettingsNestingLimit(t *testing.T) {
 	t.Parallel()
 
@@ -1968,9 +1992,8 @@ func TestSettingsNestingLimit(t *testing.T) {
 	}
 }
 
-// Login signals only the login child. Its descendants keep running after cancellation, because the child shares the
-// caller's terminal and a new process group would break job control. This test checks only that Login returns, and
-// the cleanup below kills the leftover grandchild.
+// Login signals the login child and then kills the descendants found before the signal, because the child shares the
+// caller's terminal and a new process group would break job control.
 func TestLoginEndsWhenGrandchildHoldsOutput(t *testing.T) {
 	t.Parallel()
 
@@ -2013,6 +2036,35 @@ func TestLoginEndsWhenGrandchildHoldsOutput(t *testing.T) {
 	case <-time.After(5 * terminationGrace):
 		t.Fatal("login blocked on the output pipe after cancellation")
 	}
+
+	fixtureValue.until(t, func() bool { return processGone(grandchildPID(t, grandchildFile)) })
+}
+
+func TestExitedLeaderEndsGroupAtOnce(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorCodex)
+
+	var control fakeControl
+
+	control.Grandchild = true
+	fixtureValue.control(t, control)
+
+	grandchildFile := filepath.Join(fixtureValue.options.directory(), directoryWork, "grandchild")
+	killGrandchildAfter(t, grandchildFile)
+
+	var warning atomic.Bool
+
+	child, err := start(fixtureValue.options.command(commandExec), false, &warning)
+	must(t, err)
+
+	select {
+	case <-child.done: //nolint:errcheck // Only the timing of the result matters.
+	case <-time.After(terminationGrace / 2):
+		t.Fatal("the reap waited on a pipe that the grandchild holds open")
+	}
+
+	fixtureValue.until(t, func() bool { return processGone(grandchildPID(t, grandchildFile)) })
 }
 
 //nolint:paralleltest // Swapped hooks are package variables.
@@ -2457,6 +2509,7 @@ func TestStatusCheckStartsOnlyWhenDueOrResumed(t *testing.T) {
 
 			fixtureValue := setup(t, vendorClaude)
 			state := stateFor(t, fixtureValue)
+			state.status.Phase = phaseChecking
 			state.nextCheck = state.clock.Now().Add(time.Hour)
 
 			if resumed {
@@ -3355,7 +3408,8 @@ func TestCodexExecArgsRestrictSandboxAndApproval(t *testing.T) {
 	t.Parallel()
 
 	want := []string{
-		commandExec, "-m", "gpt-6.1-sol", "--sandbox", "read-only", "-c", `approval_policy="never"`, "ping",
+		commandExec, "-m", "gpt-6.1-sol", "--skip-git-repo-check", "--sandbox", "read-only",
+		"-c", `approval_policy="never"`, "ping",
 	}
 	if got := codexExecArgs("ping"); !slices.Equal(got, want) {
 		t.Fatalf("args %q", got)
@@ -3639,4 +3693,133 @@ func TestApprovedSizeBoundAndDirectory(t *testing.T) {
 	if approved || !errors.Is(err, ErrArguments) {
 		t.Fatal("allow list in a missing directory accepted")
 	}
+}
+
+func TestTerminateKillsDescendantInAnotherSession(t *testing.T) {
+	t.Parallel()
+
+	for name, terminal := range map[string]bool{"pipe": false, "terminal": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorClaude)
+
+			var control fakeControl
+
+			control.Hold, control.Grandchild, control.NewSession = true, true, true
+			fixtureValue.control(t, control)
+
+			grandchildFile := filepath.Join(fixtureValue.options.directory(), directoryWork, "grandchild")
+			killGrandchildAfter(t, grandchildFile)
+
+			var warning atomic.Bool
+
+			child, err := start(fixtureValue.options.command(commandExec), terminal, &warning)
+			must(t, err)
+
+			defer child.signalGroup(syscall.SIGKILL)
+
+			fixtureValue.untilFile(t, grandchildFile)
+
+			child.terminate()
+
+			fixtureValue.until(t, func() bool { return processGone(grandchildPID(t, grandchildFile)) })
+		})
+	}
+}
+
+func TestCodexExecSkipsGitRepoCheck(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorCodex)
+
+	var control fakeControl
+
+	control.Hold = true
+	fixtureValue.control(t, control)
+
+	cancel, _ := fixtureValue.run(t)
+
+	defer cancel()
+
+	fixtureValue.until(t, func() bool { return fixtureValue.running(t) })
+
+	if !slices.Contains(fixtureValue.calls(t)[1].Args, "--skip-git-repo-check") {
+		t.Fatal(fixtureValue.calls(t)[1].Args)
+	}
+}
+
+func TestCodexExecTimeoutEndsHungRun(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorCodex)
+
+	var control fakeControl
+
+	control.Hold = true
+	fixtureValue.control(t, control)
+
+	cancel, _ := fixtureValue.run(t)
+
+	defer cancel()
+
+	fixtureValue.until(t, func() bool { return fixtureValue.running(t) })
+
+	pid := fixtureValue.calls(t)[1].PID
+
+	fixtureValue.clock.advance(execTimeout)
+	fixtureValue.until(t, func() bool {
+		fixtureValue.clock.tick()
+
+		return fixtureValue.status(t).Reason == reasonChildExit
+	})
+
+	if !processGone(pid) || len(fixtureValue.status(t).Restarts) != 1 {
+		t.Fatal("hung exec survived or left no restart", fixtureValue.status(t))
+	}
+}
+
+func TestSignedOutCheckCountsAsRestart(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+
+	must(t, state.launch())
+
+	if code, done := state.statusFailure(codeError(1)); code != 0 || done || len(state.status.Restarts) != 1 {
+		t.Fatal("signed-out check left no restart", code, done, state.status.Restarts)
+	}
+
+	must(t, state.launch())
+
+	for range restartMaximum - 2 {
+		state.status.Restarts = append(state.status.Restarts, state.clock.Now())
+	}
+
+	code, done := state.statusFailure(codeError(1))
+	fixtureValue.wantStopped(t, code, done, 0, reasonRestartLimit)
+}
+
+func TestOtherStatusFailureEndsRunner(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+
+	must(t, state.launch())
+
+	code, done := state.statusFailure(codeError(2))
+	fixtureValue.wantStopped(t, code, done, 1, reasonStatusFailed)
+}
+
+// untilFile waits until the file exists and has content.
+func (fixtureValue fixture) untilFile(t *testing.T, path string) {
+	t.Helper()
+
+	fixtureValue.until(t, func() bool {
+		data, readErr := os.ReadFile(path)
+
+		return readErr == nil && len(data) > 0
+	})
 }
