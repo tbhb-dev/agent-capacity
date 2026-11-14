@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/creack/pty"
@@ -1324,6 +1326,14 @@ func TestLaunchRefusesUnsafePermissions(t *testing.T) {
 		"deny entry missing":  func(permissions map[string]any) { permissions["deny"] = denyList()[1:] },
 		"deny not a list":     func(permissions map[string]any) { permissions["deny"] = "Bash" },
 		"no permissions":      func(permissions map[string]any) { clear(permissions) },
+		"deny ends in a number": func(permissions map[string]any) {
+			deny := []any{}
+			for _, tool := range denyList() {
+				deny = append(deny, tool)
+			}
+
+			permissions["deny"] = append(deny, 0)
+		},
 	}
 
 	for name, change := range tests {
@@ -2265,13 +2275,14 @@ func TestResumeFromOperatorStopLaunchesCodexAtOnce(t *testing.T) {
 			t.Fatal(code, done)
 		}
 
-		return state.child != nil
-	})
+		for _, call := range fixtureValue.calls(t) {
+			if call.Args[0] == commandExec {
+				return true
+			}
+		}
 
-	last := fixtureValue.calls(t)[len(fixtureValue.calls(t))-1]
-	if last.Args[0] != commandExec {
-		t.Fatal(last.Args)
-	}
+		return false
+	})
 }
 
 func TestCodexChildIgnoresReadingInterval(t *testing.T) {
@@ -2715,5 +2726,190 @@ func TestClaudeChildEndClosesTerminalAndKillsGroup(t *testing.T) {
 	_, err := child.terminal.Stat()
 	if !errors.Is(err, os.ErrClosed) {
 		t.Fatal("terminal still open", err)
+	}
+}
+
+// stepClock returns each listed time once and then repeats the last one.
+type stepClock struct {
+	times []time.Time
+	calls int
+}
+
+func (c *stepClock) Now() time.Time {
+	at := c.times[min(c.calls, len(c.times)-1)]
+	c.calls++
+
+	return at
+}
+
+func (c *stepClock) After(time.Duration) <-chan time.Time { return nil }
+
+func TestChildEndAtRestartLimitStaysAtLimitWhenOldestRestartExpiresLater(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	now := fixtureValue.clock.Now()
+
+	state.status.Restarts = []time.Time{
+		now.Add(-59*time.Minute - 59*time.Second), now.Add(-10 * time.Minute), now.Add(-10 * time.Minute),
+		now.Add(-10 * time.Minute),
+	}
+	state.clock = &stepClock{times: []time.Time{now, now, now.Add(2 * time.Second)}, calls: 0}
+	state.child = finished(nil)
+
+	code, done := state.childEnded(nil)
+	fixtureValue.wantStopped(t, code, done, 0, reasonRestartLimit)
+}
+
+func TestCheckApprovalApprovedContinues(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+
+	if code, done := state.checkApproval(); code != 0 || done {
+		t.Fatal(code, done)
+	}
+}
+
+func TestWaitLoginMissingExecutable(t *testing.T) {
+	t.Parallel()
+
+	cmd := exec.CommandContext(context.Background(), "/nonexistent/vendor")
+
+	if err := waitLogin(context.Background(), cmd); !errors.Is(err, ErrArguments) {
+		t.Fatal(err)
+	}
+
+	if cmd.WaitDelay != 2*time.Second {
+		t.Fatal("wait delay", cmd.WaitDelay)
+	}
+}
+
+func TestStartPipeChildChannels(t *testing.T) {
+	t.Parallel()
+
+	var warning atomic.Bool
+
+	child, err := start(exec.CommandContext(context.Background(), "/usr/bin/true"), false, &warning)
+	must(t, err)
+
+	if cap(child.done) != 1 {
+		t.Fatal("done capacity", cap(child.done))
+	}
+
+	select {
+	case <-child.drained:
+	default:
+		t.Fatal("pipe child drain still open")
+	}
+
+	must(t, <-child.done)
+}
+
+func TestCloseTerminalWaitsOneHundredMillisecondsForDrain(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		cmd := exec.CommandContext(context.Background(), "/bin/sleep", "30")
+		cmd.SysProcAttr = new(syscall.SysProcAttr)
+		cmd.SysProcAttr.Setpgid = true
+		must(t, cmd.Start())
+
+		defer cmd.Wait() //nolint:errcheck // The test only needs the child reaped.
+
+		reader, writer, err := os.Pipe()
+		must(t, err)
+
+		defer writer.Close()
+
+		child := &process{cmd: cmd, done: make(chan error, 1), terminal: reader, drained: make(chan struct{})}
+		closed := make(chan struct{})
+
+		go func() {
+			child.closeTerminal()
+			close(closed)
+		}()
+
+		time.Sleep(99*time.Millisecond + 500*time.Microsecond)
+		synctest.Wait()
+
+		if _, err := reader.Stat(); err != nil {
+			t.Error("terminal closed before 100ms")
+		}
+
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+
+		if _, err := reader.Stat(); !errors.Is(err, os.ErrClosed) {
+			t.Error("terminal still open after 100ms")
+		}
+
+		close(child.drained)
+		<-closed
+	})
+}
+
+func TestFieldRejectsBadObjectsAndValues(t *testing.T) {
+	t.Parallel()
+
+	var (
+		text string
+		list []string
+	)
+
+	if !errors.Is(field(json.RawMessage("1"), "a", &text), ErrArguments) {
+		t.Fatal("number accepted as object")
+	}
+
+	if !errors.Is(field(json.RawMessage(`{"a":["x",0]}`), "a", &list), ErrArguments) {
+		t.Fatal("mistyped list entry accepted")
+	}
+
+	if field(json.RawMessage(`{"a":"x"}`), "a", &text) != nil || text != "x" {
+		t.Fatal("valid field refused", text)
+	}
+}
+
+type readStep struct {
+	err  error
+	data string
+}
+
+// stepReader returns its steps one per read, so a test can place a read error between chunks.
+type stepReader struct{ steps []readStep }
+
+func (r *stepReader) Read(p []byte) (int, error) {
+	if len(r.steps) == 0 {
+		return 0, io.EOF
+	}
+
+	step := r.steps[0]
+	r.steps = r.steps[1:]
+
+	return copy(p, step.data), step.err
+}
+
+func TestCheckKeysRejectsBrokenInput(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]io.Reader{
+		"empty":           strings.NewReader(""),
+		"number as key":   strings.NewReader("{1:2}"),
+		"unclosed object": strings.NewReader("{"),
+		"read error inside object": &stepReader{steps: []readStep{
+			{err: nil, data: `[{"a":1,`}, {err: errors.New("transient"), data: ""}, {err: nil, data: `"b":2}]`},
+		}},
+	}
+
+	for name, reader := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			if err := checkKeys(json.NewDecoder(reader), 0); !errors.Is(err, ErrArguments) {
+				t.Fatal(err)
+			}
+		})
 	}
 }
