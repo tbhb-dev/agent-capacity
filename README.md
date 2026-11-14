@@ -62,6 +62,8 @@ Claude Code headless `--output-format stream-json`: reported, not verified here.
 
 The session runner starts Claude Code with a fixed deny list of tools and the `dontAsk` permission mode. Each launch first checks the Claude settings file. A file passes only with the rendered keys, the rendered `allow` list and status line command, and every refused tool in `deny`. This floor guards against a stale or mis-rendered file and doesn't defend against a hostile writer. Since the deny list is a snapshot of tool names and `mcp__*` wildcard support in `deny` is unverified, `dontAsk` is the real control. Codex's config isn't checked, and it has no tool deny list. The runner starts `codex exec` with `--sandbox read-only` and the `never` approval policy, and those flags are the control.
 
+Cancelling a login signals only the login child. Descendants of that child keep running, because the child shares the caller's terminal and can't join a separate process group.
+
 ## Export configuration
 
 `--interval` sets the source read interval, which defaults to 60 seconds. Control the SDK export interval through `OTEL_METRIC_EXPORT_INTERVAL`. A process interrupt or termination signal flushes pending metrics and shuts down.

@@ -236,7 +236,7 @@ func readRegular(dir *os.Root, name string, limit int64) ([]byte, fs.FileInfo, e
 		return nil, nil, errSessionState
 	}
 
-	// gomutants:disable-next-line INVERT_BITWISE,INTEGER_INCREMENT reason="Links resolve either way. The mode is unused."
+	// gomutants:disable-next-line INTEGER_INCREMENT reason="The mode argument is ignored when no file is created."
 	file, err := dir.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	// gomutants:disable-next-line BRANCH_IF reason="The nil file also fails the Stat that follows."
 	if err != nil {
