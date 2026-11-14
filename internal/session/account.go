@@ -194,8 +194,8 @@ func Login(ctx context.Context, options Options, input *os.File, output, diagnos
 }
 
 func loginAs(ctx context.Context, options Options, input *os.File, output, diagnostic io.Writer, uid int) int {
-	approved, err := options.Approved()
-	if err != nil || !approved {
+	approved, _ := options.Approved() //nolint:errcheck // Every error returns false.
+	if !approved {
 		fmt.Fprintln(diagnostic, "login refused")
 
 		return refusalExit
