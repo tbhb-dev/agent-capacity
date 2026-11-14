@@ -865,6 +865,26 @@ func TestCodexTimerAndRolloutCleanup(t *testing.T) {
 	cancel()
 }
 
+func TestStatusLineCommandQuoting(t *testing.T) {
+	t.Parallel()
+
+	data, err := RenderSettings(vendorClaude, fixtureAlias, "/opt/it's/agent", "/var/spool dir/it's")
+	must(t, err)
+
+	var settings struct {
+		StatusLine struct {
+			Command string `json:"command"`
+		} `json:"statusLine"`
+	}
+	must(t, json.Unmarshal(data, &settings))
+
+	wantCommand := `'/opt/it'"'"'s/agent' statusline --vendor=claude '--account=sample' ` +
+		`'--spool-dir=/var/spool dir/it'"'"'s'`
+	if settings.StatusLine.Command != wantCommand {
+		t.Fatal(settings.StatusLine.Command)
+	}
+}
+
 func TestSettingsAndHardening(t *testing.T) {
 	t.Parallel()
 	base := canonicalTempDir(t)

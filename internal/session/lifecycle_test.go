@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -1173,6 +1174,14 @@ func TestCleanupCodexDirectoryShapes(t *testing.T) {
 	if !errors.Is(cleanRollouts(alias, now), ErrArguments) {
 		t.Fatal("codex file accepted")
 	}
+
+	must(t, os.Remove(codex))
+	must(t, os.MkdirAll(filepath.Join(fixtureValue.options.directory(), "real-codex", "sessions"), 0o700))
+	must(t, os.Symlink("real-codex", codex))
+
+	if !errors.Is(cleanRollouts(alias, now), ErrArguments) {
+		t.Fatal("codex symlink accepted")
+	}
 }
 
 func TestRemoveOldRolloutFailures(t *testing.T) {
@@ -1203,6 +1212,57 @@ func TestRemoveOldRolloutFailures(t *testing.T) {
 	if !errors.Is(removeOldRollout(root, "old", now), ErrArguments) {
 		t.Fatal("failed removal accepted")
 	}
+}
+
+func TestRemoveOldRolloutAgeRule(t *testing.T) {
+	t.Parallel()
+
+	dir := canonicalTempDir(t)
+	now := time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC)
+
+	ages := map[string]struct {
+		age     time.Duration
+		removed bool
+	}{
+		"newer":    {47*time.Hour + 59*time.Minute, false},
+		"boundary": {48 * time.Hour, false},
+		"older":    {48*time.Hour + time.Minute, true},
+	}
+
+	for name, rollout := range ages {
+		path := filepath.Join(dir, name)
+		must(t, os.WriteFile(path, nil, 0o600))
+		must(t, os.Chtimes(path, now.Add(-rollout.age), now.Add(-rollout.age)))
+	}
+
+	oldDirectory := filepath.Join(dir, "directory")
+	must(t, os.Mkdir(oldDirectory, 0o700))
+	must(t, os.Chtimes(oldDirectory, now.Add(-72*time.Hour), now.Add(-72*time.Hour)))
+	must(t, os.Symlink("newer", filepath.Join(dir, "link")))
+
+	root, err := os.OpenRoot(dir)
+	must(t, err)
+
+	defer root.Close()
+
+	for name, rollout := range ages {
+		must(t, removeOldRollout(root, name, now))
+
+		_, err = os.Lstat(filepath.Join(dir, name))
+		if gone := errors.Is(err, fs.ErrNotExist); gone != rollout.removed {
+			t.Fatalf("%s: removed %v, want %v", name, gone, rollout.removed)
+		}
+	}
+
+	must(t, removeOldRollout(root, "directory", now))
+
+	_, err = os.Lstat(oldDirectory)
+	must(t, err)
+
+	must(t, removeOldRollout(root, "link", time.Now().Add(72*time.Hour)))
+
+	_, err = os.Lstat(filepath.Join(dir, "link"))
+	must(t, err)
 }
 
 func TestFinishAtRestartLimit(t *testing.T) {
@@ -1638,9 +1698,9 @@ func TestLaunchRefusesAmbiguousSettingsKeys(t *testing.T) {
 func TestSettingsNestingLimit(t *testing.T) {
 	t.Parallel()
 
-	wrappers := map[string]func(value any) any{
-		"array":  func(value any) any { return []any{value} },
-		"object": func(value any) any { return map[string]any{"a": value} },
+	wrappers := map[string]func(value any, level int) any{
+		"array":  func(value any, _ int) any { return []any{value} },
+		"object": func(value any, level int) any { return map[string]any{fmt.Sprintf("level%d", level): value} },
 	}
 
 	// The top object and permissions add two levels, so 29 wrappers make 31 levels and 31 make 33.
@@ -1649,8 +1709,8 @@ func TestSettingsNestingLimit(t *testing.T) {
 			fixtureValue := setup(t, vendorClaude)
 			writeSettings(t, fixtureValue, func(permissions map[string]any) {
 				var value any = 1
-				for range levels {
-					value = wrap(value)
+				for level := range levels {
+					value = wrap(value, level)
 				}
 
 				permissions["extra"] = value
