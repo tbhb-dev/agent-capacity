@@ -95,6 +95,10 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 	return child, nil
 }
 
+// signalGroup signals the process group of the leader. It also runs after the leader exits and cmd.Wait
+// reaps it, because children left behind by a dead leader still need the signal. In that window the kernel
+// could reuse the process ID for an unrelated group. The window is accepted since skipping the signal would leave
+// those orphaned children running.
 func (p *process) signalGroup(signal syscall.Signal) {
 	//nolint:errcheck // The process group may already have exited.
 	_ = syscall.Kill(-p.cmd.Process.Pid, signal)
