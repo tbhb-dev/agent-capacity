@@ -32,9 +32,9 @@ func New(meter metric.Meter, now func() time.Time) (*Collector, error) {
 	var gauges []metric.Float64ObservableGauge
 
 	for _, spec := range []struct{ name, unit string }{
-		{"afakt.capacity.window.utilization", "1"},
-		{"afakt.capacity.window.reset_time", "s"},
-		{"afakt.capacity.snapshot.age", "s"},
+		{"agent.capacity.window.utilization", "1"},
+		{"agent.capacity.window.reset_time", "s"},
+		{"agent.capacity.snapshot.age", "s"},
 	} {
 		gauge, err := meter.Float64ObservableGauge(spec.name, metric.WithUnit(spec.unit))
 		if err != nil {
@@ -85,11 +85,11 @@ func (collector *Collector) observe(observer metric.Observer, gauges []metric.Fl
 		}
 
 		attrs := metric.WithAttributes(
-			attribute.String("afakt.plan.vendor", reading.Vendor),
-			attribute.String("afakt.plan.window", reading.Window),
-			attribute.String("afakt.capacity.source", reading.Source),
-			attribute.String("afakt.capacity.freshness", freshness),
-			attribute.String("afakt.account", reading.Account),
+			attribute.String("agent.plan.vendor", reading.Vendor),
+			attribute.String("agent.plan.window", reading.Window),
+			attribute.String("agent.capacity.source", reading.Source),
+			attribute.String("agent.capacity.freshness", freshness),
+			attribute.String("agent.account", reading.Account),
 		)
 		observer.ObserveFloat64(gauges[0], reading.UsedRatio, attrs)
 

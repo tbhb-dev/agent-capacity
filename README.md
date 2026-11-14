@@ -44,7 +44,7 @@ printf '%s\n' '{"quota":{"five_hour":{"used_percentage":25,"resets_at":179452800
 agent-capacity serve
 ```
 
-The gauges `afakt.capacity.window.utilization`, `afakt.capacity.window.reset_time`, and `afakt.capacity.snapshot.age` include the vendor, source, and account alias labels.
+The gauges `agent.capacity.window.utilization`, `agent.capacity.window.reset_time`, and `agent.capacity.snapshot.age` include the vendor, source, and account alias labels.
 
 ## Claude transcripts
 
