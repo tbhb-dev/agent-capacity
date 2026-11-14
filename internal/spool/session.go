@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 const (
@@ -23,7 +24,7 @@ const (
 	sessionFileMode      = 0o600
 	// maxStatusBytes bounds a status read. A full status with its restart history is under 2 KiB.
 	maxStatusBytes = 8 << 10
-	// MaxRestartHistory is four times the restart limit of five per hour.
+	// MaxRestartHistory is four times the restart limit of five per hour. The runner trims the oldest entries first.
 	MaxRestartHistory = 20
 	// unsafeWriteBits are the group and world write permission bits.
 	unsafeWriteBits = 0o022
@@ -134,6 +135,7 @@ func statusRoot(root *os.Root) (*os.Root, error) {
 	}
 
 	// A runner that finds the directory already there syncs the parent too, because the creator may stop before its sync.
+	// Every read and write pays this one directory sync. That cost is intended.
 	if syncDir(root) != nil {
 		if err == nil {
 			// Removing the directory makes a retry create and sync it again.
@@ -342,7 +344,7 @@ func checkMembers(dec *json.Decoder) error {
 			return errSessionState
 		}
 
-		key := strings.ToLower(fmt.Sprint(name))
+		key := FoldKey(fmt.Sprint(name))
 		if _, duplicate := seen[key]; duplicate {
 			return errSessionState
 		}
@@ -369,4 +371,22 @@ func checkElements(dec *json.Decoder) error {
 	_, err := dec.Token()
 
 	return errors.Join(err)
+}
+
+// FoldKey maps a JSON object key to the form encoding/json uses to match field names. Keys that differ only in
+// Unicode case folding map to the same string.
+func FoldKey(key string) string {
+	var folded strings.Builder
+
+	for _, r := range key {
+		smallest := r
+
+		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+			smallest = min(smallest, next)
+		}
+
+		folded.WriteRune(smallest)
+	}
+
+	return folded.String()
 }

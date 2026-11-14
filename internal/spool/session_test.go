@@ -702,3 +702,21 @@ func TestReadSessionRejectsIdentityOnlyState(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, identity, data)
 }
+
+func TestFoldKeyMatchesEncodingJSON(t *testing.T) {
+	t.Parallel()
+
+	longS := strings.Replace("restarts", "s", "\u017f", 1)
+	kelvin := strings.Replace("kelvin", "k", "\u212a", 1)
+	pairs := [][2]string{{"restarts", "RESTARTS"}, {"restarts", longS}, {"kelvin", kelvin}}
+
+	for _, pair := range pairs {
+		if FoldKey(pair[0]) != FoldKey(pair[1]) {
+			t.Fatal("keys that encoding/json matches fold apart", pair)
+		}
+	}
+
+	if FoldKey("phase") == FoldKey("alias") {
+		t.Fatal("different keys fold together")
+	}
+}

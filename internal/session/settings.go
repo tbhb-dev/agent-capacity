@@ -193,7 +193,7 @@ func checkObject(dec *json.Decoder, depth int) error {
 			return ErrArguments
 		}
 
-		key := strings.ToLower(fmt.Sprint(name))
+		key := spool.FoldKey(fmt.Sprint(name))
 
 		if _, duplicate := seen[key]; duplicate {
 			return ErrArguments
