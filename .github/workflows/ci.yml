@@ -118,9 +118,10 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: >-
-          bazelisk run --config=ci @tbhb_rules//quality:mutation_changes --
-          --base "origin/${BASE_REF}" --out .mutation/changes.json
+        run: |
+          mkdir -p .mutation
+          bazelisk run --config=ci @tbhb_rules//quality:mutation_changes -- \
+            --base "origin/${BASE_REF}" --out .mutation/changes.json
 
       - name: Test the changed code
         if: github.event_name == 'pull_request'
