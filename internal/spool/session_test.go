@@ -53,6 +53,8 @@ func TestSessionStatusAndBoundaries(t *testing.T) {
 
 	_, err = SessionRoot("relative")
 	require.Error(t, err)
+	_, err = SessionRoot(".")
+	require.Error(t, err)
 	link := filepath.Join(t.TempDir(), "link")
 	require.NoError(t, os.Symlink(dir, link))
 	_, err = SessionRoot(link)
@@ -69,11 +71,31 @@ func TestSessionAliases(t *testing.T) {
 		require.Error(t, WriteSession(root, status))
 		_, err := ReadSession(root, claudeVendor, account)
 		require.Error(t, err)
-		_, err = Stopped(root, account)
+
+		stopped, err := Stopped(root, account)
 		require.Error(t, err)
+		require.False(t, stopped)
+
 		_, err = SnapshotTime(root, claudeVendor, account)
 		require.Error(t, err)
 	}
+}
+
+func TestSessionRejectsUnknownVendors(t *testing.T) {
+	t.Parallel()
+	dir, root := testSessionRoot(t)
+
+	for _, vendor := range []string{"gemini", "", "Claude"} {
+		status := validStatus()
+		status.Vendor = vendor
+		require.ErrorIs(t, WriteSession(root, status), errSessionState)
+		_, err := ReadSession(root, vendor, sessionAlias)
+		require.ErrorIs(t, err, errSessionState)
+		_, err = SnapshotTime(root, vendor, sessionAlias)
+		require.ErrorIs(t, err, errSessionState)
+	}
+
+	require.NoDirExists(t, filepath.Join(dir, "status"))
 }
 
 func TestSessionRejectsLinksAndOnlyInspectsOwnSnapshot(t *testing.T) {
@@ -132,8 +154,9 @@ func TestStoppedRejectsUnreadableRoot(t *testing.T) {
 	dir, root := testSessionRoot(t)
 	restrictMode(t, dir, 0)
 
-	_, err := Stopped(root, sessionAlias)
+	stopped, err := Stopped(root, sessionAlias)
 	require.Error(t, err)
+	require.False(t, stopped)
 }
 
 func TestStoppedWithoutControls(t *testing.T) {
@@ -231,6 +254,16 @@ func TestWriteSessionReplacesRegularFilesOnly(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "stopped", got.Phase)
 
+	linked := validStatus()
+	linked.Alias = "linked"
+
+	require.NoError(t, os.Symlink("codex-sample.json", filepath.Join(dir, "status", "codex-linked.json")))
+	require.Error(t, WriteSession(root, linked))
+
+	linkInfo, err := os.Lstat(filepath.Join(dir, "status", "codex-linked.json"))
+	require.NoError(t, err)
+	require.NotZero(t, linkInfo.Mode()&os.ModeSymlink)
+
 	other := validStatus()
 	other.Alias = "other"
 
@@ -316,7 +349,7 @@ func otherDirInfo(t *testing.T) fs.FileInfo {
 	return info
 }
 
-//nolint:paralleltest // Swapped hooks are package variables.
+//nolint:paralleltest // Hooks are package variables.
 func TestStatusRootRejectsChangedDirectory(t *testing.T) {
 	_, root := testSessionRoot(t)
 	swapHooks(t)
@@ -351,7 +384,7 @@ func TestWriteSessionRejectsStatusFileChanges(t *testing.T) {
 	require.Empty(t, entries)
 }
 
-//nolint:paralleltest // Swapped hooks are package variables.
+//nolint:paralleltest // Replacing the stat hook mutates package state.
 func TestWriteSessionSyncsStatusDirectory(t *testing.T) {
 	_, root := testSessionRoot(t)
 	swapHooks(t)
@@ -379,10 +412,10 @@ func TestSyncRootReportsOpenFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, syncRoot(root))
 	require.NoError(t, root.Close())
-	require.Error(t, syncRoot(root))
+	require.ErrorIs(t, syncRoot(root), errSessionState)
 }
 
-//nolint:paralleltest // Every test shares the hook variables.
+//nolint:paralleltest // All tests share the hook variables.
 func TestReadSessionRejectsStatusFileChanges(t *testing.T) {
 	_, root := testSessionRoot(t)
 	require.NoError(t, WriteSession(root, validStatus()))

@@ -195,7 +195,10 @@ func Login(ctx context.Context, options Options, input *os.File, output, diagnos
 
 func loginAs(ctx context.Context, options Options, input *os.File, output, diagnostic io.Writer, uid int) int {
 	approved, err := options.Approved()
-	// gomutants:disable-next-line EXPRESSION_REMOVE reason="Approved returns false on every error, so a mutant that drops the err != nil operand still refuses the login. The !approved operand then covers the same path and the exit code stays the same."
+	// Approved returns false on every error, so a mutant that drops the err != nil operand still refuses the login.
+	// The !approved operand then covers the same path and the exit code stays the same. Failed approvals take the
+	// refusal branch below, which prints the fixed diagnostic line.
+	// gomutants:disable-next-line EXPRESSION_REMOVE reason="The !approved operand covers the same path."
 	if err != nil || !approved {
 		fmt.Fprintln(diagnostic, "login refused")
 

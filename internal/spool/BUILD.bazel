@@ -20,6 +20,7 @@ go_library(
 go_test(
     name = "spool_test",
     srcs = [
+        "session_hooks_test.go",
         "session_test.go",
         "spool_test.go",
     ],

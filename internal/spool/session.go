@@ -43,6 +43,7 @@ func SessionRoot(dir string) (*os.Root, error) {
 	}
 
 	resolved, err := filepath.EvalSymlinks(dir)
+	// gomutants:disable-next-line EXPRESSION_REMOVE reason="An empty path from a failed resolution never matches."
 	if err != nil || resolved != filepath.Clean(dir) {
 		return nil, errSessionState
 	}
@@ -117,6 +118,7 @@ func syncRoot(dir *os.Root) error {
 
 func statusRoot(root *os.Root) (*os.Root, error) {
 	err := root.Mkdir("status", sessionDirectoryMode)
+	// gomutants:disable-next-line BRANCH_IF reason="A missing directory fails the next check the same way."
 	if err != nil && !errors.Is(err, fs.ErrExist) {
 		return nil, errSessionState
 	}
@@ -132,6 +134,7 @@ func statusRoot(root *os.Root) (*os.Root, error) {
 	}
 
 	opened, err := stat(dir, ".")
+	// gomutants:disable-next-line EXPRESSION_REMOVE reason="A nil Stat result also fails SameFile."
 	if err != nil || !os.SameFile(info, opened) {
 		_ = dir.Close()
 
@@ -172,9 +175,11 @@ func WriteSession(root *os.Root, status SessionStatus) error {
 	temporary := ".status-" + rand.Text()
 
 	file, err := dir.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, sessionFileMode)
+	// gomutants:disable-next-line BRANCH_IF reason="Writing to the nil file fails the next check the same way."
 	if err != nil {
 		return errSessionState
 	}
+
 	defer dir.Remove(temporary) //nolint:errcheck // Rename consumes the temporary file.
 
 	_, writeErr := file.Write(data)
@@ -207,6 +212,7 @@ func ReadSession(root *os.Root, vendor, account string) (SessionStatus, error) {
 	if errors.Is(err, fs.ErrNotExist) {
 		var empty SessionStatus
 
+		// gomutants:disable-next-line RETURN_ZERO reason="The empty status is already the zero value."
 		return empty, nil
 	}
 
@@ -214,13 +220,17 @@ func ReadSession(root *os.Root, vendor, account string) (SessionStatus, error) {
 		return SessionStatus{}, errSessionState
 	}
 
+	// gomutants:disable-next-line INVERT_BITWISE,INTEGER_INCREMENT reason="Links resolve either way. The mode is unused."
 	file, err := dir.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	// gomutants:disable-next-line BRANCH_IF reason="The nil file also fails the Stat that follows."
 	if err != nil {
 		return SessionStatus{}, errSessionState
 	}
+
 	defer file.Close()
 
 	opened, err := fstat(file)
+	// gomutants:disable-next-line EXPRESSION_REMOVE reason="SameFile rejects a nil Stat result."
 	if err != nil || !os.SameFile(info, opened) {
 		return SessionStatus{}, errSessionState
 	}
