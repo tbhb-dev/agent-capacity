@@ -26,6 +26,7 @@ func accountFlags(name string) (*flag.FlagSet, *session.Options) {
 	flags.StringVar(&options.AliasFile, "alias-file", "", "approved alias file")
 	flags.StringVar(&options.Root, "alias-root", "", "parent of alias directories")
 	flags.StringVar(&options.Binary, "binary", "", "vendor binary path")
+	flags.StringVar(&options.Exporter, "exporter", "", "agent-capacity binary path for the status line")
 	flags.StringVar(&options.SpoolDir, "spool-dir", "", "snapshot directory")
 
 	return flags, options
@@ -53,7 +54,7 @@ func sessionCommand(ctx context.Context, args []string, output io.Writer) int {
 			return argumentExit
 		}
 
-		data, err := session.RenderSettings(options.Vendor, options.Account, options.Binary, options.SpoolDir)
+		data, err := session.RenderSettings(options.Vendor, options.Account, options.Exporter, options.SpoolDir)
 		if err != nil {
 			return argumentExit
 		}

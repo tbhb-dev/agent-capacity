@@ -47,6 +47,7 @@ type Options struct {
 	AliasFile string
 	Root      string
 	Binary    string
+	Exporter  string
 	SpoolDir  string
 	Prompt    string
 }
@@ -55,7 +56,8 @@ type Options struct {
 func (options Options) Valid() bool {
 	return (options.Vendor == vendorClaude || options.Vendor == vendorCodex) && spool.ValidAlias(options.Account) &&
 		filepath.IsAbs(options.AliasFile) && filepath.IsAbs(options.Root) &&
-		(options.Binary == "" || filepath.IsAbs(options.Binary))
+		(options.Binary == "" || filepath.IsAbs(options.Binary)) &&
+		(options.Exporter == "" || filepath.IsAbs(options.Exporter))
 }
 
 // Approved reads only the explicitly supplied allow list.

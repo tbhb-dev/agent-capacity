@@ -389,7 +389,7 @@ func codexExecArgs(prompt string) []string {
 }
 
 func (s *running) launch() error {
-	command := statusCommand(s.options.Binary, s.options.Account, s.options.SpoolDir)
+	command := statusCommand(s.options.Exporter, s.options.Account, s.options.SpoolDir)
 	if s.options.Vendor == vendorClaude && checkSettings(s.alias, command) != nil {
 		return ErrArguments
 	}

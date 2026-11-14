@@ -184,7 +184,8 @@ func setup(t *testing.T, vendor string) fixture {
 
 	options := Options{
 		Vendor: vendor, Account: fixtureAlias, Root: dir, AliasFile: filepath.Join(dir, "approved"),
-		Binary: filepath.Join(dir, "fake-vendor"), SpoolDir: filepath.Join(dir, "spool"), Prompt: "ping",
+		Binary: filepath.Join(dir, "fake-vendor"), Exporter: filepath.Join(dir, "agent-capacity"),
+		SpoolDir: filepath.Join(dir, "spool"), Prompt: "ping",
 	}
 	for _, sub := range []string{
 		options.directory(), filepath.Join(options.directory(), "work"), filepath.Join(options.directory(), directoryHome),
@@ -194,7 +195,7 @@ func setup(t *testing.T, vendor string) fixture {
 	}
 
 	if vendor == vendorClaude {
-		rendered, err := RenderSettings(vendorClaude, fixtureAlias, options.Binary, options.SpoolDir)
+		rendered, err := RenderSettings(vendorClaude, fixtureAlias, options.Exporter, options.SpoolDir)
 		must(t, err)
 		must(t, os.WriteFile(filepath.Join(options.directory(), settingsPath), rendered, 0o600))
 	}

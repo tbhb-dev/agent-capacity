@@ -291,7 +291,7 @@ func ReadSession(root *os.Root, vendor, account string) (SessionStatus, error) {
 
 	var status SessionStatus
 	if strictJSON(data) != nil || json.Unmarshal(data, &status) != nil || len(status.Restarts) > maxRestartHistory ||
-		status.Vendor != vendor || status.Alias != account {
+		status.Vendor != vendor || status.Alias != account || status.Time.IsZero() {
 		return SessionStatus{}, errSessionState
 	}
 
