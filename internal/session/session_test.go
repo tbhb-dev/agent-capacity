@@ -1028,11 +1028,15 @@ func TestWallClockAfterFires(t *testing.T) {
 	}
 }
 
-// untilSignedOut advances the clock one status interval per poll so the retry check runs.
+// untilSignedOut advances the clock one status interval per poll so the retry check runs. It advances only while
+// no status check is running, because a check that sees a whole interval pass stops the run.
 func untilSignedOut(t *testing.T, fixtureValue fixture) {
 	t.Helper()
 	fixtureValue.until(t, func() bool {
-		fixtureValue.clock.advance(statusInterval)
+		calls := fixtureValue.calls(t)
+		if len(calls) > 0 && errors.Is(syscall.Kill(calls[len(calls)-1].PID, 0), syscall.ESRCH) {
+			fixtureValue.clock.advance(statusInterval)
+		}
 
 		return fixtureValue.status(t).Reason == reasonSignedOut
 	})
