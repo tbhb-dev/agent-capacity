@@ -23,7 +23,7 @@ import (
 
 const (
 	personalAlias = "personal"
-	resetName     = "afakt.capacity.window.reset_time"
+	resetName     = "agent.capacity.window.reset_time"
 )
 
 func reading(now time.Time) capacity.Reading {
@@ -93,9 +93,9 @@ func assertMetrics(t *testing.T, metrics []metricdata.Metrics) {
 	t.Helper()
 
 	units := map[string]string{
-		"afakt.capacity.window.utilization": "1",
+		"agent.capacity.window.utilization": "1",
 		resetName:                           "s",
-		"afakt.capacity.snapshot.age":       "s",
+		"agent.capacity.snapshot.age":       "s",
 	}
 	for _, measurement := range metrics {
 		assert.Equal(t, units[measurement.Name], measurement.Unit)
@@ -111,7 +111,7 @@ func assertMetrics(t *testing.T, metrics []metricdata.Metrics) {
 		require.Len(t, gauge.DataPoints, wantCount)
 
 		for _, point := range gauge.DataPoints {
-			account, found := point.Attributes.Value("afakt.account")
+			account, found := point.Attributes.Value("agent.account")
 			require.True(t, found)
 
 			alias := account.AsString()
@@ -126,11 +126,11 @@ func assertMetrics(t *testing.T, metrics []metricdata.Metrics) {
 			}
 
 			wantAttrs := attribute.NewSet(
-				attribute.String("afakt.plan.vendor", "openai"),
-				attribute.String("afakt.plan.window", "7d"),
-				attribute.String("afakt.capacity.source", "codex_rollout"),
-				attribute.String("afakt.capacity.freshness", freshness),
-				attribute.String("afakt.account", alias),
+				attribute.String("agent.plan.vendor", "openai"),
+				attribute.String("agent.plan.window", "7d"),
+				attribute.String("agent.capacity.source", "codex_rollout"),
+				attribute.String("agent.capacity.freshness", freshness),
+				attribute.String("agent.account", alias),
 			)
 			assert.Equal(t, wantAttrs, point.Attributes)
 
@@ -139,11 +139,11 @@ func assertMetrics(t *testing.T, metrics []metricdata.Metrics) {
 			}
 
 			switch measurement.Name {
-			case "afakt.capacity.window.utilization":
+			case "agent.capacity.window.utilization":
 				assert.InDelta(t, 0.5, point.Value, 0)
 			case resetName:
 				assert.InDelta(t, 103600.5, point.Value, 0)
-			case "afakt.capacity.snapshot.age":
+			case "agent.capacity.snapshot.age":
 				assert.InDelta(t, age, point.Value, 0)
 			}
 		}

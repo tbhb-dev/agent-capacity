@@ -1,7 +1,6 @@
 # Project vocabulary for cspell: tool, command and package names that
 # the bundled dictionaries lack. Add only real terms; fix typos instead.
 addopts
-afakt
 agy
 Antigravity
 autobuild
