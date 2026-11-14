@@ -1021,6 +1021,21 @@ func TestStatusCheckResults(t *testing.T) {
 	fixtureValue.wantStopped(t, code, done, 1, reasonStatusFailed)
 
 	state.check = finished(codeError(1))
+	if code, done = state.pollStatusCheck(); code != 0 || done || state.signedOutCount != 1 {
+		t.Fatal("first exit one finished", code, done)
+	}
+
+	state.check = finished(nil)
+	if code, done = state.pollStatusCheck(); code != 0 || done || state.signedOutCount != 0 {
+		t.Fatal("success kept the count", code, done)
+	}
+
+	state.check = finished(codeError(1))
+	if code, done = state.pollStatusCheck(); code != 0 || done || state.signedOutCount != 1 {
+		t.Fatal("exit one after success finished", code, done)
+	}
+
+	state.check = finished(codeError(1))
 	code, done = state.pollStatusCheck()
 	fixtureValue.wantStopped(t, code, done, 0, reasonSignedOut)
 }
@@ -1960,7 +1975,7 @@ func TestHeldPipeResults(t *testing.T) {
 		{"codex status check exit zero", vendorCodex, reasonNone, 0, 0, 0, 0, true, false, false, true, false},
 		{"codex exec exit zero", vendorCodex, reasonNone, 0, 0, 1, 0, false, false, false, false, false},
 		{"claude child exit", vendorClaude, reasonChildExit, 0, 0, 1, 1, false, true, true, true, false},
-		{"codex status check exit one", vendorCodex, reasonSignedOut, 1, 0, 0, 0, true, false, true, true, false},
+		{"codex status check exit one", vendorCodex, reasonNone, 1, 0, 0, 0, true, false, false, true, false},
 		{"codex exec exit one", vendorCodex, reasonChildExit, 0, 1, 1, 1, false, false, true, true, false},
 		{"codex exec killed by signal", vendorCodex, reasonChildExit, 0, 0, 1, 1, false, false, true, true, true},
 		{"codex status check exit two", vendorCodex, reasonStatusFailed, 2, 0, 1, 1, true, false, true, true, false},
@@ -2682,11 +2697,50 @@ func TestSignedOutStopsChildBeforeFinishing(t *testing.T) {
 	fixtureValue := setup(t, vendorClaude)
 	state := stateFor(t, fixtureValue)
 	pid := liveChild(t, fixtureValue, state)
+	state.signedOutCount = 1
 	state.check = finished(codeError(1))
 
 	code, done := state.pollStatusCheck()
 	fixtureValue.wantStopped(t, code, done, 0, reasonSignedOut)
 	wantEnded(t, state.child, pid)
+}
+
+func TestFirstExitOneRetriesAfterStatusInterval(t *testing.T) {
+	t.Parallel()
+
+	for _, vendor := range []string{vendorClaude, vendorCodex} {
+		t.Run(vendor, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendor)
+			state := stateFor(t, fixtureValue)
+			pid := liveChild(t, fixtureValue, state)
+			state.check = finished(codeError(1))
+
+			if code, done := state.pollStatusCheck(); code != 0 || done || state.signedOutCount != 1 {
+				t.Fatal("first exit one finished", code, done)
+			}
+
+			wantEnded(t, state.child, pid)
+
+			want := fixtureValue.clock.Now().Add(statusInterval)
+			if !state.nextCheck.Equal(want) || !state.nextExec.Equal(want) {
+				t.Fatal("retry not scheduled", state.nextCheck, state.nextExec)
+			}
+		})
+	}
+}
+
+func TestNonOneStatusExitFinishesAfterExitOne(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	state.signedOutCount = 1
+	state.check = finished(codeError(2))
+
+	code, done := state.pollStatusCheck()
+	fixtureValue.wantStopped(t, code, done, 1, reasonStatusFailed)
 }
 
 func TestReadingUnavailableStopsChildBeforeFinishing(t *testing.T) {
@@ -3060,7 +3114,7 @@ func TestCodexExecArgsRestrictSandboxAndApproval(t *testing.T) {
 	t.Parallel()
 
 	want := []string{
-		commandExec, "-m", "gpt-6-luna", "--sandbox", "read-only", "-c", `approval_policy="never"`, "ping",
+		commandExec, "-m", "gpt-6.1-sol", "--sandbox", "read-only", "-c", `approval_policy="never"`, "ping",
 	}
 	if got := codexExecArgs("ping"); !slices.Equal(got, want) {
 		t.Fatalf("args %q", got)

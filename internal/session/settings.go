@@ -173,7 +173,7 @@ func RenderSettings(vendor, account, binary, dir string) ([]byte, error) {
 	}
 
 	if vendor == vendorCodex {
-		return []byte("cli_auth_credentials_store = \"file\"\nmodel = \"gpt-6-luna\"\n"), nil
+		return []byte("cli_auth_credentials_store = \"file\"\nmodel = \"gpt-6.1-sol\"\n"), nil
 	}
 
 	if vendor != vendorClaude {

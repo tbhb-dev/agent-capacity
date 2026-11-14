@@ -18,6 +18,7 @@ import (
 
 const (
 	statusInterval  = 30 * time.Second
+	signedOutLimit  = 2
 	checkTimeout    = 30 * time.Second
 	readingInterval = 15 * time.Minute
 	sessionLifetime = 6 * 24 * time.Hour
@@ -60,6 +61,7 @@ type running struct {
 	status         spool.SessionStatus
 	warning        atomic.Bool
 	readingRestart bool
+	signedOutCount int
 }
 
 // Run returns zero only for durable stay-down reasons, and one for other ends.
@@ -320,6 +322,8 @@ func (s *running) pollStatusCheck() (int, bool) {
 			return s.statusFailure(err)
 		}
 
+		s.signedOutCount = 0
+
 		s.nextCheck = s.clock.Now().Add(statusInterval)
 		if s.child == nil && !s.clock.Now().Before(s.nextExec) && s.launch() != nil {
 			return s.finish(1, "start_failed"), true
@@ -339,7 +343,15 @@ func (s *running) statusFailure(err error) (int, bool) {
 	s.stopChildren()
 
 	if exitCode(err) == 1 {
-		return s.finish(0, "signed_out"), true
+		s.signedOutCount++
+		if s.signedOutCount >= signedOutLimit {
+			return s.finish(0, "signed_out"), true
+		}
+
+		s.nextCheck = s.clock.Now().Add(statusInterval)
+		s.nextExec = s.nextCheck
+
+		return 0, false
 	}
 
 	return s.finish(1, "status_failed"), true
@@ -363,7 +375,7 @@ func (s *running) limitReached() bool {
 
 func codexExecArgs(prompt string) []string {
 	return []string{
-		commandExec, "-m", "gpt-6-luna", "--sandbox", "read-only", "-c", `approval_policy="never"`, prompt,
+		commandExec, "-m", "gpt-6.1-sol", "--sandbox", "read-only", "-c", `approval_policy="never"`, prompt,
 	}
 }
 
