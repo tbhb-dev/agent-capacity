@@ -103,3 +103,48 @@ func TestReadSessionRequiresRegularStatusFile(t *testing.T) {
 	_, err := ReadSession(root, sessionVendor, sessionAlias)
 	require.ErrorIs(t, err, errSessionState)
 }
+
+// A new status directory needs its entry synced into the spool root. An existing one doesn't.
+//
+//nolint:paralleltest // Replacing the sync hook mutates package state.
+func TestStatusRootSyncsParentOnlyWhenCreated(t *testing.T) {
+	dir, root := testSessionRoot(t)
+	swapHooks(t)
+
+	var synced []*os.Root
+
+	passthrough := syncDir
+	syncDir = func(target *os.Root) error {
+		synced = append(synced, target)
+
+		return passthrough(target)
+	}
+
+	status, err := statusRoot(root)
+	require.NoError(t, err)
+	require.NoError(t, status.Close())
+	require.Equal(t, []*os.Root{root}, synced)
+
+	synced = nil
+
+	status, err = statusRoot(root)
+	require.NoError(t, err)
+	require.NoError(t, status.Close())
+	require.Empty(t, synced)
+
+	require.NoError(t, os.Remove(filepath.Join(dir, "status")))
+
+	syncDir = func(target *os.Root) error {
+		if target == root {
+			return fs.ErrPermission
+		}
+
+		return nil
+	}
+
+	_, err = statusRoot(root)
+	require.ErrorIs(t, err, errSessionState)
+	require.NoDirExists(t, filepath.Join(dir, "status"))
+	require.ErrorIs(t, WriteSession(root, validStatus()), errSessionState)
+	require.NoDirExists(t, filepath.Join(dir, "status"))
+}

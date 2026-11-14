@@ -25,6 +25,7 @@ const (
 	execInterval    = 5 * time.Minute
 	restartWindow   = time.Hour
 	restartMaximum  = 5
+	restartSkew     = time.Minute
 )
 
 // Clock lets tests advance scheduling without running real vendor sessions.
@@ -106,7 +107,8 @@ func (r Runner) Run(ctx context.Context) int {
 
 	state.status.Phase, state.status.Reason = phaseChecking, reasonNone
 	if state.loadRestarts() != nil {
-		return state.finish(1, "invalid_state")
+		// Publishing would replace the unreadable history with an empty one and reset the restart budget.
+		return 1
 	}
 
 	if code, done := state.initialApproval(); done {
@@ -158,7 +160,14 @@ func (s *running) loadRestarts() error {
 		return ErrArguments
 	}
 
-	s.status.Restarts = previous.Restarts
+	latest := s.clock.Now().Add(restartSkew)
+
+	for _, at := range previous.Restarts {
+		if !at.After(latest) {
+			s.status.Restarts = append(s.status.Restarts, at)
+		}
+	}
+
 	if previous.Phase == phaseRunning || previous.Phase == phaseChecking {
 		s.status.Restarts = append(s.status.Restarts, s.clock.Now())
 	}
