@@ -440,6 +440,7 @@ func TestOptionsValidation(t *testing.T) {
 
 	for name, mutate := range map[string]func(*Options){
 		"spool":          func(o *Options) { o.SpoolDir = "spool" },
+		"no exporter":    func(o *Options) { o.Exporter = "" },
 		"empty":          func(o *Options) { o.Prompt = "" },
 		"words":          func(o *Options) { o.Prompt = "two words" },
 		"control":        func(o *Options) { o.Prompt = "a\x00b" },
@@ -456,6 +457,17 @@ func TestOptionsValidation(t *testing.T) {
 		if options.validRun() {
 			t.Fatal(name, "accepted")
 		}
+	}
+}
+
+func TestValidRunNeedsExporterOnlyForClaude(t *testing.T) {
+	t.Parallel()
+
+	options := setup(t, vendorClaude).options
+	options.Vendor, options.Binary, options.Exporter = vendorCodex, "", ""
+
+	if !options.validRun() {
+		t.Fatal("codex without an exporter rejected")
 	}
 }
 
@@ -3431,6 +3443,59 @@ func TestLoadRestartsDropsFutureTimestamps(t *testing.T) {
 
 	if !slices.EqualFunc(state.status.Restarts, kept, time.Time.Equal) {
 		t.Fatal("skew boundary or past timestamps dropped", state.status.Restarts)
+	}
+}
+
+// Restarts older than the window are dropped on load, so a full history of old entries can't reject the next run.
+func TestLimitReachedIgnoresExpiredRestarts(t *testing.T) {
+	t.Parallel()
+
+	state := stateFor(t, setup(t, vendorClaude))
+	now := state.clock.Now()
+	expired := now.Add(-restartWindow - time.Second)
+	state.status.Restarts = []time.Time{expired, expired, now, now, now, now}
+
+	if state.limitReached() || len(state.status.Restarts) != restartMaximum-1 {
+		t.Fatal("expired restarts counted", state.status.Restarts)
+	}
+}
+
+func TestLoadRestartsDropsExpiredAndPublishCapsHistory(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	now := fixtureValue.clock.Now()
+
+	history := make([]time.Time, 0, spool.MaxRestartHistory)
+	for range spool.MaxRestartHistory - 1 {
+		history = append(history, now.Add(-restartWindow-time.Second))
+	}
+
+	history = append(history, now.Add(-restartWindow))
+
+	state := writeRestartHistory(t, fixtureValue, history)
+	must(t, state.loadRestarts())
+
+	if len(state.status.Restarts) != 1 || !state.status.Restarts[0].Equal(now.Add(-restartWindow)) {
+		t.Fatal("expired restarts kept or window edge dropped", state.status.Restarts)
+	}
+
+	state.status.Restarts = state.status.Restarts[:0]
+	for i := range spool.MaxRestartHistory + 1 {
+		state.status.Restarts = append(state.status.Restarts, now.Add(time.Duration(i)*time.Second))
+	}
+
+	must(t, state.publish(phaseStopped, reasonNone))
+
+	got := fixtureValue.status(t).Restarts
+	if len(got) != spool.MaxRestartHistory || !got[0].Equal(now.Add(time.Second)) {
+		t.Fatal("history not trimmed to the newest entries", len(got))
+	}
+
+	must(t, state.publish(phaseStopped, reasonNone))
+
+	if len(fixtureValue.status(t).Restarts) != spool.MaxRestartHistory {
+		t.Fatal("history at the cap changed")
 	}
 }
 

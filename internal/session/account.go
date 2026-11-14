@@ -319,3 +319,8 @@ func verifyLock(root *os.Root, name string, file *os.File) error {
 
 	return nil
 }
+
+// hasExporter reports whether the options fit the Claude status line. Codex has no status line.
+func (options Options) hasExporter() bool {
+	return options.Vendor != vendorClaude || options.Exporter != ""
+}
