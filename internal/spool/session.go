@@ -1,0 +1,427 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright Tony Burns
+
+package spool
+
+import (
+	"bytes"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+	"unicode"
+)
+
+const (
+	sessionDirectoryMode = 0o700
+	sessionFileMode      = 0o600
+	// maxStatusBytes bounds a status read. A full status with its restart history is under 2 KiB.
+	maxStatusBytes = 8 << 10
+	// MaxRestartHistory is four times the restart limit of five per hour. The runner trims the oldest entries first.
+	MaxRestartHistory = 20
+	// unsafeWriteBits are the group and world write permission bits.
+	unsafeWriteBits = 0o022
+)
+
+var errSessionState = errors.New("invalid session state")
+
+// SessionStatus contains no child output or authentication data.
+type SessionStatus struct {
+	Time          time.Time   `json:"time"`
+	Alias         string      `json:"alias"`
+	Vendor        string      `json:"vendor"`
+	Phase         string      `json:"phase"`
+	Reason        string      `json:"reason"`
+	Restarts      []time.Time `json:"restarts"`
+	LoginExpiring bool        `json:"login_expiring"` //nolint:tagliatelle // The public status field uses snake_case.
+}
+
+func sessionIdentity(vendor, account string) bool {
+	return (vendor == "claude" || vendor == "codex") && ValidAlias(account)
+}
+
+// SessionRoot opens a canonical spool boundary, rejecting symbolic links.
+func SessionRoot(dir string) (*os.Root, error) {
+	if !filepath.IsAbs(dir) {
+		return nil, errSessionState
+	}
+
+	// A failed resolution returns an empty path, which never equals a cleaned absolute path.
+	resolved, _ := filepath.EvalSymlinks(dir) //nolint:errcheck // The empty path carries the error.
+	if resolved != filepath.Clean(dir) {
+		return nil, errSessionState
+	}
+
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, errSessionState
+	}
+
+	return root, nil
+}
+
+// Stopped checks both operator controls without opening their contents.
+func Stopped(root *os.Root, account string) (bool, error) {
+	if !ValidAlias(account) {
+		return false, errSessionState
+	}
+
+	for _, name := range []string{"stop", account + ".stop"} {
+		_, err := root.Lstat(name)
+		if err == nil {
+			return true, nil
+		}
+
+		if !errors.Is(err, fs.ErrNotExist) {
+			return false, errSessionState
+		}
+	}
+
+	return false, nil
+}
+
+// SnapshotTime inspects only this alias's snapshot metadata.
+func SnapshotTime(root *os.Root, vendor, account string) (time.Time, error) {
+	if !sessionIdentity(vendor, account) {
+		return time.Time{}, errSessionState
+	}
+
+	info, err := root.Lstat(vendor + "-" + account + ".json")
+	if errors.Is(err, fs.ErrNotExist) {
+		return time.Time{}, nil
+	}
+
+	if err != nil || !info.Mode().IsRegular() {
+		return time.Time{}, errSessionState
+	}
+
+	return info.ModTime(), nil
+}
+
+// Tests replace these five calls to fail the status directory or file after a check. No input
+// triggers that change inside one function. The hook lets tests trigger the eight outcomes it guards.
+//
+//nolint:gochecknoglobals // Tests replace the calls to simulate a concurrent filesystem change.
+var (
+	lstat   = (*os.Root).Lstat
+	stat    = (*os.Root).Stat
+	rename  = (*os.Root).Rename
+	fstat   = (*os.File).Stat
+	syncDir = syncRoot
+)
+
+// syncRoot flushes the directory entries of dir.
+func syncRoot(dir *os.Root) error {
+	handle, err := dir.Open(".")
+	if err != nil {
+		return errSessionState
+	}
+
+	return errors.Join(handle.Sync(), handle.Close())
+}
+
+func statusRoot(root *os.Root) (*os.Root, error) {
+	err := root.Mkdir("status", sessionDirectoryMode)
+	// gomutants:disable-next-line BRANCH_IF reason="A missing directory fails the next check the same way."
+	if err != nil && !errors.Is(err, fs.ErrExist) {
+		return nil, errSessionState
+	}
+
+	// A runner that finds the directory already there syncs the parent too, because the creator may stop before its sync.
+	// The cost is intended: one read at start and one write per status interval.
+	if syncDir(root) != nil {
+		if err == nil {
+			// Removing the directory makes a retry create and sync it again.
+			root.Remove("status") //nolint:errcheck,gosec // The failed sync is the error to report.
+		}
+
+		return nil, errSessionState
+	}
+
+	info, err := lstat(root, "status")
+	if err != nil || !info.IsDir() || !privateEntry(info) {
+		return nil, errSessionState
+	}
+
+	dir, err := root.OpenRoot("status")
+	if err != nil {
+		return nil, errSessionState
+	}
+
+	// A failed Stat returns nil, which SameFile never matches.
+	opened, _ := stat(dir, ".") //nolint:errcheck // The nil result carries the error.
+	if !os.SameFile(info, opened) {
+		_ = dir.Close()
+
+		return nil, errSessionState
+	}
+
+	return dir, nil
+}
+
+// WriteSession replaces an alias's private status atomically.
+func WriteSession(root *os.Root, status SessionStatus) error {
+	if !sessionIdentity(status.Vendor, status.Alias) || status.Time.IsZero() || status.Phase == "" {
+		return errSessionState
+	}
+
+	dir, err := statusRoot(root)
+	if err != nil {
+		return errSessionState
+	}
+	defer dir.Close()
+
+	name := status.Vendor + "-" + status.Alias + ".json"
+
+	info, err := lstat(dir, name)
+	if err == nil && !info.Mode().IsRegular() {
+		return errSessionState
+	}
+
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return errSessionState
+	}
+
+	data, err := json.Marshal(status)
+	if err != nil {
+		return errSessionState
+	}
+
+	temporary := ".status-" + rand.Text()
+
+	file, err := dir.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, sessionFileMode)
+	// gomutants:disable-next-line BRANCH_IF reason="Writing to the nil file fails the next check the same way."
+	if err != nil {
+		return errSessionState
+	}
+
+	defer dir.Remove(temporary) //nolint:errcheck // Rename consumes the temporary file.
+
+	_, writeErr := file.Write(data)
+	if errors.Join(writeErr, file.Sync(), file.Close()) != nil {
+		return errSessionState
+	}
+
+	if rename(dir, temporary, name) != nil || syncDir(dir) != nil {
+		return errSessionState
+	}
+
+	return nil
+}
+
+// privateEntry reports whether the current user is the owner and the group and others can't write.
+func privateEntry(info fs.FileInfo) bool {
+	owner, ok := info.Sys().(*syscall.Stat_t)
+
+	return ok && int(owner.Uid) == os.Getuid() && info.Mode().Perm()&unsafeWriteBits == 0
+}
+
+// ReadBounded reads a regular file of at most limit bytes without following links or blocking on a pipe.
+func ReadBounded(root *os.Root, name string, limit int64) ([]byte, error) {
+	data, _, err := readRegular(root, name, limit)
+
+	return data, err
+}
+
+// readAttempts bounds the reads of a name that another process keeps replacing.
+const readAttempts = 3
+
+// readRegular returns fs.ErrNotExist for a missing file and errSessionState for every other failure. A rename over
+// the name between the stat and the open gets a fresh read, up to three reads.
+func readRegular(dir *os.Root, name string, limit int64) ([]byte, fs.FileInfo, error) {
+	for attempt := 1; ; attempt++ {
+		data, info, replaced, err := readOnce(dir, name, limit)
+		// gomutants:disable-next-line CONDITIONALS_BOUNDARY reason="One read more or fewer is moot."
+		if !replaced || attempt == readAttempts {
+			return data, info, err
+		}
+	}
+}
+
+// readOnce reads the file once and reports whether another file took the name after the stat.
+func readOnce(dir *os.Root, name string, limit int64) ([]byte, fs.FileInfo, bool, error) {
+	info, err := lstat(dir, name)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, false, err
+	}
+
+	// gomutants:disable-next-line BRANCH_IF reason="A nil stat result also fails SameFile."
+	if err != nil {
+		return nil, nil, false, errSessionState
+	}
+
+	// gomutants:disable-next-line INVERT_BITWISE reason="Root.OpenFile follows links inside the root either way."
+	flags := os.O_RDONLY | syscall.O_NOFOLLOW
+	// gomutants:disable-next-line INTEGER_INCREMENT reason="The mode is ignored without a create flag."
+	file, err := dir.OpenFile(name, flags|syscall.O_NONBLOCK, 0)
+	// gomutants:disable-next-line BRANCH_IF reason="The nil file also fails the Stat that follows."
+	if err != nil {
+		return nil, nil, false, errSessionState
+	}
+
+	defer file.Close()
+
+	// A failed Stat returns nil, which SameFile never matches.
+	opened, _ := fstat(file) //nolint:errcheck // The nil result carries the error.
+	if !os.SameFile(info, opened) {
+		return nil, nil, true, errSessionState
+	}
+
+	if !opened.Mode().IsRegular() {
+		return nil, nil, false, errSessionState
+	}
+
+	// gomutants:disable-next-line INTEGER_INCREMENT reason="Any length past the limit fails the same check."
+	data, readErr := io.ReadAll(io.LimitReader(file, limit+1))
+
+	var oversize error
+	if int64(len(data)) > limit {
+		oversize = errSessionState
+	}
+
+	if errors.Join(readErr, oversize) != nil {
+		return nil, nil, false, errSessionState
+	}
+
+	return data, opened, false, nil
+}
+
+// ReadSession reads only the requested alias's status, for durable restart limits.
+func ReadSession(root *os.Root, vendor, account string) (SessionStatus, error) {
+	if !sessionIdentity(vendor, account) {
+		return SessionStatus{}, errSessionState
+	}
+
+	dir, err := statusRoot(root)
+	if err != nil {
+		return SessionStatus{}, errSessionState
+	}
+	defer dir.Close()
+
+	data, info, err := readRegular(dir, vendor+"-"+account+".json", maxStatusBytes)
+	if errors.Is(err, fs.ErrNotExist) {
+		var empty SessionStatus
+
+		// gomutants:disable-next-line RETURN_ZERO reason="The empty status is already the zero value."
+		return empty, nil
+	}
+
+	if err != nil || !privateEntry(info) {
+		return SessionStatus{}, errSessionState
+	}
+
+	var status SessionStatus
+	if strictJSON(data) != nil || json.Unmarshal(data, &status) != nil || len(status.Restarts) > MaxRestartHistory ||
+		status.Vendor != vendor || status.Alias != account || status.Time.IsZero() || status.Phase == "" {
+		return SessionStatus{}, errSessionState
+	}
+
+	return status, nil
+}
+
+// strictJSON refuses duplicate or case-variant keys and any data after the one JSON value.
+func strictJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+
+	// gomutants:disable-next-line BRANCH_IF reason="The trailing-data check rejects the misaligned stream."
+	if checkValue(dec) != nil {
+		return errSessionState
+	}
+
+	_, err := dec.Token()
+	// gomutants:disable-next-line BRANCH_IF reason="json.Unmarshal rejects the same input."
+	if !errors.Is(err, io.EOF) {
+		// gomutants:disable-next-line RETURN_ERROR_NIL reason="json.Unmarshal rejects the same input."
+		return errSessionState
+	}
+
+	return nil
+}
+
+func checkValue(dec *json.Decoder) error {
+	token, err := dec.Token()
+	// gomutants:disable-next-line BRANCH_IF reason="json.Unmarshal rejects the same input."
+	if err != nil {
+		// gomutants:disable-next-line RETURN_ERROR_NIL reason="json.Unmarshal rejects the same input."
+		return errSessionState
+	}
+
+	switch token {
+	case json.Delim('{'):
+		return checkMembers(dec)
+	case json.Delim('['):
+		return checkElements(dec)
+	default:
+		return nil
+	}
+}
+
+func checkMembers(dec *json.Decoder) error {
+	seen := map[string]struct{}{}
+
+	for dec.More() {
+		name, err := dec.Token()
+		// gomutants:disable-next-line BRANCH_IF reason="json.Unmarshal rejects the same input."
+		if err != nil {
+			// gomutants:disable-next-line RETURN_ERROR_NIL reason="json.Unmarshal rejects the same input."
+			return errSessionState
+		}
+
+		key := FoldKey(fmt.Sprint(name))
+		if _, duplicate := seen[key]; duplicate {
+			return errSessionState
+		}
+
+		seen[key] = struct{}{}
+
+		if checkValue(dec) != nil {
+			// gomutants:disable-next-line RETURN_ERROR_NIL reason="The trailing-data check rejects the misaligned stream."
+			return errSessionState
+		}
+	}
+
+	_, err := dec.Token()
+
+	// gomutants:disable-next-line RETURN_ERROR_NIL reason="json.Unmarshal rejects the same input."
+	return errors.Join(err)
+}
+
+func checkElements(dec *json.Decoder) error {
+	for dec.More() {
+		// gomutants:disable-next-line BRANCH_IF reason="The trailing-data check rejects the misaligned stream."
+		if checkValue(dec) != nil {
+			// gomutants:disable-next-line RETURN_ERROR_NIL reason="The trailing-data check rejects the misaligned stream."
+			return errSessionState
+		}
+	}
+
+	_, err := dec.Token()
+
+	// gomutants:disable-next-line RETURN_ERROR_NIL reason="json.Unmarshal rejects the same input."
+	return errors.Join(err)
+}
+
+// FoldKey maps a JSON object key to the form encoding/json uses to match field names. Keys that differ only in
+// Unicode case folding map to the same string.
+func FoldKey(key string) string {
+	var folded strings.Builder
+
+	for _, r := range key {
+		smallest := r
+
+		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+			smallest = min(smallest, next)
+		}
+
+		folded.WriteRune(smallest)
+	}
+
+	return folded.String()
+}

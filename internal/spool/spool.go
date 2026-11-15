@@ -23,6 +23,11 @@ var ErrDirectory = errors.New("spool directory is required")
 
 var alias = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 
+// ValidAlias checks a username before it becomes a filename.
+func ValidAlias(account string) bool {
+	return alias.MatchString(account)
+}
+
 // Snapshot stores one account's captured usage subtree.
 type Snapshot struct {
 	ObservedAt time.Time       `json:"observed_at"` //nolint:tagliatelle // The input format uses snake_case field names.
@@ -33,7 +38,7 @@ type Snapshot struct {
 
 // ValidIdentity rejects private identifiers and unsupported vendors.
 func ValidIdentity(vendor, account string) bool {
-	return (vendor == "claude" || vendor == "agy") && alias.MatchString(account)
+	return (vendor == "claude" || vendor == "agy") && ValidAlias(account)
 }
 
 // Write replaces a snapshot using a private temporary file in the same directory.

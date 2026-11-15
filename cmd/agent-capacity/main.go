@@ -79,6 +79,10 @@ var errArguments = errors.New("invalid arguments")
 
 // Run executes serve or another subcommand. Errors log fixed messages and safe classes.
 func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *slog.Logger) int {
+	if code, handled := runSessionCommand(ctx, args, out, logger); handled {
+		return code
+	}
+
 	command := r.subcommand(ctx, args, out, logger)
 	if command != nil {
 		return command()
@@ -148,6 +152,23 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 	}
 
 	return 0
+}
+
+// runSessionCommand runs the login and session commands. The second result is false for any other arguments.
+func runSessionCommand(ctx context.Context, args []string, out io.Writer, _ *slog.Logger) (int, bool) {
+	if len(args) == 0 {
+		return 0, false
+	}
+
+	switch args[0] {
+	case "login":
+		// gomutants:disable-next-line INTEGER_INCREMENT,INTEGER_DECREMENT reason="Any other slice ends in the same refusal."
+		return loginCommand(ctx, args[1:], os.Stdin, out, os.Stderr), true
+	case "session":
+		return sessionCommand(ctx, args[1:], out), true
+	default:
+		return 0, false
+	}
 }
 
 // subcommand returns the command other than serve that the arguments name, or nil for serve.
