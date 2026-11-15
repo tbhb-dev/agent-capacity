@@ -19,11 +19,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Refuses a tag whose commit has no passing `ci` result. It looks for the
+  # `conclusion` check run, the one ci.yml gives branch protection, from the
+  # GitHub Actions app (ID 15368, as in the ruleset) on the exact tagged sha.
+  verify:
+    name: verify
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      checks: read  # List the check runs of the tagged commit.
+    steps:
+      - name: Require a passing conclusion check on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          passed=$(gh api --paginate "repos/${GH_REPO}/commits/${SHA}/check-runs?per_page=100" \
+            --jq '.check_runs[]
+              | select(.name == "conclusion" and .app.id == 15368 and .conclusion == "success")
+              | .id')
+          if [ -z "${passed}" ]; then
+            echo "::error::No successful conclusion check run exists for ${SHA}. Tag a commit whose ci run passed."
+            exit 1
+          fi
+
   # The stamped release build, as the `bazel` job in ci.yml builds it. The
   # binary is static: `//cmd/agent-capacity` sets `pure = "on"`, so cgo is
   # off.
   build:
     name: "build (${{ matrix.os }})"
+    needs: [verify]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
@@ -76,10 +102,10 @@ jobs:
           path: dist/agent-capacity-${{ matrix.platform }}
           if-no-files-found: error
 
-  # The only job with write access. It runs only when every build passed.
+  # The only job with write access. It runs only when the check and every build passed.
   release:
     name: release
-    needs: [build]
+    needs: [verify, build]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
