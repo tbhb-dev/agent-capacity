@@ -233,18 +233,19 @@ func TestUsageCommand(t *testing.T) {
 	assert.Equal(t, []string{"agy", "-p", "/usage", "--output-format", "json", "--print-timeout", "100s"}, command.Args)
 }
 
-// TestRunCommandChild checks that a child process holding the output pipe open can't stretch the deadline.
+// TestRunCommandChild checks that a child process holding the output pipe open can't stretch the deadline. The shell
+// reads the stand-in as a file: running a file this test just wrote can fail with "text file busy" while a parallel
+// test's fork still holds the write descriptor.
 func TestRunCommandChild(t *testing.T) {
 	t.Parallel()
 
 	stub := filepath.Join(t.TempDir(), "agy")
-	//nolint:gosec // The stand-in must be executable.
-	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\n/bin/sleep 3 &\nwait\n"), 0o700))
+	require.NoError(t, os.WriteFile(stub, []byte("/bin/sleep 3 &\nwait\n"), 0o600))
 
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 
-	command := exec.CommandContext(ctx, stub)
+	command := exec.CommandContext(ctx, "/bin/sh", stub)
 	command.WaitDelay = 100 * time.Millisecond
 	start := time.Now()
 
