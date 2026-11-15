@@ -4619,3 +4619,60 @@ func TestStopListedSkipsMembersThatEndedOrWereReused(t *testing.T) {
 		}
 	}
 }
+
+func TestLoginThatEndsOnItsOwnStopsItsDescendant(t *testing.T) {
+	t.Parallel()
+
+	noted := filepath.Join(t.TempDir(), "pid")
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c",
+		`/bin/sleep 300 >/dev/null 2>&1 & echo $! $$ > "$0.tmp" && /bin/mv "$0.tmp" "$0"; wait`, noted)
+
+	result := make(chan error, 1)
+
+	go func() { result <- waitLogin(context.Background(), cmd) }()
+
+	var descendant, shell int
+
+	for deadline := time.Now().Add(5 * time.Second); shell == 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the descendant never started")
+		}
+
+		//nolint:errcheck // A missing or partial file is read again.
+		data, _ := os.ReadFile(noted)
+		if fields := strings.Fields(string(data)); len(fields) == 2 {
+			//nolint:errcheck // A partial file is read again.
+			descendant, _ = strconv.Atoi(fields[0])
+			//nolint:errcheck // A partial file is read again.
+			shell, _ = strconv.Atoi(fields[1])
+		}
+	}
+
+	defer func() {
+		//nolint:errcheck // The process may have ended.
+		_ = syscall.Kill(descendant, syscall.SIGKILL)
+	}()
+
+	// The periodic listing records the descendant while the child still lives.
+	time.Sleep(5 * firstSweep)
+
+	// The terminal signal can end the child before the cancel reaches this process, so no cancel happens here.
+	must(t, syscall.Kill(shell, syscall.SIGKILL))
+
+	if err := <-result; err == nil {
+		t.Fatal("a login killed by a signal reported success")
+	}
+
+	waitEnded(t, descendant, "a login that ended on its own left its descendant running")
+}
+
+func TestCanceledLoginNeverReportsSuccess(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := settleLogin(ctx, finished(nil), nil); err == nil {
+		t.Fatal("a canceled login that ended cleanly reported success")
+	}
+}
