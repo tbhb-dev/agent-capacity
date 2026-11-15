@@ -331,7 +331,7 @@ func TestRunCommandLeavesOtherArgumentsUnhandled(t *testing.T) {
 func TestRuntimeRunReturnsHandledCode(t *testing.T) {
 	t.Parallel()
 
-	runner := Runtime{NewRegistry: nil, Registry: nil, NewProvider: nil}
+	runner := Runtime{NewRegistry: nil, Registry: nil, NewProvider: nil, Usage: nil}
 
 	code := runner.Run(context.Background(), []string{sessionRoute}, io.Discard, slog.New(slog.DiscardHandler))
 	if code != 2 {
