@@ -42,10 +42,8 @@ func TestCapture(t *testing.T) {
 			`{"rate_limits":{"seven_day":{"used_percentage":10,"resets_at":200000}},"private":"discard"}`,
 			`{"seven_day":{"used_percentage":10,"resets_at":200000}}`,
 		},
-		{"agy", `{"quota":{"remaining":25},"rate_limits":{"discard":true},"private":"discard"}`, `{"remaining":25}`},
 		{claudeVendor, `{"rate_limits":null}`, `null`},
 		{claudeVendor, `{"private":"discard"}`, ""},
-		{"agy", emptyLimits, ""},
 		{claudeVendor, `null`, ""},
 	} {
 		dir := filepath.Join(t.TempDir(), "spool")
@@ -152,17 +150,17 @@ func TestSpoolConfiguration(t *testing.T) {
 	assert.Equal(t, "explicit", got.spoolDir)
 	require.NoError(
 		t,
-		capture([]string{agyVendorFlag, workFlag}, strings.NewReader(`{"quota":{}}`), time.Now()),
+		capture([]string{claudeFlag, workFlag}, strings.NewReader(emptyLimits), time.Now()),
 	)
 
-	gotSnapshots, _, err := spool.Read(dir, "agy")
+	gotSnapshots, _, err := spool.Read(dir, claudeVendor)
 	require.NoError(t, err)
 	require.Len(t, gotSnapshots, 1)
 	t.Setenv("AGENT_CAPACITY_SPOOL_DIR", "")
 
 	var out, logs bytes.Buffer
 
-	runtime := Runtime{Registry: nil, NewRegistry: nil, NewProvider: nil}
+	runtime := Runtime{Registry: nil, NewRegistry: nil, NewProvider: nil, Usage: nil}
 	assert.Equal(
 		t,
 		1,
@@ -185,7 +183,10 @@ func TestStatuslineProcess(t *testing.T) {
 		args                  []string
 	}{
 		{args: []string{claudeFlag, workFlag, "--spool-dir=" + t.TempDir()}, input: emptyLimits, message: "", class: ""},
-		{args: []string{agyVendorFlag, workFlag, "--spool-dir=" + t.TempDir()}, input: `{}`, message: "", class: ""},
+		{
+			args: []string{"--vendor=agy", workFlag, "--spool-dir=" + t.TempDir()}, input: `{}`,
+			message: captureFailure, class: invalidClass,
+		},
 		{
 			args: []string{claudeFlag, workFlag, "--spool-dir=" + t.TempDir()}, input: `{`,
 			message: captureFailure, class: invalidClass,
@@ -250,7 +251,7 @@ func TestStatusline(t *testing.T) {
 
 	var out, logs bytes.Buffer
 
-	runtime := Runtime{Registry: nil, NewRegistry: nil, NewProvider: nil}
+	runtime := Runtime{Registry: nil, NewRegistry: nil, NewProvider: nil, Usage: nil}
 	assert.Equal(
 		t,
 		0,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Tony Burns
 
-// Package agy reads captured Antigravity usage windows.
+// Package agy reads Antigravity usage windows that the probe captured.
 package agy
 
 import (
@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"go.tbhb.dev/agent-capacity/internal/capacity"
@@ -21,11 +22,34 @@ type Source struct {
 	Dir    string
 }
 
-const percentageScale = 100
+// bucket is one quota window of one model group.
+//
+// The usage command leaves out a fraction of zero. A missing value means the
+// group has used its whole window.
+//
+//nolint:tagliatelle // The input format uses snake_case field names.
+type bucket struct {
+	RemainingFraction *float64 `json:"remaining_fraction"`
+	ID                string   `json:"id"`
+	Window            string   `json:"window"`
+	ResetTime         string   `json:"reset_time"`
+}
 
-type window struct {
-	UsedPercentage *float64 `json:"used_percentage"` //nolint:tagliatelle // The input format uses snake_case field names.
-	ResetsAt       *int64   `json:"resets_at"`       //nolint:tagliatelle // The input format uses snake_case field names.
+// label maps a bucket to its window and quota group, and reports unknown buckets.
+func label(entry bucket) (string, string, bool) {
+	group, _, _ := strings.Cut(entry.ID, "-")
+	if group != "gemini" && group != "3p" {
+		return "", "", false
+	}
+
+	switch entry.Window {
+	case "5h":
+		return "5h", group, true
+	case "weekly":
+		return "7d", group, true
+	default:
+		return "", "", false
+	}
 }
 
 // Read uses capture timestamps, never file modification times.
@@ -59,10 +83,15 @@ func (s Source) Read(ctx context.Context, _ time.Time) ([]capacity.Reading, erro
 	return readings, nil
 }
 
+// parse reads the data object of the usage command, which lists model groups
+// and their quota buckets. It skips buckets it doesn't know. A snapshot without
+// any known bucket fails. A changed output format then reports an error
+// instead of an empty batch.
 func parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
 	var payload struct {
-		FiveHour *window `json:"five_hour"` //nolint:tagliatelle // The input format uses snake_case field names.
-		SevenDay *window `json:"seven_day"` //nolint:tagliatelle // The input format uses snake_case field names.
+		Groups []struct {
+			Buckets []bucket `json:"buckets"`
+		} `json:"groups"`
 	}
 	if json.Unmarshal(snapshot.Data, &payload) != nil {
 		return nil, capacity.ErrInvalidReading
@@ -70,33 +99,51 @@ func parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
 
 	var readings []capacity.Reading
 
-	for _, entry := range []struct {
-		value *window
-		name  string
-	}{
-		{payload.FiveHour, "5h"}, {payload.SevenDay, "7d"},
-	} {
-		if entry.value == nil {
-			continue
-		}
+	for _, group := range payload.Groups {
+		for _, entry := range group.Buckets {
+			reading, err := convert(snapshot, entry)
+			if err != nil {
+				return nil, err
+			}
 
-		if entry.value.UsedPercentage == nil || entry.value.ResetsAt == nil {
-			return nil, capacity.ErrInvalidReading
+			if reading != nil {
+				readings = append(readings, *reading)
+			}
 		}
+	}
 
-		reading := capacity.Reading{
-			Vendor: "google", Window: entry.name, Account: snapshot.Account,
-			Source: capacity.AGYStatusline, UsedRatio: *entry.value.UsedPercentage / percentageScale,
-			ResetAt: time.Unix(*entry.value.ResetsAt, 0).UTC(), ObservedAt: snapshot.ObservedAt,
-		}
-
-		err := reading.Validate()
-		if err != nil {
-			return nil, capacity.ErrInvalidReading
-		}
-
-		readings = append(readings, reading)
+	if len(readings) == 0 {
+		return nil, capacity.ErrInvalidReading
 	}
 
 	return readings, nil
+}
+
+// convert turns one known bucket into a reading. An unknown bucket returns nil and no error.
+func convert(snapshot spool.Snapshot, entry bucket) (*capacity.Reading, error) {
+	window, group, known := label(entry)
+	if !known {
+		return nil, nil //nolint:nilnil // An unknown bucket is neither a reading nor an error.
+	}
+
+	reset, err := time.Parse(time.RFC3339, entry.ResetTime)
+	if err != nil {
+		return nil, capacity.ErrInvalidReading
+	}
+
+	remaining := 0.0
+	if entry.RemainingFraction != nil {
+		remaining = *entry.RemainingFraction
+	}
+
+	reading := capacity.Reading{
+		Vendor: "google", Window: window, Bucket: group, Account: snapshot.Account,
+		Source: capacity.AGYStatusline, UsedRatio: 1 - remaining,
+		ResetAt: reset.UTC(), ObservedAt: snapshot.ObservedAt,
+	}
+	if reading.Validate() != nil {
+		return nil, capacity.ErrInvalidReading
+	}
+
+	return &reading, nil
 }

@@ -28,7 +28,7 @@ const (
 
 func reading(now time.Time) capacity.Reading {
 	return capacity.Reading{
-		Vendor: "openai", Window: "7d", Account: "work", Source: "codex_rollout",
+		Bucket: "", Vendor: "openai", Window: "7d", Account: "work", Source: "codex_rollout",
 		UsedRatio: 0.5, ResetAt: now.Add(time.Hour), ObservedAt: now,
 	}
 }
@@ -186,5 +186,35 @@ func TestRegistrationErrors(t *testing.T) {
 		} else {
 			require.ErrorContains(t, err, "register gauges")
 		}
+	}
+}
+
+func TestCollectorBucket(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(100000, 0)
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	t.Cleanup(func() { require.NoError(t, provider.Shutdown(context.Background())) })
+
+	collector, err := export.New(provider.Meter("bucket"), func() time.Time { return now })
+	require.NoError(t, err)
+
+	quota := reading(now)
+	quota.Vendor, quota.Source, quota.Bucket = "google", "agy_statusline", "3p"
+	require.NoError(t, collector.Replace([]capacity.Reading{quota}))
+
+	metrics := collect(t, reader)
+	require.Len(t, metrics, 3)
+
+	for _, measurement := range metrics {
+		gauge, ok := measurement.Data.(metricdata.Gauge[float64])
+		require.True(t, ok)
+		require.Len(t, gauge.DataPoints, 1)
+
+		bucket, found := gauge.DataPoints[0].Attributes.Value("agent.plan.bucket")
+		require.True(t, found)
+		assert.Equal(t, "3p", bucket.AsString())
 	}
 }

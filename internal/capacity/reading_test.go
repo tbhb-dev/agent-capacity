@@ -30,7 +30,7 @@ const (
 
 func reading() capacity.Reading {
 	return capacity.Reading{
-		Vendor: "anthropic", Window: "5h", Account: "work", Source: claudeSource,
+		Bucket: "", Vendor: "anthropic", Window: "5h", Account: "work", Source: claudeSource,
 		UsedRatio: 0.25, ResetAt: time.Time{}, ObservedAt: time.Unix(100000, 0),
 	}
 }
@@ -82,6 +82,13 @@ func TestValidate(t *testing.T) {
 		r.Source = source
 		assert.Equal(t, source == "" || source == unknownLabel, errors.Is(r.Validate(), capacity.ErrInvalidReading))
 	}
+
+	for _, bucket := range []string{"", "gemini", "3p", "Gemini", unknownLabel} {
+		r := reading()
+		r.Bucket = bucket
+		invalid := bucket == "Gemini" || bucket == unknownLabel
+		assert.Equal(t, invalid, errors.Is(r.Validate(), capacity.ErrInvalidReading))
+	}
 }
 
 func TestFreshness(t *testing.T) {
@@ -97,8 +104,8 @@ func TestFreshness(t *testing.T) {
 		{age: 10*time.Minute - time.Nanosecond, source: claudeSource, want: fresh},
 		{age: 10 * time.Minute, source: claudeSource, want: fresh},
 		{age: 10*time.Minute + time.Nanosecond, source: claudeSource, want: carried},
-		{age: 10 * time.Minute, source: agySource, want: fresh},
-		{age: 10*time.Minute + time.Nanosecond, source: agySource, want: carried},
+		{age: 30 * time.Minute, source: agySource, want: fresh},
+		{age: 30*time.Minute + time.Nanosecond, source: agySource, want: carried},
 		{age: 10*time.Minute + time.Second, source: codexSource, want: fresh},
 		{age: 30*time.Minute - time.Nanosecond, source: codexSource, want: fresh},
 		{age: 30 * time.Minute, source: codexSource, want: fresh},
@@ -145,6 +152,7 @@ func TestRegistry(t *testing.T) {
 					ObservedAt: time.Time{},
 					Vendor:     "",
 					Window:     "",
+					Bucket:     "",
 					Account:    "",
 					Source:     "",
 					UsedRatio:  0,

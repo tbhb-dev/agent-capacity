@@ -183,7 +183,11 @@ govulncheck(
 gomutants_test(
     name = "gomutants_test",
     cpus = 2,
-    data = ["//internal/keepalive:testdata/stops.json"],
+    data = [
+        "//cmd/agent-capacity:testdata/agy-usage.json",
+        "//internal/keepalive:testdata/stops.json",
+        "//internal/source/agy:testdata/usage-data.json",
+    ],
     flags = [
         # Keep mutation runs stable when CI runners are busy.
         "--timeout-min=20s",
@@ -205,6 +209,7 @@ gomutants_test(
 # Every outcome of every condition in the command package.
 gobco_test(
     name = "agent_capacity_gobco_test",
+    data = ["//cmd/agent-capacity:testdata/agy-usage.json"],
     go_mod = "go.mod",
     go_sum = "go.sum",
     proxy = "@go_mod_proxy//:proxy",
@@ -262,6 +267,7 @@ gobco_test(
 
 gobco_test(
     name = "agy_gobco_test",
+    data = ["//internal/source/agy:testdata/usage-data.json"],
     go_mod = "go.mod",
     go_sum = "go.sum",
     proxy = "@go_mod_proxy//:proxy",

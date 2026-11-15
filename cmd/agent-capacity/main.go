@@ -38,6 +38,7 @@ type Runtime struct {
 	NewRegistry func(string, string) (capacity.Registry, error)
 	NewProvider func(context.Context) (Provider, error)
 	Registry    func(string) capacity.Registry
+	Usage       func(context.Context) ([]byte, error)
 }
 
 func main() {
@@ -68,6 +69,7 @@ func newRuntime(ctx context.Context, logger *slog.Logger) Runtime {
 			}
 		},
 		NewProvider: func(ctx context.Context) (Provider, error) { return export.NewProvider(ctx) },
+		Usage:       runUsage,
 	}
 }
 
@@ -75,16 +77,11 @@ const shutdownTimeout = 5 * time.Second
 
 var errArguments = errors.New("invalid arguments")
 
-// Run executes serve or version. Errors log fixed messages and safe classes.
+// Run executes serve or another subcommand. Errors log fixed messages and safe classes.
 func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *slog.Logger) int {
-	if len(args) == 1 && args[0] == "version" {
-		fmt.Fprintln(out, "agent-capacity 0.0.0-dev")
-
-		return 0
-	}
-
-	if len(args) > 0 && args[0] == "statusline" {
-		return statusline(ctx, args[1:], os.Stdin, logger)
+	code, ran := r.subcommand(ctx, args, out, logger)
+	if ran {
+		return code
 	}
 
 	options, err := parseServe(args)
@@ -151,6 +148,28 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 	}
 
 	return 0
+}
+
+// subcommand runs any command other than serve and reports whether it ran one.
+func (r Runtime) subcommand(ctx context.Context, args []string, out io.Writer, logger *slog.Logger) (int, bool) {
+	if len(args) == 1 && args[0] == "version" {
+		fmt.Fprintln(out, "agent-capacity 0.0.0-dev")
+
+		return 0, true
+	}
+
+	if len(args) == 0 {
+		return 0, false
+	}
+
+	switch args[0] {
+	case "statusline":
+		return statusline(ctx, args[1:], os.Stdin, logger), true
+	case "probe":
+		return probe(ctx, args[1:], r.Usage, logger), true
+	default:
+		return 0, false
+	}
 }
 
 type serveOptions struct {

@@ -6,10 +6,16 @@ load("@tbhb_rules//repo:defs.bzl", "repo_files")
 
 repo_files()
 
+exports_files(
+    ["testdata/agy-usage.json"],
+    visibility = ["//:__pkg__"],
+)
+
 go_library(
     name = "agent-capacity_lib",
     srcs = [
         "main.go",
+        "probe.go",
         "statusline.go",
     ],
     importpath = "go.tbhb.dev/agent-capacity/cmd/agent-capacity",
@@ -38,9 +44,11 @@ go_test(
     srcs = [
         "agy_test.go",
         "main_test.go",
+        "probe_test.go",
         "statusline_test.go",
         "transcript_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":agent-capacity_lib"],
     visibility = ["//:__pkg__"],
     deps = [

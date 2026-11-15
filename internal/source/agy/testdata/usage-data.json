@@ -1,0 +1,47 @@
+{
+  "description": "Within each group, models share a weekly limit and a 5-hour limit.",
+  "groups": [
+    {
+      "name": "Gemini Models",
+      "description": "Models within this group: trimmed.",
+      "buckets": [
+        {
+          "id": "gemini-weekly",
+          "name": "Weekly Limit Remaining",
+          "description": "You have used some of this limit.",
+          "window": "weekly",
+          "remaining_fraction": 0.9976193308830261,
+          "reset_time": "2026-11-21T02:22:26Z"
+        },
+        {
+          "id": "gemini-5h",
+          "name": "Five Hour Limit Remaining",
+          "description": "You have used some of this limit.",
+          "window": "5h",
+          "remaining_fraction": 0.9904893636703491,
+          "reset_time": "2026-11-15T07:19:38Z"
+        }
+      ]
+    },
+    {
+      "name": "Claude and GPT models",
+      "description": "Models within this group: trimmed.",
+      "buckets": [
+        {
+          "id": "3p-weekly",
+          "name": "Weekly Limit Remaining",
+          "window": "weekly",
+          "remaining_fraction": 1,
+          "reset_time": "2026-11-22T02:20:48Z"
+        },
+        {
+          "id": "3p-5h",
+          "name": "Five Hour Limit Remaining",
+          "window": "5h",
+          "remaining_fraction": 1,
+          "reset_time": "2026-11-15T07:20:48Z"
+        }
+      ]
+    }
+  ]
+}
