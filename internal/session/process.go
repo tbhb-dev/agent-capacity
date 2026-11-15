@@ -136,7 +136,7 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 		<-child.swept
 
 		// Descendants that left the group are stopped from the list kept while the child lived, each after a
-		// check of its start time. A member that stayed unreadable turns a clean result into a failure.
+		// check of its start time. A member that couldn't be read turns a clean result into a failure.
 		err = child.cleanedResult(err, stamp)
 		close(child.cleaned)
 
@@ -449,7 +449,7 @@ func (p *process) sweep() {
 }
 
 // cleanedResult sweeps the recorded descendants and returns the child's result. A clean result becomes
-// errCleanupIncomplete when a member stayed unreadable, because that descendant may still run.
+// errCleanupIncomplete when a member couldn't be read, because that descendant may still run.
 func (p *process) cleanedResult(result error, read func(int) (string, int, error)) error {
 	if left := p.sweepWith(read); len(left) > 0 && result == nil {
 		return errCleanupIncomplete
@@ -460,7 +460,7 @@ func (p *process) cleanedResult(result error, read func(int) (string, int, error
 
 // sweepWith reads again each member that couldn't be read, so a short failure such as too many open files doesn't
 // leave a descendant running. It returns the members that were never readable, which are left alone because their
-// IDs may belong to other processes. The same members stay recorded.
+// IDs may belong to other processes. The same members remain recorded.
 func (p *process) sweepWith(read func(int) (string, int, error)) []member {
 	p.mutex.Lock()
 	listed := slices.Clone(p.members)

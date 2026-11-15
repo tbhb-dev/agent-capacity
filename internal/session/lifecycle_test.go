@@ -3180,7 +3180,7 @@ func TestStartPipeChildChannels(t *testing.T) {
 	must(t, <-child.done)
 }
 
-// reapDeadline is far above the exit delay of the fake vendor under the race detector and far below the 30 s that
+// reapDeadline is far over the exit delay of the fake vendor under the race detector and far under the 30 s that
 // the grandchild sleeps, so only a reap that waits on the grandchild misses it.
 const reapDeadline = 15 * time.Second
 
@@ -3233,7 +3233,7 @@ func TestCleanupReportsAMemberItCouldNotRead(t *testing.T) {
 	unreadable, _ := failingFirst(math.MaxInt32)
 
 	if err := child.cleanedResult(nil, unreadable); !errors.Is(err, errCleanupIncomplete) {
-		t.Fatal("a clean result hid a member that stayed unreadable:", err)
+		t.Fatal("a clean result hid a member that could not be read:", err)
 	}
 
 	if !slices.Equal(child.members, []member{kept}) {
@@ -3251,7 +3251,7 @@ func TestCleanupReportsAMemberItCouldNotRead(t *testing.T) {
 	}
 
 	if len(child.members) != 0 {
-		t.Fatal("a swept member stayed recorded:", child.members)
+		t.Fatal("a swept member remained recorded:", child.members)
 	}
 }
 
@@ -3260,8 +3260,8 @@ func TestCanceledLoginStopsADescendantStartedDuringTheGrace(t *testing.T) {
 
 	base := filepath.Join(t.TempDir(), "note")
 
-	// The handler for SIGTERM starts the sleeper after the cancel's listing. The shell then lives on until the
-	// grace ends and the login kills it.
+	// The handler for SIGTERM starts the sleeper after the last listing at the cancel. The shell keeps running
+	// until the grace ends and the login kills it.
 	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c",
 		`trap '/bin/sleep 300 >/dev/null 2>&1 & echo $! > "$0.tmp" && /bin/mv "$0.tmp" "$0.pid"' TERM
 echo ready > "$0.ready"
