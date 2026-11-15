@@ -4255,7 +4255,8 @@ func TestParseProcessesSkipsLinesWithoutNumbers(t *testing.T) {
 
 	// Valid lines follow each kind of bad line, so a skip that stopped the reading would lose them.
 	got := parseProcesses("x 1\n10 1\n11 y\n12 1\nshort\n13 1\n14 1 extra\n15 2\n")
-	if len(got.children) != 2 || !slices.Equal(got.below(1), []edge{{pid: 10, parent: 1}, {pid: 12, parent: 1}, {pid: 13, parent: 1}}) ||
+	if len(got.children) != 2 ||
+		!slices.Equal(got.below(1), []edge{{pid: 10, parent: 1}, {pid: 12, parent: 1}, {pid: 13, parent: 1}}) ||
 		!slices.Equal(got.below(2), []edge{{pid: 15, parent: 2}}) {
 		t.Fatal(got)
 	}
@@ -4888,12 +4889,15 @@ func TestAbsorbDropsAListingOfAReapedChild(t *testing.T) {
 func TestStopListedSignalsOnlyAMemberStillShowingItsStartTime(t *testing.T) {
 	t.Parallel()
 
-	// No process has these IDs, so the hook counts each signal and the kill itself finds nothing.
+	// No process has these IDs. The hook counts each signal, and the system call then fails.
 	const base = 2000000100
 
 	listed := []member{
-		{pid: base + 1, started: "x"}, {pid: base + 2, started: ""}, {pid: base + 3, started: "x"},
-		{pid: base + 4, started: "x"}, {pid: base + 5, started: "x"},
+		{pid: base + 1, started: "x"},
+		{pid: base + 2, started: ""},
+		{pid: base + 3, started: "x"},
+		{pid: base + 4, started: "x"},
+		{pid: base + 5, started: "x"},
 	}
 	read := func(pid int) (string, int, error) {
 		switch pid {

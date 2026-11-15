@@ -79,7 +79,7 @@ var errArguments = errors.New("invalid arguments")
 
 // Run executes serve or another subcommand. Errors log fixed messages and safe classes.
 func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *slog.Logger) int {
-	if code, handled := runCommand(ctx, args, out, logger); handled {
+	if code, handled := runSessionCommand(ctx, args, out, logger); handled {
 		return code
 	}
 
@@ -154,8 +154,8 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 	return 0
 }
 
-// runCommand runs the login and session commands. The second result is false for any other arguments.
-func runCommand(ctx context.Context, args []string, out io.Writer, _ *slog.Logger) (int, bool) {
+// runSessionCommand runs the login and session commands. The second result is false for any other arguments.
+func runSessionCommand(ctx context.Context, args []string, out io.Writer, _ *slog.Logger) (int, bool) {
 	if len(args) == 0 {
 		return 0, false
 	}

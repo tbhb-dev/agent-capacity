@@ -368,7 +368,7 @@ func (p *process) absorb(snap snapshot, read func(int) (string, int, error)) {
 			tracked[entry.pid] = true
 		}
 
-		// gomutants:disable-next-line EXPRESSION_REMOVE reason="A member that is gone has left the list before the roots are built."
+		// gomutants:disable-next-line EXPRESSION_REMOVE reason="A gone member has left the list before the roots are built."
 		verified[entry.pid] = err == nil && !gone
 
 		return gone
