@@ -23,6 +23,7 @@ go_library(
         "//internal/source/claude",
         "//internal/source/codex",
         "//internal/spool",
+        "@io_opentelemetry_go_contrib_bridges_otelslog//:otelslog",
         "@io_opentelemetry_go_otel//:otel",
         "@io_opentelemetry_go_otel_metric//:metric",
     ],
@@ -39,6 +40,7 @@ go_test(
     name = "agent-capacity_test",
     srcs = [
         "agy_test.go",
+        "logs_test.go",
         "main_test.go",
         "session_test.go",
         "statusline_test.go",
@@ -49,6 +51,7 @@ go_test(
     deps = [
         "//internal/capacity",
         "//internal/export",
+        "//internal/session",
         "//internal/source/claude",
         "//internal/spool",
         "@com_github_stretchr_testify//assert",

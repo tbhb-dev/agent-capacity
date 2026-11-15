@@ -10,6 +10,7 @@ go_library(
     name = "export",
     srcs = [
         "collector.go",
+        "logs.go",
         "provider.go",
     ],
     importpath = "go.tbhb.dev/agent-capacity/internal/export",
@@ -17,10 +18,13 @@ go_library(
     deps = [
         "//internal/capacity",
         "@io_opentelemetry_go_otel//attribute",
+        "@io_opentelemetry_go_otel_exporters_otlp_otlplog_otlploggrpc//:otlploggrpc",
+        "@io_opentelemetry_go_otel_exporters_otlp_otlplog_otlploghttp//:otlploghttp",
         "@io_opentelemetry_go_otel_exporters_otlp_otlpmetric_otlpmetricgrpc//:otlpmetricgrpc",
         "@io_opentelemetry_go_otel_exporters_otlp_otlpmetric_otlpmetrichttp//:otlpmetrichttp",
         "@io_opentelemetry_go_otel_metric//:metric",
         "@io_opentelemetry_go_otel_sdk//resource",
+        "@io_opentelemetry_go_otel_sdk_log//:log",
         "@io_opentelemetry_go_otel_sdk_metric//:metric",
         "@io_opentelemetry_go_otel_sdk_metric//metricdata",
     ],
@@ -30,6 +34,7 @@ go_test(
     name = "export_test",
     srcs = [
         "collector_test.go",
+        "logs_test.go",
         "provider_test.go",
     ],
     visibility = ["//:__pkg__"],
@@ -38,6 +43,7 @@ go_test(
         "//internal/capacity",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
+        "@io_opentelemetry_go_contrib_bridges_otelslog//:otelslog",
         "@io_opentelemetry_go_otel//attribute",
         "@io_opentelemetry_go_otel_metric//:metric",
         "@io_opentelemetry_go_otel_sdk//instrumentation",

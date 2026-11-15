@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 
@@ -49,14 +50,43 @@ func run() int {
 	defer stop()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	runtime := newRuntime(ctx, logger)
 
-	return runtime.Run(ctx, os.Args[1:], os.Stdout, logger)
+	return runWithLogging(ctx, os.Args[1:], os.Stdout, logger)
 }
 
-func newRuntime(ctx context.Context, logger *slog.Logger) Runtime {
+func runWithLogging(ctx context.Context, args []string, out io.Writer, stderr *slog.Logger) int {
+	logger := stderr
+
+	if len(args) > 0 && args[0] == "serve" {
+		provider, err := export.NewLogProvider(ctx)
+		if err != nil {
+			stderr.ErrorContext(ctx, "log setup failed", "class", capacity.ErrorClass(err))
+		}
+
+		if provider != nil {
+			logger = slog.New(slog.NewMultiHandler(stderr.Handler(),
+				otelslog.NewHandler("go.tbhb.dev/agent-capacity", otelslog.WithLoggerProvider(provider))))
+
+			defer func() {
+				shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+				defer cancel()
+
+				shutdownErr := provider.Shutdown(shutdownCtx)
+				if shutdownErr != nil {
+					stderr.ErrorContext(shutdownCtx, "log shutdown failed", "class", capacity.ErrorClass(shutdownErr))
+				}
+			}()
+		}
+	}
+
+	runtime := newRuntime(ctx, logger, stderr)
+
+	return runtime.Run(ctx, args, out, logger)
+}
+
+func newRuntime(ctx context.Context, logger, stderr *slog.Logger) Runtime {
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
-		logger.ErrorContext(ctx, "export failed", "class", capacity.ErrorClass(err))
+		stderr.ErrorContext(ctx, "export failed", "class", capacity.ErrorClass(err))
 	}))
 
 	return Runtime{

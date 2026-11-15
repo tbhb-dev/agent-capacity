@@ -26,10 +26,7 @@ var ErrProtocol = errors.New("unsupported OTLP metrics protocol")
 // stdout and Prometheus dependencies. Exporters handle endpoints and headers.
 // PeriodicReader handles OTEL_METRIC_EXPORT_INTERVAL and its timeout.
 func NewProvider(ctx context.Context) (*sdkmetric.MeterProvider, error) {
-	res, err := resource.New(ctx,
-		resource.WithAttributes(attribute.String("service.name", "agent-capacity")),
-		resource.WithFromEnv(),
-	)
+	res, err := newResource(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("create resource: %w", err)
 	}
@@ -43,6 +40,14 @@ func NewProvider(ctx context.Context) (*sdkmetric.MeterProvider, error) {
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(NonemptyExporter{Exporter: exporter})),
 	), nil
+}
+
+//nolint:wrapcheck // Each provider wraps resource errors with its signal name.
+func newResource(ctx context.Context) (*resource.Resource, error) {
+	return resource.New(ctx,
+		resource.WithAttributes(attribute.String("service.name", "agent-capacity")),
+		resource.WithFromEnv(),
+	)
 }
 
 // NonemptyExporter suppresses export requests when there are no metric points.
@@ -64,12 +69,7 @@ func (e NonemptyExporter) Export(ctx context.Context, data *metricdata.ResourceM
 
 //nolint:ireturn,wrapcheck // Both SDK transports implement Exporter. NewProvider wraps setup errors.
 func newExporter(ctx context.Context) (sdkmetric.Exporter, error) {
-	protocol := os.Getenv("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL")
-	if protocol == "" {
-		protocol = os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL")
-	}
-
-	switch protocol {
+	switch signalProtocol("METRICS") {
 	case "grpc":
 		return otlpmetricgrpc.New(ctx)
 	case "", "http/protobuf":
@@ -77,4 +77,13 @@ func newExporter(ctx context.Context) (sdkmetric.Exporter, error) {
 	default:
 		return nil, ErrProtocol
 	}
+}
+
+func signalProtocol(signal string) string {
+	protocol := os.Getenv("OTEL_EXPORTER_OTLP_" + signal + "_PROTOCOL")
+	if protocol == "" {
+		return os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL")
+	}
+
+	return protocol
 }

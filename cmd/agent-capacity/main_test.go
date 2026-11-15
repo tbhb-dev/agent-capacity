@@ -138,9 +138,11 @@ func TestRuntimeSetup(t *testing.T) {
 
 	t.Cleanup(func() { otel.SetErrorHandler(previous) })
 
-	var logs bytes.Buffer
+	var logs, records bytes.Buffer
 
-	runtime := newRuntime(t.Context(), slog.New(slog.NewJSONHandler(&logs, nil)))
+	logger := slog.New(slog.NewJSONHandler(&records, nil))
+	stderr := slog.New(slog.NewJSONHandler(&logs, nil))
+	runtime := newRuntime(t.Context(), logger, stderr)
 	assert.Len(t, runtime.Registry(t.TempDir()), 2)
 	registry, registryErr := runtime.NewRegistry("", "primary")
 	require.NoError(t, registryErr)
@@ -152,6 +154,7 @@ func TestRuntimeSetup(t *testing.T) {
 
 	otel.Handle(errors.ErrUnsupported)
 	assertLogs(t, &logs, "export failed")
+	assert.Empty(t, records.String())
 }
 
 func TestCodexFlags(t *testing.T) {
@@ -209,7 +212,7 @@ func TestCodexRuntime(t *testing.T) {
 		var out, logs bytes.Buffer
 
 		logger := slog.New(slog.NewJSONHandler(&logs, nil))
-		runtime := newRuntime(t.Context(), logger)
+		runtime := newRuntime(t.Context(), logger, logger)
 		sdk := sdkmetric.NewMeterProvider()
 
 		t.Cleanup(func() { require.NoError(t, sdk.Shutdown(context.Background())) })

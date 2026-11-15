@@ -38,7 +38,7 @@ func TestAGYMetrics(t *testing.T) {
 		strings.NewReader(payload), observed))
 
 	logger := slog.New(slog.DiscardHandler)
-	runtime := newRuntime(t.Context(), logger)
+	runtime := newRuntime(t.Context(), logger, logger)
 	registry := runtime.Registry(dir)
 	require.Len(t, registry, 2)
 	assert.Equal(t, capacity.ClaudeStatusline, registry[0].Name)
