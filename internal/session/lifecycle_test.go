@@ -4316,3 +4316,28 @@ func (fixtureValue fixture) untilFile(t *testing.T, path string) {
 		return readErr == nil && len(data) > 0
 	})
 }
+
+func TestAbsorbDoesNotSeedFromAMemberItCannotRead(t *testing.T) {
+	t.Parallel()
+
+	leader, member1, other := sleeper(t), sleeper(t), sleeper(t)
+	snap := snapshot{children: map[int][]int{member1.Process.Pid: {other.Process.Pid}}}
+	kept := member{pid: member1.Process.Pid, started: "recorded"}
+
+	child := terminalProcess(leader, nil)
+	child.members = []member{kept}
+
+	reads := map[int]int{other.Process.Pid: member1.Process.Pid}
+
+	child.absorb(snap, func(pid int) (string, int, error) {
+		if pid == member1.Process.Pid {
+			return "", 0, syscall.EMFILE
+		}
+
+		return reading(reads)(pid)
+	})
+
+	if !slices.Equal(child.members, []member{kept}) {
+		t.Fatal("a child of an unreadable member was recorded", child.members)
+	}
+}
