@@ -4128,7 +4128,7 @@ func TestParseProcessesSkipsLinesWithoutNumbers(t *testing.T) {
 	}
 }
 
-// gone is a start time that no process shows.
+// gone marks a start time that never matches a live process.
 const gone = "gone"
 
 func TestRefreshDropsMembersThatEnded(t *testing.T) {
