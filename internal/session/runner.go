@@ -286,7 +286,7 @@ func (s *running) step(ctx context.Context) (int, bool) {
 func (s *running) idleStop() (int, bool) {
 	s.stopChildren()
 
-	// A stop ends the missed-reading count, so the child that follows starts with one restart still in hand.
+	// A stop clears the missed-reading count.
 	s.readingRestart = false
 
 	if s.status.Reason == "operator_stop" && s.clock.Now().Before(s.nextStatus) {
@@ -345,7 +345,6 @@ func (s *running) pollStatusCheck() (int, bool) {
 			return s.finish(1, "start_failed"), true
 		}
 
-		// The check published "checking" for an idle Codex runner, and nothing else would restore the idle phase.
 		if s.child == nil && s.options.Vendor == vendorCodex && s.publish(phaseIdle, reasonNone) != nil {
 			return 1, true
 		}
@@ -434,7 +433,7 @@ func (s *running) launch() error {
 	s.started = s.clock.Now()
 
 	s.nextExec = s.started.Add(execInterval)
-	// A new child gets its own reading window, whatever the earlier child's last reading was.
+	// Each child starts its own reading window.
 	s.readingAt = s.started
 
 	return s.publish(phaseRunning, reasonNone)

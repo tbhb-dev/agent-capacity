@@ -4545,22 +4545,7 @@ func TestLoginInterruptedWithItsChildStopsTheDescendant(t *testing.T) {
 	go func() { result <- waitLogin(ctx, cmd) }()
 
 	// The shell notes its own ID too, because the command's process field belongs to the login goroutine.
-	var descendant, shell int
-
-	for deadline := time.Now().Add(5 * time.Second); shell == 0; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the descendant never started")
-		}
-
-		//nolint:errcheck // A missing or partial file is read again.
-		data, _ := os.ReadFile(noted)
-		if fields := strings.Fields(string(data)); len(fields) == 2 {
-			//nolint:errcheck // A partial file is read again.
-			descendant, _ = strconv.Atoi(fields[0])
-			//nolint:errcheck // A partial file is read again.
-			shell, _ = strconv.Atoi(fields[1])
-		}
-	}
+	descendant, shell := loginIDs(t, noted)
 
 	defer func() {
 		//nolint:errcheck // The process may have ended.
@@ -4581,6 +4566,32 @@ func TestLoginInterruptedWithItsChildStopsTheDescendant(t *testing.T) {
 	}
 
 	waitEnded(t, descendant, "an interrupted login left its descendant running")
+}
+
+// loginIDs waits for the login shell to note the IDs of its descendant and of itself.
+func loginIDs(t *testing.T, noted string) (int, int) {
+	t.Helper()
+
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		//nolint:errcheck // A missing or partial file is read again.
+		data, _ := os.ReadFile(noted)
+		fields := strings.Fields(string(data))
+
+		if len(fields) != 2 {
+			continue
+		}
+
+		descendant, first := strconv.Atoi(fields[0])
+		shell, second := strconv.Atoi(fields[1])
+
+		if first == nil && second == nil {
+			return descendant, shell
+		}
+	}
+
+	t.Fatal("the descendant never started")
+
+	return 0, 0
 }
 
 func waitEnded(t *testing.T, pid int, failure string) {
@@ -4626,22 +4637,7 @@ func TestLoginThatEndsOnItsOwnStopsItsDescendant(t *testing.T) {
 
 	go func() { result <- waitLogin(context.Background(), cmd) }()
 
-	var descendant, shell int
-
-	for deadline := time.Now().Add(5 * time.Second); shell == 0; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the descendant never started")
-		}
-
-		//nolint:errcheck // A missing or partial file is read again.
-		data, _ := os.ReadFile(noted)
-		if fields := strings.Fields(string(data)); len(fields) == 2 {
-			//nolint:errcheck // A partial file is read again.
-			descendant, _ = strconv.Atoi(fields[0])
-			//nolint:errcheck // A partial file is read again.
-			shell, _ = strconv.Atoi(fields[1])
-		}
-	}
+	descendant, shell := loginIDs(t, noted)
 
 	defer func() {
 		//nolint:errcheck // The process may have ended.
@@ -4651,10 +4647,11 @@ func TestLoginThatEndsOnItsOwnStopsItsDescendant(t *testing.T) {
 	// The periodic listing records the descendant while the child still lives.
 	time.Sleep(5 * firstSweep)
 
-	// The terminal signal can end the child before the cancel reaches this process, so no cancel happens here.
+	// A terminal signal can end the child before the cancel arrives, so this test never cancels.
 	must(t, syscall.Kill(shell, syscall.SIGKILL))
 
-	if err := <-result; err == nil {
+	err := <-result
+	if err == nil {
 		t.Fatal("a login killed by a signal reported success")
 	}
 
@@ -4667,7 +4664,8 @@ func TestCanceledLoginNeverReportsSuccess(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := settleLogin(ctx, finished(nil), nil); err == nil {
+	err := settleLogin(ctx, finished(nil), nil)
+	if err == nil {
 		t.Fatal("a canceled login that ended cleanly reported success")
 	}
 }
@@ -4718,6 +4716,7 @@ func TestIdleCodexReportsIdleAfterAPassingStatusCheck(t *testing.T) {
 	state := stateFor(t, fixtureValue)
 	state.nextExec = state.clock.Now().Add(execInterval)
 	must(t, state.publish(phaseChecking, reasonNone))
+
 	state.check = finished(nil)
 
 	if code, done := state.pollStatusCheck(); code != 0 || done {
@@ -4743,5 +4742,44 @@ func TestStatusFailureThatStopsAChildPublishesTheStop(t *testing.T) {
 
 	if got := fixtureValue.status(t).Phase; got == phaseRunning {
 		t.Fatal("the status still reports a running child after the stop")
+	}
+}
+
+func TestStatusPublishErrorsEndTheRunner(t *testing.T) {
+	t.Parallel()
+
+	for name, test := range map[string]struct {
+		vendor  string
+		prepare func(*testing.T, fixture, *running)
+		check   error
+	}{
+		"idle Codex after a passing check": {vendorCodex, func(t *testing.T, _ fixture, state *running) {
+			t.Helper()
+
+			state.nextExec = state.clock.Now().Add(execInterval)
+		}, nil},
+		"stopped child after a status failure": {vendorClaude, func(t *testing.T, fixtureValue fixture, state *running) {
+			t.Helper()
+			liveChild(t, fixtureValue, state)
+		}, codeError(1)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, test.vendor)
+			state := stateFor(t, fixtureValue)
+			test.prepare(t, fixtureValue, state)
+
+			// A launch already wrote the status file, and the break needs a directory in its place.
+			must(t, os.RemoveAll(filepath.Join(fixtureValue.options.SpoolDir, "status",
+				test.vendor+"-"+fixtureValue.options.Account+".json")))
+			breakStatus(t, fixtureValue)
+
+			state.check = finished(test.check)
+
+			if code, done := state.pollStatusCheck(); code != 1 || !done {
+				t.Fatal(code, done)
+			}
+		})
 	}
 }
