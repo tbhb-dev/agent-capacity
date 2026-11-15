@@ -91,11 +91,12 @@ jobs:
           if-no-files-found: ignore
 
   # Mutation testing runs on one OS leg. Pull requests report survivors.
-  # The full run on main blocks on survivors.
+  # The job is not in `conclusion`'s needs, so its 64-minute run does not hold
+  # the required check. A failure on main shows in the run, not in `conclusion`.
   mutation:
     name: mutation
     runs-on: ubuntu-26.04
-    # Unmeasured: no run has finished yet. Set this from the first finished run.
+    # Measured: the pull request run took 64 minutes (787c89f, 16:12Z to 17:16Z).
     timeout-minutes: 90
     permissions:
       contents: read
@@ -236,7 +237,7 @@ jobs:
   conclusion:
     name: conclusion
     if: always()
-    needs: [bazel, repo, gomodscan, container, mutation]
+    needs: [bazel, repo, gomodscan, container]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
