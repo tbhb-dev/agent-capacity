@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright Tony Burns
 
-# Review edits to this file as security policy. Start from gitleaks' default
-# rules and allowlist only what is justified, each with a reason.
-[extend]
-useDefault = true
+# Review edits to this file as security policy. The default rules come from
+# the @tbhb_rules//lint:gitleaks wrapper; allowlist only what is justified,
+# each with a reason.
 
 # `gitleaks dir` walks the working directory without reading .gitignore, so
 # the build output and tool caches that a local checkout holds would be
