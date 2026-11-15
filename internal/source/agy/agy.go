@@ -24,8 +24,11 @@ type Source struct {
 
 // bucket is one quota window of one model group.
 //
-// The usage command leaves out a fraction of zero. A missing value means the
-// group has used its whole window.
+// The usage command's struct tag leaves out a fraction of zero, and Parse reads
+// a missing value as a fully used window. It does so only while another known
+// bucket carries the field, because a renamed field looks the same on the wire.
+// A snapshot with every window used up at once then reads as invalid until one
+// real sample of a used-up bucket shows whether the command leaves the field out.
 //
 //nolint:tagliatelle // The input format uses snake_case field names.
 type bucket struct {
@@ -62,7 +65,7 @@ func (s Source) Read(ctx context.Context, _ time.Time) ([]capacity.Reading, erro
 	var readings []capacity.Reading
 
 	for _, snapshot := range snapshots {
-		batch, parseErr := parse(snapshot)
+		batch, parseErr := Parse(snapshot)
 		if parseErr != nil {
 			failures = append(failures, capacity.ErrorClass(parseErr))
 
@@ -83,11 +86,11 @@ func (s Source) Read(ctx context.Context, _ time.Time) ([]capacity.Reading, erro
 	return readings, nil
 }
 
-// parse reads the data object of the usage command, which lists model groups
-// and their quota buckets. It skips buckets it doesn't know. A snapshot without
-// any known bucket fails. A changed output format then reports an error
-// instead of an empty batch.
-func parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
+// Parse reads the data object of the usage command, with its model groups and
+// quota buckets, and skips buckets it doesn't know. When no known bucket appears,
+// or none carries a remaining fraction, it fails: a changed output format then
+// reports an error instead of an empty or fully used batch.
+func Parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
 	var payload struct {
 		Groups []struct {
 			Buckets []bucket `json:"buckets"`
@@ -99,6 +102,8 @@ func parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
 
 	var readings []capacity.Reading
 
+	carried := false
+
 	for _, group := range payload.Groups {
 		for _, entry := range group.Buckets {
 			reading, err := convert(snapshot, entry)
@@ -108,11 +113,12 @@ func parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
 
 			if reading != nil {
 				readings = append(readings, *reading)
+				carried = carried || entry.RemainingFraction != nil
 			}
 		}
 	}
 
-	if len(readings) == 0 {
+	if !carried {
 		return nil, capacity.ErrInvalidReading
 	}
 

@@ -37,7 +37,7 @@ func TestParseFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/usage-data.json")
 	require.NoError(t, err)
 
-	got, err := parse(snapshot(string(data)))
+	got, err := Parse(snapshot(string(data)))
 	require.NoError(t, err)
 
 	// Subtract at run time, as the parser does, rather than in constant arithmetic.
@@ -79,7 +79,11 @@ func TestParse(t *testing.T) {
 			[]float64{0.75},
 			false,
 		},
-		{`{"groups":[{"buckets":[{"id":"3p-weekly","window":"weekly",` + reset + `}]}]}`, []float64{1}, false},
+		{`{"groups":[{"buckets":[{"id":"3p-weekly","window":"weekly",` + reset + `},
+{"id":"3p-5h","window":"5h","remaining_fraction":0.5,` + reset + `}]}]}`, []float64{1, 0.5}, false},
+		{`{"groups":[{"buckets":[{"id":"other-5h","window":"5h","remaining_fraction":1,` + reset + `},
+{"id":"3p-weekly","window":"weekly",` + reset + `},
+{"id":"gemini-5h","window":"5h",` + reset + `}]}]}`, nil, true},
 		{`{"groups":[{"buckets":[{"id":"other-5h","window":"5h","remaining_fraction":1,` + reset + `},
 {"id":"gemini-month","window":"month","remaining_fraction":1,` + reset + `},
 {"id":"gemini-5h","window":"5h","remaining_fraction":1,` + reset + `}]}]}`, []float64{0}, false},
@@ -92,7 +96,7 @@ func TestParse(t *testing.T) {
 		{`{"groups":[{"buckets":[{"id":"gemini-5h","window":"5h","remaining_fraction":1.5,` + reset + `}]}]}`, nil, true},
 		{`{"groups":[{"buckets":[{"id":"gemini-5h","window":"5h","remaining_fraction":-0.1,` + reset + `}]}]}`, nil, true},
 	} {
-		got, err := parse(snapshot(testCase.data))
+		got, err := Parse(snapshot(testCase.data))
 		if testCase.invalid {
 			require.ErrorIs(t, err, capacity.ErrInvalidReading, testCase.data)
 			assert.Nil(t, got)

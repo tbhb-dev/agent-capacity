@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -88,6 +89,8 @@ func TestProbeUsageErrors(t *testing.T) {
 		{fixed(bytes.Replace(valid, []byte(`"SUCCESS"`), []byte(`"ERROR"`), 1), nil), capacity.ErrInvalidReading, nil},
 		{fixed(renamed, nil), capacity.ErrInvalidReading, nil},
 		{fixed([]byte(`{"status":"SUCCESS","command":{"name":"usage"}}`), nil), capacity.ErrInvalidReading, nil},
+		{fixed([]byte(`{"status":"SUCCESS","command":{"name":"usage","data":null}}`), nil), capacity.ErrInvalidReading, nil},
+		{fixed([]byte(`{"status":"SUCCESS","command":{"name":"usage","data":{}}}`), nil), capacity.ErrInvalidReading, nil},
 		{fixed(append(valid, bytes.Repeat([]byte(" "), inputLimit)...), nil), capacity.ErrInvalidReading, nil},
 		{fixed(valid, nil), os.ErrExist, []string{workFlag, "--spool-dir=" + blocked}},
 	} {
@@ -106,6 +109,27 @@ func TestProbeUsageErrors(t *testing.T) {
 
 		require.ErrorIs(t, got, testCase.want, args)
 	}
+}
+
+func TestProbeUsageKeepsSnapshot(t *testing.T) {
+	t.Parallel()
+
+	valid, err := os.ReadFile(usageFixture)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	args := []string{"--spool-dir=" + dir, workFlag}
+	require.NoError(t, probeUsage(t.Context(), args, fixed(valid, nil), time.Now()))
+
+	before, err := os.ReadFile(filepath.Join(dir, "agy-work.json"))
+	require.NoError(t, err)
+
+	empty := []byte(`{"status":"SUCCESS","command":{"name":"usage","data":null}}`)
+	require.ErrorIs(t, probeUsage(t.Context(), args, fixed(empty, nil), time.Now()), capacity.ErrInvalidReading)
+
+	after, err := os.ReadFile(filepath.Join(dir, "agy-work.json"))
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
 }
 
 func TestProbe(t *testing.T) {
@@ -165,5 +189,21 @@ func TestRunUsage(t *testing.T) {
 
 	output, err = runUsage(t.Context())
 	require.ErrorContains(t, err, "run usage command")
+	assert.Equal(t, "read", capacity.ErrorClass(err))
 	assert.Nil(t, output)
+
+	//nolint:gosec // The stand-in must be executable.
+	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\nexec /bin/sleep 10\n"), 0o700))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err = runUsage(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	t.Setenv("PATH", t.TempDir())
+
+	_, err = runUsage(t.Context())
+	require.ErrorIs(t, err, fs.ErrNotExist)
+	assert.Equal(t, "missing", capacity.ErrorClass(err))
 }
