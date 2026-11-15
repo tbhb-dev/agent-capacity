@@ -171,9 +171,18 @@ jobs:
           gh release create "${TAG}" dist/agent-capacity-* dist/SHA256SUMS
           --draft --verify-tag --title "${TAG}" --generate-notes
 
+      # Publishing is the step nobody can undo quietly, so it checks that the
+      # draft holds exactly the files built above before it goes public.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
-        run: gh release edit "${TAG}" --draft=false
+        run: |
+          expected=$(find dist -type f -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')
+          attached=$(gh release view "${TAG}" --json assets --jq '[.assets[].name] | sort | join(" ")')
+          if [ "${attached% }" != "${expected% }" ]; then
+            echo "::error::Draft ${TAG} holds [${attached}], not [${expected% }]."
+            exit 1
+          fi
+          gh release edit "${TAG}" --draft=false
