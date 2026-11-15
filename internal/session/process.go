@@ -419,8 +419,8 @@ const (
 	sweepRetry    = 50 * time.Millisecond
 )
 
-// stopListed stops each listed process that still shows its recorded start time and returns the ones that
-// couldn't be read. A failed read says nothing about the process, so it is neither signaled nor taken as ended.
+// stopListed stops each listed process that still shows its recorded start time and returns the ones that couldn't
+// be read. A failed read says nothing about the process, so the process is neither signaled nor taken as ended.
 func stopListed(listed []member, read func(int) (string, int, error)) []member {
 	var unknown []member
 
