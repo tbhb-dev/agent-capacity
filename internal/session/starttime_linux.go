@@ -9,26 +9,35 @@ import (
 	"strings"
 )
 
-// startField is the position of the start time among the fields that follow the command name in a stat file.
-const startField = 19
+// The positions of the parent and the start time among the fields that follow the command name in a stat file.
+const (
+	parentField = 1
+	startField  = 19
+)
 
-// startKey returns the start time of a process in clock ticks since boot, or an empty string when it has ended.
-func startKey(pid int) string {
+// stamp returns the start time of a process in clock ticks since boot with its parent, read together. The start
+// time is empty when the process has ended.
+func stamp(pid int) (string, int) {
 	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
-		return ""
+		return "", 0
 	}
 
-	return parseStartTicks(string(data))
+	return parseStat(string(data))
 }
 
-// parseStartTicks reads the start time from a stat file. The command name is in parentheses and may hold spaces.
-// Counting starts at the last closing parenthesis.
-func parseStartTicks(stat string) string {
+// parseStat reads the start time and the parent from a stat file. The command name is in parentheses and may hold
+// spaces. Counting starts at the last closing parenthesis.
+func parseStat(stat string) (string, int) {
 	fields := strings.Fields(stat[strings.LastIndex(stat, ")")+1:])
 	if len(fields) <= startField {
-		return ""
+		return "", 0
 	}
 
-	return fields[startField]
+	parent, err := strconv.Atoi(fields[parentField])
+	if err != nil {
+		return "", 0
+	}
+
+	return fields[startField], parent
 }

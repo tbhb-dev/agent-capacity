@@ -214,7 +214,7 @@ func sweepDelay(running time.Duration) time.Duration {
 }
 
 // psTimeout bounds one process listing, so a stuck ps can't hold up the exit sweep.
-const psTimeout = 5 * time.Second
+const psTimeout = 1500 * time.Millisecond
 
 // psFields is the number of fields in a listing line: the ID and the parent ID.
 const psFields = 2
@@ -298,14 +298,20 @@ func parseProcesses(listing string) snapshot {
 	return snap
 }
 
-// below lists the process IDs under a process ID, found from the parent links. A process in a new session has
+// edge is a process ID with the parent that a listing showed for it.
+type edge struct {
+	pid    int
+	parent int
+}
+
+// below lists the processes under a process ID, found from the parent links. A process in a new session has
 // left the group but keeps its parent link until the parent ends.
-func (s snapshot) below(pid int) []int {
-	var found []int
+func (s snapshot) below(pid int) []edge {
+	var found []edge
 
 	for queue := []int{pid}; len(queue) > 0; queue = queue[1:] {
 		for _, child := range s.children[queue[0]] {
-			found = append(found, child)
+			found = append(found, edge{pid: child, parent: queue[0]})
 			queue = append(queue, child)
 		}
 	}
@@ -313,24 +319,36 @@ func (s snapshot) below(pid int) []int {
 	return found
 }
 
-// record pairs each process ID with its start time. A process that has already ended is left out.
-func record(pids []int) []member {
+// record pairs each process ID with its start time. The start time and the parent come from one read of the
+// process. The result leaves out an ended process, and one whose parent differs from the listing, since an ID
+// reused after the listing belongs to another process with another parent.
+func record(edges []edge, read func(int) (string, int)) []member {
 	var found []member
 
-	for _, pid := range pids {
-		if started := startKey(pid); started != "" {
-			found = append(found, member{pid: pid, started: started})
+	for _, entry := range edges {
+		if started, parent := read(entry.pid); started != "" && parent == entry.parent {
+			found = append(found, member{pid: entry.pid, started: started})
 		}
 	}
 
 	return found
 }
 
-// descendants lists the processes below a process ID with their start times.
+// descendants lists the processes below a process ID with their start times. A failed listing gives none.
 func descendants(pid int) []member {
-	snap, _ := reliableSnapshot()
+	snap, listed := reliableSnapshot()
+	if !listed {
+		return nil
+	}
 
-	return record(snap.below(pid))
+	return record(snap.below(pid), stamp)
+}
+
+// startKey returns the start time of a process, or an empty string when it has ended.
+func startKey(pid int) string {
+	started, _ := stamp(pid)
+
+	return started
 }
 
 // killAll stops each listed process that still shows its recorded start time. A process that has
@@ -354,14 +372,14 @@ func (p *process) refresh() {
 		return
 	}
 
-	p.absorb(snap)
+	p.absorb(snap, stamp)
 }
 
 // absorb drops each member that has ended or lost its ID to another process, then adds the descendants of the
 // leader and of every remaining member. A member whose parent ended has a new parent, so its own children are
 // found through the member. A listing of a reaped child is dropped, because its process ID may belong to another
 // process.
-func (p *process) absorb(snap snapshot) {
+func (p *process) absorb(snap snapshot, read func(int) (string, int)) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
@@ -370,10 +388,19 @@ func (p *process) absorb(snap snapshot) {
 		return
 	}
 
-	p.members = slices.DeleteFunc(p.members, func(entry member) bool { return startKey(entry.pid) != entry.started })
+	tracked := map[int]bool{}
+
+	// The listing is older than this check, so an ID dropped here stays out until the next listing.
+	p.members = slices.DeleteFunc(p.members, func(entry member) bool {
+		gone := startKey(entry.pid) != entry.started
+		if gone {
+			tracked[entry.pid] = true
+		}
+
+		return gone
+	})
 
 	roots := []int{p.cmd.Process.Pid}
-	tracked := map[int]bool{}
 
 	for _, entry := range p.members {
 		roots = append(roots, entry.pid)
@@ -381,7 +408,7 @@ func (p *process) absorb(snap snapshot) {
 	}
 
 	for _, root := range roots {
-		for _, entry := range record(snap.below(root)) {
+		for _, entry := range record(snap.below(root), read) {
 			if !tracked[entry.pid] {
 				tracked[entry.pid] = true
 				p.members = append(p.members, entry)

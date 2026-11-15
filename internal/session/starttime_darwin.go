@@ -9,12 +9,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// startKey returns the start time of a process to the microsecond, or an empty string when it has ended.
-func startKey(pid int) string {
+// stamp returns the start time of a process to the microsecond with its parent, read together. The start time is
+// empty when the process has ended.
+func stamp(pid int) (string, int) {
 	info, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if err != nil {
-		return ""
+		return "", 0
 	}
 
-	return fmt.Sprintf("%d.%06d", info.Proc.P_starttime.Sec, info.Proc.P_starttime.Usec)
+	return fmt.Sprintf("%d.%06d", info.Proc.P_starttime.Sec, info.Proc.P_starttime.Usec), int(info.Eproc.Ppid)
 }

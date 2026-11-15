@@ -3911,8 +3911,52 @@ func TestReliableSnapshotRetriesAFailedListing(t *testing.T) {
 	withListing(t, script)
 
 	snap, ok := reliableSnapshot()
-	if !ok || !slices.Contains(snap.below(os.Getppid()), os.Getpid()) {
+	if !ok || !slices.Contains(snap.below(os.Getppid()), edge{pid: os.Getpid(), parent: os.Getppid()}) {
 		t.Fatal("the retry did not list this process", ok)
+	}
+}
+
+// reading returns a reader that gives the real start time with the parent that the test assigns.
+func reading(parents map[int]int) func(int) (string, int) {
+	return func(pid int) (string, int) { return startKey(pid), parents[pid] }
+}
+
+func TestRecordSkipsAProcessWhoseParentChangedAfterTheListing(t *testing.T) {
+	t.Parallel()
+
+	reused, kept := sleeper(t), sleeper(t)
+	edges := []edge{{pid: reused.Process.Pid, parent: 100}, {pid: kept.Process.Pid, parent: 100}}
+
+	// The listing showed both under parent 100. The reused ID now belongs to a process with another parent.
+	got := record(edges, reading(map[int]int{reused.Process.Pid: 200, kept.Process.Pid: 100}))
+
+	if !slices.Equal(got, []member{{pid: kept.Process.Pid, started: startKey(kept.Process.Pid)}}) {
+		t.Fatal(got)
+	}
+}
+
+func TestAbsorbKeepsADroppedMemberOutOfAStaleListing(t *testing.T) {
+	t.Parallel()
+
+	leader, reused := sleeper(t), sleeper(t)
+	snap := snapshot{children: map[int][]int{leader.Process.Pid: {reused.Process.Pid}}}
+
+	child := terminalProcess(leader, nil)
+	child.members = []member{{pid: reused.Process.Pid, started: "an earlier process"}}
+
+	child.absorb(snap, reading(map[int]int{reused.Process.Pid: leader.Process.Pid}))
+
+	if len(child.members) != 0 {
+		t.Fatal("a dropped ID was added again from the older listing", child.members)
+	}
+}
+
+//nolint:paralleltest // The listing program is a package variable.
+func TestDescendantsGiveNoneWhenTheListingFails(t *testing.T) {
+	withListing(t, "/nonexistent/ps")
+
+	if got := descendants(os.Getpid()); got != nil {
+		t.Fatal(got)
 	}
 }
 
@@ -3945,7 +3989,8 @@ func TestAbsorbFindsChildrenOfARecordedMember(t *testing.T) {
 	child := terminalProcess(leader, nil)
 	child.members = []member{{pid: orphan.Process.Pid, started: startKey(orphan.Process.Pid)}}
 
-	child.absorb(snap)
+	parents := map[int]int{orphan.Process.Pid: leader.Process.Pid, grandchild.Process.Pid: orphan.Process.Pid}
+	child.absorb(snap, reading(parents))
 
 	want := []member{
 		{pid: orphan.Process.Pid, started: startKey(orphan.Process.Pid)},
@@ -3958,7 +4003,7 @@ func TestAbsorbFindsChildrenOfARecordedMember(t *testing.T) {
 	// With the leader gone from the snapshot, the member alone still leads to its own child.
 	snap.children = map[int][]int{orphan.Process.Pid: {grandchild.Process.Pid}}
 	child.members = []member{{pid: orphan.Process.Pid, started: startKey(orphan.Process.Pid)}}
-	child.absorb(snap)
+	child.absorb(snap, reading(parents))
 
 	if !slices.Equal(child.members, want) {
 		t.Fatal("the orphan's child was not found", child.members)
@@ -4006,7 +4051,7 @@ func TestParseProcessesSkipsLinesWithoutNumbers(t *testing.T) {
 	t.Parallel()
 
 	got := parseProcesses("10 1\nx 1\n11 y\nshort\n12 1 extra\n")
-	if len(got.children) != 1 || !slices.Equal(got.below(1), []int{10}) {
+	if len(got.children) != 1 || !slices.Equal(got.below(1), []edge{{pid: 10, parent: 1}}) {
 		t.Fatal(got)
 	}
 }

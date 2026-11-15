@@ -213,3 +213,5 @@ Usec
 pids
 sysctl
 starttime
+Eproc
+Ppid
