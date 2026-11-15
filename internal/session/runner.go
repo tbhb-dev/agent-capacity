@@ -583,6 +583,10 @@ var errCleanupIncomplete = errors.New("a descendant could not be checked")
 //nolint:gochecknoglobals // Tests replace the call to simulate a concurrent filesystem change.
 var statRoot = (*os.Root).Stat
 
+// cleanRollouts removes Codex rollout files older than two days from codex/sessions. The alias root confines every
+// lookup, so a component swapped for a link can't point outside the account directory. A swap between the checks and
+// the open of codex/sessions is caught by the same-file comparison below. A swap of codex alone, before the check of
+// codex/sessions, leaves the cleanup inside the alias on a directory that passed every check, which is the bound.
 func cleanRollouts(alias *os.Root, now time.Time) error {
 	var sessions fs.FileInfo
 
