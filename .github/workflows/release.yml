@@ -27,7 +27,7 @@ jobs:
   verify:
     name: verify
     runs-on: ubuntu-26.04
-    timeout-minutes: 5
+    timeout-minutes: 30
     permissions:
       contents: read  # Compare the tagged commit with main.
       checks: read  # List the check runs of the tagged commit.
@@ -130,7 +130,7 @@ jobs:
     name: release
     needs: [verify, build]
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: write  # Create the release and attach the files.
     steps:
