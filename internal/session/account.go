@@ -14,6 +14,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -261,19 +263,44 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 		return ErrArguments
 	}
 
+	// The child shares the caller's terminal, so a separate process group would stop it on terminal input. Its
+	// descendants are listed for as long as it runs instead, and killed by process ID after a canceled login ends.
+	// One listing at the cancel would miss the children of a child that the same terminal signal already ended.
+	tracker := &process{
+		cmd: cmd, done: nil, terminal: nil, drained: nil, ended: make(chan struct{}), swept: make(chan struct{}),
+		cleaned: nil, members: nil, mutex: sync.Mutex{}, reaped: atomic.Bool{},
+	}
+
+	go tracker.sweepWhileRunning()
+
 	// gomutants:disable-next-line INTEGER_DECREMENT,INTEGER_INCREMENT reason="Size is moot."
 	done := make(chan error, 1)
 
-	go func() { done <- cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+
+		// From the reap on, a listing by the child's ID is dropped, because the ID may belong to another process.
+		tracker.mutex.Lock()
+		tracker.reaped.Store(true)
+		tracker.mutex.Unlock()
+
+		close(tracker.ended)
+		<-tracker.swept
+
+		done <- err
+	}()
 
 	select {
 	case err := <-done:
+		// A terminal interrupt goes to the child and this process together, so the child may end first.
+		if ctx.Err() != nil {
+			tracker.sweep()
+		}
+
 		return err
 	case <-ctx.Done():
-		// The child shares the caller's terminal, so a separate process group would stop it on terminal input.
-		// Its descendants are found first and killed by process ID after it ends.
-		below := descendants(cmd.Process.Pid)
-		defer func() { killAll(below, startKey) }()
+		// One more listing catches a descendant started since the last one. The listing is dropped if the child has ended.
+		tracker.refresh()
 
 		//nolint:errcheck // The child may already have exited.
 		_ = cmd.Process.Signal(syscall.SIGTERM)
@@ -286,6 +313,8 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 
 			<-done //nolint:errcheck // Shutdown only needs process completion.
 		}
+
+		tracker.sweep()
 
 		return ErrArguments
 	}

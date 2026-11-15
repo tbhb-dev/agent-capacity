@@ -4024,13 +4024,12 @@ func TestTerminateEndsWhenTheLeaderMovedToAnotherGroup(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // The listing program is a package variable.
-func TestDescendantsGiveNoneWhenTheListingFails(t *testing.T) {
-	withListing(t, "/nonexistent/ps")
+// startKey returns the start time of a process, or an empty string when it has ended or can't be read.
+func startKey(pid int) string {
+	//nolint:errcheck // A process that can't be read has no start time to compare.
+	started, _, _ := stamp(pid)
 
-	if got := descendants(os.Getpid()); got != nil {
-		t.Fatal(got)
-	}
+	return started
 }
 
 // sleeper starts a long sleep that the test stops at its end.
@@ -4152,75 +4151,6 @@ func TestRefreshDropsMembersThatEnded(t *testing.T) {
 	}
 }
 
-func TestKillAllSkipsProcessWhoseStartTimeChanged(t *testing.T) {
-	t.Parallel()
-
-	for _, testCase := range []struct {
-		lookup func(int) string
-		name   string
-		killed bool
-	}{
-		{func(int) string { return "listed" }, "same start time", true},
-		{func(int) string { return "later" }, "another start time", false},
-		{func(int) string { return "" }, "process gone", false},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			bystander := exec.CommandContext(context.Background(), "/bin/sleep", "30")
-			must(t, bystander.Start())
-
-			waited := make(chan struct{})
-
-			go func() {
-				_ = bystander.Wait() //nolint:errcheck // Only the end of the process matters.
-
-				close(waited)
-			}()
-
-			defer func() {
-				//nolint:errcheck // The process may have ended.
-				_ = bystander.Process.Kill()
-			}()
-
-			killAll([]member{{pid: bystander.Process.Pid, started: "listed"}}, testCase.lookup)
-
-			select {
-			case <-waited:
-				if !testCase.killed {
-					t.Fatal("killAll stopped a process that no longer matched")
-				}
-			case <-time.After(time.Second):
-				if testCase.killed {
-					t.Fatal("killAll left a matching process running")
-				}
-			}
-		})
-	}
-}
-
-func TestDescendantsListTheStartTimeThatPsReports(t *testing.T) {
-	t.Parallel()
-
-	grandchild := exec.CommandContext(context.Background(), "/bin/sleep", "30")
-	must(t, grandchild.Start())
-
-	defer func() {
-		//nolint:errcheck // The process may have ended.
-		_ = grandchild.Process.Kill()
-		_ = grandchild.Wait() //nolint:errcheck // Only the end of the process matters.
-	}()
-
-	want := startKey(grandchild.Process.Pid)
-	if want == "" {
-		t.Fatal("no start time for a live process")
-	}
-
-	if !slices.Contains(descendants(os.Getpid()), member{pid: grandchild.Process.Pid, started: want}) {
-		t.Fatal("descendants missed a child or its start time")
-	}
-}
-
 func TestCodexExecSkipsGitRepoCheck(t *testing.T) {
 	t.Parallel()
 
@@ -4339,5 +4269,181 @@ func TestAbsorbDoesNotSeedFromAMemberItCannotRead(t *testing.T) {
 
 	if !slices.Equal(child.members, []member{kept}) {
 		t.Fatal("a child of an unreadable member was recorded", child.members)
+	}
+}
+
+// failingFirst is a reader that fails the given number of times and then reads the process.
+func failingFirst(failures int32) (func(int) (string, int, error), *atomic.Int32) {
+	calls := new(atomic.Int32)
+
+	return func(pid int) (string, int, error) {
+		if calls.Add(1) <= failures {
+			return "", 0, syscall.EMFILE
+		}
+
+		return stamp(pid)
+	}, calls
+}
+
+func TestSweepRetriesAMemberItCannotRead(t *testing.T) {
+	t.Parallel()
+
+	leader := sleeper(t)
+	orphan := exec.CommandContext(context.Background(), "/bin/sleep", "30")
+	must(t, orphan.Start())
+
+	waited := make(chan struct{})
+
+	go func() {
+		_ = orphan.Wait() //nolint:errcheck // Only the end of the process matters.
+
+		close(waited)
+	}()
+
+	defer func() {
+		//nolint:errcheck // The process may have ended.
+		_ = orphan.Process.Kill()
+	}()
+
+	child := terminalProcess(leader, nil)
+	child.members = []member{{pid: orphan.Process.Pid, started: startKey(orphan.Process.Pid)}}
+
+	read, calls := failingFirst(2)
+	if left := child.sweepWith(read); len(left) != 0 {
+		t.Fatal("a member that became readable was left", left)
+	}
+
+	if calls.Load() != 3 {
+		t.Fatal("reads", calls.Load())
+	}
+
+	select {
+	case <-waited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the sweep left a member running after a transient read error")
+	}
+}
+
+func TestSweepLeavesAMemberThatStaysUnreadable(t *testing.T) {
+	t.Parallel()
+
+	leader, orphan := sleeper(t), sleeper(t)
+	kept := member{pid: orphan.Process.Pid, started: startKey(orphan.Process.Pid)}
+
+	child := terminalProcess(leader, nil)
+	child.members = []member{kept, {pid: 2000000000, started: "gone"}}
+
+	read, calls := failingFirst(2 * sweepAttempts)
+	if left := child.sweepWith(read); !slices.Equal(left, []member{kept, {pid: 2000000000, started: "gone"}}) {
+		t.Fatal(left)
+	}
+
+	// Each of the two members is read once per attempt.
+	if calls.Load() != 2*sweepAttempts {
+		t.Fatal("reads", calls.Load())
+	}
+
+	if startKey(orphan.Process.Pid) != kept.started {
+		t.Fatal("the sweep signaled a process it couldn't read")
+	}
+}
+
+func TestCanceledLoginStopsADescendantThatOutlivesTheChild(t *testing.T) {
+	t.Parallel()
+
+	noted := filepath.Join(t.TempDir(), "pid")
+
+	// The shell ends on SIGTERM and leaves the sleeper behind with a new parent.
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c",
+		`/bin/sleep 300 >/dev/null 2>&1 & echo $! > "$0.tmp" && /bin/mv "$0.tmp" "$0"; wait`, noted)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result := make(chan error, 1)
+
+	go func() { result <- waitLogin(ctx, cmd) }()
+
+	var descendant int
+
+	for deadline := time.Now().Add(5 * time.Second); descendant == 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the descendant never started")
+		}
+
+		//nolint:errcheck // A missing or partial file is read again.
+		data, _ := os.ReadFile(noted)
+		descendant, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+	}
+
+	defer func() {
+		//nolint:errcheck // The process may have ended.
+		_ = syscall.Kill(descendant, syscall.SIGKILL)
+	}()
+
+	cancel()
+
+	if err := <-result; !errors.Is(err, ErrArguments) {
+		t.Fatal(err)
+	}
+
+	for deadline := time.Now().Add(2 * time.Second); startKey(descendant) != ""; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("a canceled login left its descendant running")
+		}
+	}
+}
+
+func TestLoginInterruptedWithItsChildStopsTheDescendant(t *testing.T) {
+	t.Parallel()
+
+	noted := filepath.Join(t.TempDir(), "pid")
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c",
+		`/bin/sleep 300 >/dev/null 2>&1 & echo $! $$ > "$0.tmp" && /bin/mv "$0.tmp" "$0"; wait`, noted)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result := make(chan error, 1)
+
+	go func() { result <- waitLogin(ctx, cmd) }()
+
+	// The shell notes its own ID too, because the command's process field belongs to the login goroutine.
+	var descendant, shell int
+
+	for deadline := time.Now().Add(5 * time.Second); shell == 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the descendant never started")
+		}
+
+		//nolint:errcheck // A missing or partial file is read again.
+		data, _ := os.ReadFile(noted)
+		if fields := strings.Fields(string(data)); len(fields) == 2 {
+			descendant, _ = strconv.Atoi(fields[0])
+			shell, _ = strconv.Atoi(fields[1])
+		}
+	}
+
+	defer func() {
+		//nolint:errcheck // The process may have ended.
+		_ = syscall.Kill(descendant, syscall.SIGKILL)
+	}()
+
+	// The periodic listing records the descendant while the child still lives.
+	time.Sleep(5 * firstSweep)
+
+	// A terminal interrupt ends the child as it cancels the login, so no listing after the cancel finds the
+	// descendant under the child.
+	must(t, syscall.Kill(shell, syscall.SIGKILL))
+	cancel()
+
+	if err := <-result; err == nil {
+		t.Fatal("an interrupted login reported success")
+	}
+
+	for deadline := time.Now().Add(2 * time.Second); startKey(descendant) != ""; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("an interrupted login left its descendant running")
+		}
 	}
 }
