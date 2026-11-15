@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -143,7 +144,7 @@ func (s *running) initialApproval() (int, bool) {
 func (s *running) checkApproval() (int, bool) {
 	approved, err := s.options.Approved()
 	if err != nil {
-		return s.finish(1, "approval_unavailable"), true
+		return s.finish(1, reasonApproval), true
 	}
 
 	if !approved {
@@ -186,7 +187,7 @@ func (s *running) loop(ctx context.Context) int {
 
 		select {
 		case <-ctx.Done():
-			return s.finish(1, "interrupted")
+			return s.finish(1, reasonInterrupted)
 		case <-s.clock.After(time.Second):
 		}
 	}
@@ -211,7 +212,9 @@ func (s *running) finish(code int, reason string) int {
 	s.stopChildren()
 
 	if code == 1 {
-		if reason != "child_exit" {
+		// An operator interrupt and a failed state or approval read aren't failures of the child, so they don't
+		// spend the restart budget.
+		if !slices.Contains([]string{"child_exit", reasonInterrupted, reasonApproval, "invalid_state"}, reason) {
 			s.status.Restarts = append(s.status.Restarts, s.clock.Now())
 		}
 
@@ -245,7 +248,7 @@ func (s *running) step(ctx context.Context) (int, bool) {
 	}
 
 	if ctx.Err() != nil {
-		return s.finish(1, "interrupted"), true
+		return s.finish(1, reasonInterrupted), true
 	}
 
 	code, done := s.checkApproval()
@@ -310,6 +313,11 @@ func (s *running) statusCheck() (int, bool) {
 		return 0, false
 	}
 
+	// The directories were checked at the start of the run, and a link could have replaced one since.
+	if checkDirectories(s.alias, s.options.Vendor) != nil {
+		return s.finish(1, "status_failed"), true
+	}
+
 	args := []string{"auth", "status"}
 	if s.options.Vendor == vendorCodex {
 		args = []string{commandLogin, "status"}
@@ -343,8 +351,8 @@ func (s *running) pollStatusCheck() (int, bool) {
 		s.signedOutCount = 0
 
 		s.nextCheck = s.clock.Now().Add(statusInterval)
-		if s.child == nil && !s.clock.Now().Before(s.nextExec) && s.launch() != nil {
-			return s.finish(1, "start_failed"), true
+		if s.child == nil && !s.clock.Now().Before(s.nextExec) {
+			return s.launchAfterCheck()
 		}
 
 		if s.child == nil && s.options.Vendor == vendorCodex && s.publish(phaseIdle, reasonNone) != nil {
@@ -356,6 +364,21 @@ func (s *running) pollStatusCheck() (int, bool) {
 
 			return s.finish(1, "status_failed"), true
 		}
+	}
+
+	return 0, false
+}
+
+// launchAfterCheck starts the child once a status check passes. A settings file the runner refuses gets its own
+// reason, so it reads differently from a child that couldn't start.
+func (s *running) launchAfterCheck() (int, bool) {
+	err := s.launch()
+	if errors.Is(err, errSettingsRefused) {
+		return s.finish(1, "settings_refused"), true
+	}
+
+	if err != nil {
+		return s.finish(1, "start_failed"), true
 	}
 
 	return 0, false
@@ -432,9 +455,21 @@ func codexExecArgs(prompt string) []string {
 }
 
 func (s *running) launch() error {
+	// Directories are checked before every start, because a link may have replaced one since the last start.
+	if checkDirectories(s.alias, s.options.Vendor) != nil {
+		return ErrArguments
+	}
+
+	// A start that can't list processes would never record a descendant, and the cleanup would report success. The
+	// start fails first and the run stops.
+	_, err := os.Stat(psPath)
+	if err != nil {
+		return ErrArguments
+	}
+
 	command := statusCommand(s.options.Exporter, s.options.Account, s.options.SpoolDir)
 	if s.options.Vendor == vendorClaude && checkSettings(s.alias, command) != nil {
-		return ErrArguments
+		return errSettingsRefused
 	}
 
 	args := []string{"--model", "claude-haiku-5-5", "/loop 5m " + s.options.Prompt}
@@ -560,12 +595,18 @@ func exitCode(err error) int {
 
 var errExecTimeout = errors.New("execution timed out")
 
+var errSettingsRefused = errors.New("the settings file was refused")
+
 // errCleanupIncomplete is the result of a child that ended cleanly while a recorded descendant couldn't be read.
 var errCleanupIncomplete = errors.New("a descendant could not be checked")
 
 //nolint:gochecknoglobals // Tests replace the call to simulate a concurrent filesystem change.
 var statRoot = (*os.Root).Stat
 
+// cleanRollouts removes Codex rollout files older than two days from codex/sessions. The alias root confines every
+// lookup, so a component swapped for a link can't point outside the account directory. A swap between the checks and
+// the open of codex/sessions is caught by the same-file comparison below. A swap of codex alone, before the check of
+// codex/sessions, leaves the cleanup inside the alias on a directory that passed every check, which is the bound.
 func cleanRollouts(alias *os.Root, now time.Time) error {
 	var sessions fs.FileInfo
 

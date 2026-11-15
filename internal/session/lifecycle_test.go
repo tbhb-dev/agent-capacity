@@ -907,7 +907,7 @@ func TestRunRefusals(t *testing.T) {
 		"linked lock": {func(f *fixture) error {
 			return os.Symlink(f.base, filepath.Join(f.options.directory(), ".runner.lock"))
 		}, noStatus},
-		"missing allow list": {func(f *fixture) error { return os.Remove(f.options.AliasFile) }, "approval_unavailable"},
+		"missing allow list": {func(f *fixture) error { return os.Remove(f.options.AliasFile) }, reasonApproval},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -936,7 +936,7 @@ func TestRunWithoutClockStopsOnCancel(t *testing.T) {
 		t.Fatal(got)
 	}
 
-	if fixtureValue.status(t).Reason != "interrupted" {
+	if fixtureValue.status(t).Reason != reasonInterrupted {
 		t.Fatal(fixtureValue.status(t))
 	}
 }
@@ -1351,6 +1351,21 @@ func TestRemoveOldRolloutAgeRule(t *testing.T) {
 	must(t, err)
 }
 
+func TestFinishWithoutAFailureKeepsTheRestartBudget(t *testing.T) {
+	t.Parallel()
+
+	for _, reason := range []string{reasonInterrupted, reasonApproval, "invalid_state"} {
+		fixtureValue := setup(t, vendorClaude)
+		state := stateFor(t, fixtureValue)
+
+		fixtureValue.wantStopped(t, state.finish(1, reason), true, 1, reason)
+
+		if len(state.status.Restarts) != 0 {
+			t.Fatal(reason, "spent a restart", state.status.Restarts)
+		}
+	}
+}
+
 func TestFinishAtRestartLimit(t *testing.T) {
 	t.Parallel()
 
@@ -1394,7 +1409,7 @@ func wantRefusedLaunch(t *testing.T, fixtureValue fixture) {
 	state.check = finished(nil)
 
 	code, done := state.pollStatusCheck()
-	fixtureValue.wantStopped(t, code, done, 1, "start_failed")
+	fixtureValue.wantStopped(t, code, done, 1, "settings_refused")
 
 	if state.child != nil || len(fixtureValue.calls(t)) != 0 {
 		t.Fatal("child started with unsafe settings")
@@ -1569,6 +1584,49 @@ func TestLaunchAcceptsRenderedSettingsWithExtraDeny(t *testing.T) {
 	}
 }
 
+// replaceWorkWithLink swaps the work directory for a link to another directory, as a change after the run began.
+func replaceWorkWithLink(t *testing.T, fixtureValue fixture) {
+	t.Helper()
+
+	work := filepath.Join(fixtureValue.options.directory(), directoryWork)
+	must(t, os.RemoveAll(work))
+	must(t, os.Symlink(t.TempDir(), work))
+}
+
+func TestLaunchRefusesAWorkDirectoryReplacedByALink(t *testing.T) {
+	t.Parallel()
+
+	for _, vendor := range []string{vendorClaude, vendorCodex} {
+		fixtureValue := setup(t, vendor)
+		state := stateFor(t, fixtureValue)
+
+		replaceWorkWithLink(t, fixtureValue)
+
+		err := state.launch()
+		if !errors.Is(err, ErrArguments) || state.child != nil || len(fixtureValue.calls(t)) != 0 {
+			t.Fatal(vendor, "launched after the work directory became a link", err)
+		}
+	}
+}
+
+func TestStatusCheckRefusesAWorkDirectoryReplacedByALink(t *testing.T) {
+	t.Parallel()
+
+	for _, vendor := range []string{vendorClaude, vendorCodex} {
+		fixtureValue := setup(t, vendor)
+		state := stateFor(t, fixtureValue)
+
+		replaceWorkWithLink(t, fixtureValue)
+
+		code, done := state.statusCheck()
+		fixtureValue.wantStopped(t, code, done, 1, "status_failed")
+
+		if state.check != nil || len(fixtureValue.calls(t)) != 0 {
+			t.Fatal(vendor, "status check started after the work directory became a link")
+		}
+	}
+}
+
 func TestCodexLaunchSkipsClaudeSettings(t *testing.T) {
 	t.Parallel()
 
@@ -1673,8 +1731,7 @@ func TestEarlyFailuresKeepRestartHistory(t *testing.T) {
 	checkRunnerExit(t, fixtureValue, 1)
 
 	got := fixtureValue.status(t)
-	if got.Reason != "approval_unavailable" || len(got.Restarts) != len(previous.Restarts)+1 ||
-		!slices.Equal(got.Restarts[:len(previous.Restarts)], previous.Restarts) {
+	if got.Reason != reasonApproval || !slices.Equal(got.Restarts, previous.Restarts) {
 		t.Fatal(got)
 	}
 }
@@ -2105,6 +2162,35 @@ func TestLoginEndsWhenGrandchildHoldsOutput(t *testing.T) {
 	}
 
 	fixtureValue.until(t, func() bool { return processGone(grandchildPID(t, grandchildFile)) })
+}
+
+// A login child that exits cleanly while a descendant keeps the output open still finished the login.
+func TestLoginSucceedsWhenGrandchildHoldsOutputAfterCleanExit(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+
+	var control fakeControl
+
+	control.Grandchild = true
+	fixtureValue.control(t, control)
+
+	grandchildFile := filepath.Join(fixtureValue.options.directory(), "grandchild")
+
+	killGrandchildAfter(t, grandchildFile)
+
+	master, slave, err := pty.Open()
+	must(t, err)
+
+	defer master.Close()
+	defer slave.Close()
+
+	var out, diagnostic bytes.Buffer
+
+	got := Login(context.Background(), fixtureValue.options, slave, &out, &diagnostic)
+	if got != 0 || !strings.Contains(out.String(), "login finished") {
+		t.Fatal(got, out.String(), diagnostic.String())
+	}
 }
 
 func TestExitedLeaderEndsGroupAtOnce(t *testing.T) {
@@ -2817,7 +2903,7 @@ func TestMissingApprovalFileEndsStepWithOne(t *testing.T) {
 	must(t, os.Remove(fixtureValue.options.AliasFile))
 
 	code, done := state.step(context.Background())
-	fixtureValue.wantStopped(t, code, done, 1, "approval_unavailable")
+	fixtureValue.wantStopped(t, code, done, 1, reasonApproval)
 }
 
 func TestCancelledStepDoesNoWork(t *testing.T) {
@@ -2829,7 +2915,7 @@ func TestCancelledStepDoesNoWork(t *testing.T) {
 	cancel()
 
 	code, done := state.step(ctx)
-	fixtureValue.wantStopped(t, code, done, 1, "interrupted")
+	fixtureValue.wantStopped(t, code, done, 1, reasonInterrupted)
 
 	if state.check != nil {
 		t.Fatal("status check started")
@@ -2848,7 +2934,7 @@ func TestCancelWhileWaitingEndsInterrupted(t *testing.T) {
 	code := (Runner{Options: fixtureValue.options, Clock: clock}).Run(ctx)
 	status := fixtureValue.status(t)
 
-	if code != 1 || status.Phase != phaseStopped || status.Reason != "interrupted" || len(status.Restarts) != 1 {
+	if code != 1 || status.Phase != phaseStopped || status.Reason != reasonInterrupted || len(status.Restarts) != 0 {
 		t.Fatal(code, status)
 	}
 }
@@ -4012,6 +4098,19 @@ func withListing(t *testing.T, program string) {
 	psPath = program
 
 	t.Cleanup(func() { psPath = previous })
+}
+
+//nolint:paralleltest // The listing program is a package variable.
+func TestLaunchRefusesWithoutTheListingProgram(t *testing.T) {
+	fixtureValue := setup(t, vendorCodex)
+	state := stateFor(t, fixtureValue)
+
+	withListing(t, "/nonexistent/ps")
+
+	err := state.launch()
+	if !errors.Is(err, ErrArguments) || state.child != nil || len(fixtureValue.calls(t)) != 0 {
+		t.Fatal("launched without the listing program", err)
+	}
 }
 
 //nolint:paralleltest // The listing program is a package variable.
@@ -5245,7 +5344,7 @@ func TestFinishStopsTheChildBeforeItPublishesStopped(t *testing.T) {
 
 	state.child = child
 
-	if code := state.finish(1, "interrupted"); code != 1 || state.child != nil {
+	if code := state.finish(1, reasonInterrupted); code != 1 || state.child != nil {
 		t.Fatal(code, state.child)
 	}
 }

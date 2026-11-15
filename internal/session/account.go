@@ -35,6 +35,8 @@ const (
 	phaseStopped      = "stopped"
 	phaseIdle         = "idle"
 	reasonNone        = "none"
+	reasonInterrupted = "interrupted"
+	reasonApproval    = "approval_unavailable"
 	refusalExit       = 2
 	privateMode       = 0o600
 )
@@ -91,6 +93,8 @@ func (options Options) Approved() (bool, error) {
 }
 
 // readAllowList reads a regular file without following links or blocking on a pipe.
+// The directory path itself is opened as given, so a symlinked directory is followed; only the file inside is
+// confined to it. The operator creates the allow list directory, and the check accepts it as given.
 func readAllowList(path string) ([]byte, error) {
 	dir, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {
@@ -280,11 +284,16 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 	go func() {
 		err := cmd.Wait()
 
+		// The wait delay ends the copy of output a descendant still holds open, and reports it as an error even
+		// though the child itself exited cleanly.
+		if errors.Is(err, exec.ErrWaitDelay) {
+			err = nil
+		}
+
 		// From the reap on, a listing by the child's ID is dropped, because the ID may belong to another process.
-		tracker.mutex.Lock()
+		// The flag is set before any lock is taken, so a cancel that waits on a listing still sees the reap.
 		// gomutants:disable-next-line STATEMENT_REMOVE reason="Only a reused process ID sees the flag."
 		tracker.reaped.Store(true)
-		tracker.mutex.Unlock()
 
 		close(tracker.ended)
 		<-tracker.swept
