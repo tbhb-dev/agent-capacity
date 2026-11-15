@@ -1569,6 +1569,49 @@ func TestLaunchAcceptsRenderedSettingsWithExtraDeny(t *testing.T) {
 	}
 }
 
+// replaceWorkWithLink swaps the work directory for a link to another directory, as a change after the run began.
+func replaceWorkWithLink(t *testing.T, fixtureValue fixture) {
+	t.Helper()
+
+	work := filepath.Join(fixtureValue.options.directory(), directoryWork)
+	must(t, os.RemoveAll(work))
+	must(t, os.Symlink(t.TempDir(), work))
+}
+
+func TestLaunchRefusesAWorkDirectoryReplacedByALink(t *testing.T) {
+	t.Parallel()
+
+	for _, vendor := range []string{vendorClaude, vendorCodex} {
+		fixtureValue := setup(t, vendor)
+		state := stateFor(t, fixtureValue)
+
+		replaceWorkWithLink(t, fixtureValue)
+
+		err := state.launch()
+		if !errors.Is(err, ErrArguments) || state.child != nil || len(fixtureValue.calls(t)) != 0 {
+			t.Fatal(vendor, "launched after the work directory became a link", err)
+		}
+	}
+}
+
+func TestStatusCheckRefusesAWorkDirectoryReplacedByALink(t *testing.T) {
+	t.Parallel()
+
+	for _, vendor := range []string{vendorClaude, vendorCodex} {
+		fixtureValue := setup(t, vendor)
+		state := stateFor(t, fixtureValue)
+
+		replaceWorkWithLink(t, fixtureValue)
+
+		code, done := state.statusCheck()
+		fixtureValue.wantStopped(t, code, done, 1, "status_failed")
+
+		if state.check != nil || len(fixtureValue.calls(t)) != 0 {
+			t.Fatal(vendor, "status check started after the work directory became a link")
+		}
+	}
+}
+
 func TestCodexLaunchSkipsClaudeSettings(t *testing.T) {
 	t.Parallel()
 
@@ -2107,7 +2150,7 @@ func TestLoginEndsWhenGrandchildHoldsOutput(t *testing.T) {
 	fixtureValue.until(t, func() bool { return processGone(grandchildPID(t, grandchildFile)) })
 }
 
-// A login child that exits cleanly while a descendant holds the output open still finished the login.
+// A login child that exits cleanly while a descendant keeps the output open still finished the login.
 func TestLoginSucceedsWhenGrandchildHoldsOutputAfterCleanExit(t *testing.T) {
 	t.Parallel()
 

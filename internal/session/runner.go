@@ -310,6 +310,11 @@ func (s *running) statusCheck() (int, bool) {
 		return 0, false
 	}
 
+	// The directories were checked at the start of the run, and a link could have replaced one since.
+	if checkDirectories(s.alias, s.options.Vendor) != nil {
+		return s.finish(1, "status_failed"), true
+	}
+
 	args := []string{"auth", "status"}
 	if s.options.Vendor == vendorCodex {
 		args = []string{commandLogin, "status"}
@@ -447,6 +452,11 @@ func codexExecArgs(prompt string) []string {
 }
 
 func (s *running) launch() error {
+	// Directories are checked before every start, because a link may have replaced one since the last start.
+	if checkDirectories(s.alias, s.options.Vendor) != nil {
+		return ErrArguments
+	}
+
 	command := statusCommand(s.options.Exporter, s.options.Account, s.options.SpoolDir)
 	if s.options.Vendor == vendorClaude && checkSettings(s.alias, command) != nil {
 		return errSettingsRefused
