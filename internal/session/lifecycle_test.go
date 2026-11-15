@@ -3867,6 +3867,55 @@ func testNaturalExit(t *testing.T, terminal bool, linger int) {
 	})
 }
 
+// withListing points the process listing at a program for the rest of the test.
+func withListing(t *testing.T, program string) {
+	t.Helper()
+
+	previous := psPath
+	psPath = program
+
+	t.Cleanup(func() { psPath = previous })
+}
+
+//nolint:paralleltest // The listing program is a package variable.
+func TestFailedListingKeepsMembers(t *testing.T) {
+	for _, program := range []string{"/usr/bin/false", "/usr/bin/true"} {
+		withListing(t, program)
+
+		cmd := exec.CommandContext(context.Background(), "/bin/sleep", "30")
+		must(t, cmd.Start())
+
+		child := terminalProcess(cmd, nil)
+		kept := []member{{pid: 2000000000, started: "recorded"}}
+		child.members = slices.Clone(kept)
+
+		child.refresh()
+
+		if !slices.Equal(child.members, kept) {
+			t.Fatal(program, child.members)
+		}
+
+		//nolint:errcheck // The process may have ended.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait() //nolint:errcheck // Only the end of the process matters.
+	}
+}
+
+//nolint:paralleltest // The listing program is a package variable.
+func TestReliableSnapshotRetriesAFailedListing(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "failed-once")
+	script := filepath.Join(t.TempDir(), "ps.sh")
+	body := "#!/bin/sh\nif [ -e " + marker + " ]; then exec /bin/ps \"$@\"; fi\n: > " + marker + "\nexit 1\n"
+
+	must(t, os.WriteFile(script, []byte(body), 0o700)) //nolint:gosec // The script must run.
+	withListing(t, script)
+
+	snap, ok := reliableSnapshot()
+	if !ok || snap.lookup(os.Getpid()) == "" {
+		t.Fatal("the retry did not list this process", ok)
+	}
+}
+
 func TestSweepDelayIsShortOnlyEarly(t *testing.T) {
 	t.Parallel()
 
@@ -3897,7 +3946,7 @@ func TestRefreshDropsMembersThatEnded(t *testing.T) {
 	}()
 
 	child := terminalProcess(cmd, nil)
-	alive := member{pid: cmd.Process.Pid, started: takeSnapshot().lookup(cmd.Process.Pid)}
+	alive := member{pid: cmd.Process.Pid, started: lookupNow()(cmd.Process.Pid)}
 	child.members = []member{alive, {pid: 2000000000, started: "gone"}, {pid: cmd.Process.Pid, started: "reused"}}
 
 	child.refresh()
@@ -3966,7 +4015,7 @@ func TestDescendantsListTheStartTimeThatPsReports(t *testing.T) {
 		_ = grandchild.Wait() //nolint:errcheck // Only the end of the process matters.
 	}()
 
-	want := takeSnapshot().lookup(grandchild.Process.Pid)
+	want := lookupNow()(grandchild.Process.Pid)
 	if want == "" {
 		t.Fatal("no start time for a live process")
 	}

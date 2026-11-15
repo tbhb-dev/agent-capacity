@@ -222,12 +222,21 @@ type snapshot struct {
 	started  map[int]string
 }
 
-// takeSnapshot lists every process with one ps run. A failed or late listing yields an empty snapshot.
-func takeSnapshot() snapshot {
+// The listing program is a variable so that tests can point it at stand-ins that fail.
+//
+//nolint:gochecknoglobals // A package-level hook is the only way to fail the listing from a test.
+var psPath = "/bin/ps"
+
+// A cleanup tries this many listings before it gives up.
+const listAttempts = 3
+
+// takeSnapshot lists every process with one ps run. The second result is false when ps failed, was stopped by the
+// timer, or gave an empty list, because the snapshot is then missing or partial and proves nothing about a process.
+func takeSnapshot() (snapshot, bool) {
 	var out strings.Builder
 
 	//nolint:noctx // A timer stops a stuck listing, which keeps the callers free of a context parameter.
-	cmd := exec.Command("/bin/ps", "-A", "-o", "pid=,ppid=,lstart=")
+	cmd := exec.Command(psPath, "-A", "-o", "pid=,ppid=,lstart=")
 	cmd.Stdout = &out
 
 	// A failed start makes Wait return at once, before the timer can fire. The timer never meets a missing process.
@@ -239,12 +248,29 @@ func takeSnapshot() snapshot {
 		_ = cmd.Process.Kill()
 	})
 
-	//nolint:errcheck // A failed or stopped listing leaves partial output, which parses line by line.
-	_ = cmd.Wait()
+	err := cmd.Wait()
 
 	stuck.Stop()
 
-	return parseProcesses(out.String())
+	snap := parseProcesses(out.String())
+
+	return snap, err == nil && len(snap.started) > 0
+}
+
+// reliableSnapshot retries a failed listing, up to three runs. The last snapshot comes back with its result.
+func reliableSnapshot() (snapshot, bool) {
+	var (
+		snap   snapshot
+		listed bool
+	)
+
+	for range listAttempts {
+		if snap, listed = takeSnapshot(); listed {
+			break
+		}
+	}
+
+	return snap, listed
 }
 
 // parseProcesses reads a listing and skips any line that doesn't parse.
@@ -294,7 +320,16 @@ func (s snapshot) lookup(pid int) string {
 
 // descendants lists the processes below a process ID with their start times.
 func descendants(pid int) []member {
-	return takeSnapshot().below(pid)
+	snap, _ := reliableSnapshot()
+
+	return snap.below(pid)
+}
+
+// lookupNow returns a lookup that reads one fresh listing. A failed listing finds nothing, so nothing is signaled.
+func lookupNow() func(int) string {
+	snap, _ := reliableSnapshot()
+
+	return snap.lookup
 }
 
 // killAll stops each listed process that still shows its recorded start time. A process that has
@@ -312,10 +347,14 @@ func killAll(listed []member, lookup func(int) string) {
 }
 
 // refresh adds the current descendants to the list and drops each member that the listing no longer shows with
-// its recorded start time. It lists nothing once the child has been reaped, because the process ID may then
-// belong to another process.
+// its recorded start time. After a failed listing the list stays as recorded, and a listing of a reaped child
+// is dropped, because its process ID may then belong to another process.
 func (p *process) refresh() {
-	snap := takeSnapshot()
+	snap, ok := takeSnapshot()
+	if !ok {
+		return
+	}
+
 	found := snap.below(p.cmd.Process.Pid)
 
 	p.mutex.Lock()
@@ -335,13 +374,13 @@ func (p *process) refresh() {
 	}
 }
 
-// sweep stops every listed descendant that still shows its recorded start time, from one listing.
+// sweep stops every listed descendant that still shows its recorded start time. It takes one listing, with retries.
 func (p *process) sweep() {
 	p.mutex.Lock()
 	listed := slices.Clone(p.members)
 	p.mutex.Unlock()
 
-	killAll(listed, takeSnapshot().lookup)
+	killAll(listed, lookupNow())
 }
 
 func (p *process) terminate() {
