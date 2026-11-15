@@ -14,6 +14,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nightly, off-peak: the hosted macOS leg runs here and on main pushes.
+    - cron: "17 6 * * *"
 
 permissions:
   contents: read
@@ -24,8 +27,10 @@ concurrency:
 
 jobs:
   # Bazel 9.x only, the version .bazelversion pins, on Linux (x86_64 and
-  # arm64) and macOS (arm64). The checks that need the
-  # network or GitHub's API run on Linux only; they do not depend on the OS.
+  # arm64) and macOS (arm64). The hosted macOS leg runs on main pushes and
+  # nightly, not on pull requests, so a queued macOS runner cannot hold
+  # `conclusion`. The checks that need the network or GitHub's API run on
+  # Linux only; they do not depend on the OS.
   bazel:
     name: "bazel (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
@@ -34,14 +39,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-26.04, ubuntu-26.04-arm, macos-26]
-        include:
-          - os: ubuntu-26.04
-            release: release
-          - os: ubuntu-26.04-arm
-            release: release
-          - os: macos-26
-            release: release
+        os: ${{ fromJSON(github.event_name == 'pull_request'
+          && '["ubuntu-26.04","ubuntu-26.04-arm"]'
+          || '["ubuntu-26.04","ubuntu-26.04-arm","macos-26"]') }}
     defaults:
       run:
         shell: bash
@@ -73,7 +73,7 @@ jobs:
 
       - name: Build the release binary
         env:
-          RELEASE_CONFIG: ${{ matrix.release }}
+          RELEASE_CONFIG: release
         run: bazelisk build "--config=${RELEASE_CONFIG}" //cmd/agent-capacity
 
       # A failed run's test logs, so a failure that does not recur can still
