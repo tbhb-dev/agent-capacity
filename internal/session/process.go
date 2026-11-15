@@ -4,7 +4,9 @@
 package session
 
 import (
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"slices"
@@ -146,20 +148,22 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 	return child, nil
 }
 
-// signalGroup signals the process group of the leader. The waiter sends one last SIGKILL right after cmd.Wait
-// reaps the leader, which stops children a dead leader left behind. That signal runs in a window of
-// microseconds in which the kernel could already have reused the process ID, and macOS offers Go no
-// wait-without-reap call to close it. The waiter then sets the flag, before any cleanup, and every later
-// call returns without signaling, because by then the process ID may belong to an unrelated group. The flag
-// check and the signal are two steps, so a leader that exits between them leaves the same window of
-// microseconds.
+// signalGroup signals the process group of the leader and then the leader itself. The waiter sends one last
+// SIGKILL right after cmd.Wait reaps the leader, which stops children a dead leader left behind. That signal runs
+// in a window of microseconds in which the kernel could already have reused the process ID, and macOS offers Go
+// no wait-without-reap call to close it. The waiter then sets the flag, before any cleanup, and every later call
+// returns without signaling, because by then the process ID may belong to an unrelated group. The flag check and
+// the signal are two steps, so a leader that exits between them leaves the same window of microseconds.
 func (p *process) signalGroup(signal syscall.Signal) {
 	if p.reaped.Load() {
 		return
 	}
 
+	// A leader that moved to another group leaves its first group empty. The leader gets the signal itself too.
 	//nolint:errcheck // The process group may already have exited.
 	_ = sendSignal(-p.cmd.Process.Pid, signal)
+	//nolint:errcheck // The leader may already have exited.
+	_ = sendSignal(p.cmd.Process.Pid, signal)
 }
 
 func (p *process) closeTerminal() {
@@ -320,13 +324,15 @@ func (s snapshot) below(pid int) []edge {
 }
 
 // record pairs each process ID with its start time. The start time and the parent come from one read of the
-// process. The result leaves out an ended process, and one whose parent differs from the listing, since an ID
-// reused after the listing belongs to another process with another parent.
-func record(edges []edge, read func(int) (string, int)) []member {
+// process. The result leaves out an ended process, a process that can't be read now, and one whose parent differs
+// from the listing, since an ID reused after the listing belongs to another process with another parent. A
+// process left out here appears again in a later listing.
+func record(edges []edge, read func(int) (string, int, error)) []member {
 	var found []member
 
 	for _, entry := range edges {
-		if started, parent := read(entry.pid); started != "" && parent == entry.parent {
+		started, parent, err := read(entry.pid)
+		if err == nil && started != "" && parent == entry.parent {
 			found = append(found, member{pid: entry.pid, started: started})
 		}
 	}
@@ -346,9 +352,20 @@ func descendants(pid int) []member {
 
 // startKey returns the start time of a process, or an empty string when it has ended.
 func startKey(pid int) string {
-	started, _ := stamp(pid)
+	//nolint:errcheck // A process that can't be read has no start time to compare.
+	started, _, _ := stamp(pid)
 
 	return started
+}
+
+// unlessGone turns the error of a read of an ended process into nil. Any other error, such as too many open
+// files, leaves the process unknown.
+func unlessGone(err error) error {
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+
+	return err
 }
 
 // killAll stops each listed process that still shows its recorded start time. A process that has
@@ -379,7 +396,7 @@ func (p *process) refresh() {
 // leader and of every remaining member. A member whose parent ended has a new parent, so its own children are
 // found through the member. A listing of a reaped child is dropped, because its process ID may belong to another
 // process.
-func (p *process) absorb(snap snapshot, read func(int) (string, int)) {
+func (p *process) absorb(snap snapshot, read func(int) (string, int, error)) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
@@ -390,9 +407,12 @@ func (p *process) absorb(snap snapshot, read func(int) (string, int)) {
 
 	tracked := map[int]bool{}
 
-	// The listing is older than this check, so an ID dropped here stays out until the next listing.
+	// The listing is older than this check, so an ID dropped here stays out until the next listing. A member that
+	// can't be read now stays, because a failed read says nothing about the process.
 	p.members = slices.DeleteFunc(p.members, func(entry member) bool {
-		gone := startKey(entry.pid) != entry.started
+		started, _, err := read(entry.pid)
+		gone := err == nil && started != entry.started
+
 		if gone {
 			tracked[entry.pid] = true
 		}

@@ -3917,9 +3917,12 @@ func TestReliableSnapshotRetriesAFailedListing(t *testing.T) {
 }
 
 // reading returns a reader that gives the real start time with the parent that the test assigns.
-func reading(parents map[int]int) func(int) (string, int) {
-	return func(pid int) (string, int) { return startKey(pid), parents[pid] }
+func reading(parents map[int]int) func(int) (string, int, error) {
+	return func(pid int) (string, int, error) { return startKey(pid), parents[pid], nil }
 }
+
+// unreadable is a reader that fails for every process, as a read does when the process has too many open files.
+func unreadable(int) (string, int, error) { return "", 0, syscall.EMFILE }
 
 func TestRecordSkipsAProcessWhoseParentChangedAfterTheListing(t *testing.T) {
 	t.Parallel()
@@ -3932,6 +3935,39 @@ func TestRecordSkipsAProcessWhoseParentChangedAfterTheListing(t *testing.T) {
 
 	if !slices.Equal(got, []member{{pid: kept.Process.Pid, started: startKey(kept.Process.Pid)}}) {
 		t.Fatal(got)
+	}
+}
+
+func TestUnlessGoneKeepsOnlyErrorsThatLeaveTheProcessUnknown(t *testing.T) {
+	t.Parallel()
+
+	for err, gone := range map[error]bool{
+		fs.ErrNotExist: true, syscall.ESRCH: true, syscall.ENOENT: true, syscall.EMFILE: false,
+	} {
+		if (unlessGone(err) == nil) != gone {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestAbsorbKeepsAMemberItCannotRead(t *testing.T) {
+	t.Parallel()
+
+	leader, member1 := sleeper(t), sleeper(t)
+	snap := snapshot{children: map[int][]int{leader.Process.Pid: {member1.Process.Pid}}}
+	kept := member{pid: member1.Process.Pid, started: startKey(member1.Process.Pid)}
+
+	child := terminalProcess(leader, nil)
+	child.members = []member{kept}
+
+	child.absorb(snap, unreadable)
+
+	if !slices.Equal(child.members, []member{kept}) {
+		t.Fatal("a failed read dropped a live member", child.members)
+	}
+
+	if got := record(snap.below(leader.Process.Pid), unreadable); len(got) != 0 {
+		t.Fatal("an unreadable process was recorded", got)
 	}
 }
 
@@ -3948,6 +3984,43 @@ func TestAbsorbKeepsADroppedMemberOutOfAStaleListing(t *testing.T) {
 
 	if len(child.members) != 0 {
 		t.Fatal("a dropped ID was added again from the older listing", child.members)
+	}
+}
+
+func TestTerminateEndsWhenTheLeaderMovedToAnotherGroup(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+
+	var control fakeControl
+
+	control.Hold = true
+	fixtureValue.control(t, control)
+
+	var warning atomic.Bool
+
+	command := fixtureValue.options.command(commandExec)
+
+	command.Env = append(os.Environ(), "FAKE_MOVED_FILE=moved")
+
+	child, err := start(command, false, &warning)
+	must(t, err)
+
+	defer child.signalGroup(syscall.SIGKILL)
+
+	fixtureValue.untilFile(t, filepath.Join(fixtureValue.options.directory(), directoryWork, "moved"))
+
+	returned := make(chan struct{})
+
+	go func() {
+		child.terminate()
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("terminate did not return for a leader that left its group")
 	}
 }
 

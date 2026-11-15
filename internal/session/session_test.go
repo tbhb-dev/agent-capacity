@@ -97,7 +97,7 @@ func fakeVendor() int {
 		}
 	}
 
-	if control.Grandchild && startGrandchild(control.NewSession) != nil {
+	if fakeProcesses(control) != nil {
 		return 9
 	}
 
@@ -127,6 +127,36 @@ func fakeVendor() int {
 	fakeHold((len(os.Args) > 1 && os.Args[1] == "--model" && !control.EndClaude) || control.Hold)
 
 	return control.ExecExit
+}
+
+// fakeProcesses starts the grandchild when the control file sets one. A marker file in the environment makes the
+// process join its parent's group and write the marker.
+func fakeProcesses(control fakeControl) error {
+	if control.Grandchild && startGrandchild(control.NewSession) != nil {
+		return ErrArguments
+	}
+
+	if marker := os.Getenv("FAKE_MOVED_FILE"); marker != "" {
+		return moveToParentGroup(marker)
+	}
+
+	return nil
+}
+
+// moveToParentGroup puts the process in its parent's group, which leaves its first group empty.
+func moveToParentGroup(marker string) error {
+	group, err := syscall.Getpgid(os.Getppid())
+	if err != nil {
+		return ErrArguments
+	}
+
+	err = syscall.Setpgid(0, group)
+	if err != nil {
+		return ErrArguments
+	}
+
+	//nolint:wrapcheck,gosec // Only the failure matters, and the test picks the path.
+	return os.WriteFile(marker, []byte("moved"), privateMode)
 }
 
 func startGrandchild(newSession bool) error {
