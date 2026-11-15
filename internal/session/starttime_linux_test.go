@@ -4,6 +4,7 @@
 package session //nolint:testpackage // Tests read the private start time of a process.
 
 import (
+	"errors"
 	"os"
 	"testing"
 )
@@ -16,12 +17,14 @@ func TestStartKeyIsStableForALiveProcessAndEmptyForAMissingOne(t *testing.T) {
 		t.Fatal("unstable or empty start time", first)
 	}
 
-	if _, parent := stamp(os.Getpid()); parent != os.Getppid() {
-		t.Fatal("wrong parent", parent)
+	_, parent, err := stamp(os.Getpid())
+	if err != nil || parent != os.Getppid() {
+		t.Fatal("wrong parent", parent, err)
 	}
 
-	if startKey(2000000000) != "" {
-		t.Fatal("a missing process has a start time")
+	started, _, err := stamp(2000000000)
+	if started != "" || err != nil {
+		t.Fatal("a missing process has a start time or an error", started, err)
 	}
 }
 
@@ -29,15 +32,18 @@ func TestParseStatCountsFromTheLastParenthesis(t *testing.T) {
 	t.Parallel()
 
 	stat := "12 (a b) c) S 7 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22"
-	if started, parent := parseStat(stat); started != "19" || parent != 7 {
-		t.Fatal(started, parent)
+	started, parent, err := parseStat(stat)
+
+	if started != "19" || parent != 7 || err != nil {
+		t.Fatal(started, parent, err)
 	}
 
 	badParent := "12 (x) S p 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22"
 
-	for _, short := range []string{"12 (short) S 1 2", badParent} {
-		if started, parent := parseStat(short); started != "" || parent != 0 {
-			t.Fatal("a bad stat file gave a start time", short)
+	for _, bad := range []string{"12 (short) S 1 2", badParent} {
+		_, _, badErr := parseStat(bad)
+		if !errors.Is(badErr, errBadStat) {
+			t.Fatal("a bad stat file was accepted", bad)
 		}
 	}
 }
