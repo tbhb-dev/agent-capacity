@@ -532,6 +532,9 @@ func exitCode(err error) int {
 
 var errExecTimeout = errors.New("execution timed out")
 
+// errCleanupIncomplete is the result of a child that ended cleanly while a recorded descendant stayed unreadable.
+var errCleanupIncomplete = errors.New("a descendant could not be checked")
+
 //nolint:gochecknoglobals // Tests replace the call to simulate a concurrent filesystem change.
 var statRoot = (*os.Root).Stat
 

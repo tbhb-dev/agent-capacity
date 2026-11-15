@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2121,7 +2122,7 @@ func TestExitedLeaderEndsGroupAtOnce(t *testing.T) {
 
 	select {
 	case <-child.done: //nolint:errcheck // Only the timing of the result matters.
-	case <-time.After(terminationGrace / 2):
+	case <-time.After(reapDeadline):
 		t.Fatal("the reap waited on a pipe that the grandchild holds open")
 	}
 
@@ -3177,6 +3178,137 @@ func TestStartPipeChildChannels(t *testing.T) {
 	}
 
 	must(t, <-child.done)
+}
+
+// reapDeadline is far above the exit delay of the fake vendor under the race detector and far below the 30 s that
+// the grandchild sleeps, so only a reap that waits on the grandchild misses it.
+const reapDeadline = 15 * time.Second
+
+func TestReapIsRecordedWhileAListingHoldsTheLock(t *testing.T) {
+	t.Parallel()
+
+	var warning atomic.Bool
+
+	child, err := start(exec.CommandContext(context.Background(), "/bin/sleep", "30"), false, &warning)
+	must(t, err)
+
+	leader := child.cmd
+
+	// A listing holds the lock, as absorb does, while the leader ends.
+	child.mutex.Lock()
+
+	//nolint:errcheck // The leader ends from this signal.
+	_ = syscall.Kill(leader.Process.Pid, syscall.SIGKILL)
+
+	for deadline := time.Now().Add(5 * time.Second); !child.reaped.Load(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			child.mutex.Unlock()
+			t.Fatal("the reap waited for the lock before it was recorded")
+		}
+	}
+
+	pid := leader.Process.Pid
+	before := signalTargets.Count(-pid) + signalTargets.Count(pid)
+
+	child.signalGroup(syscall.SIGKILL)
+
+	if after := signalTargets.Count(-pid) + signalTargets.Count(pid); after != before {
+		t.Fatal("signals sent to a reaped leader's ID:", after-before)
+	}
+
+	child.mutex.Unlock()
+
+	<-child.done //nolint:errcheck // Only the end of the cleanup matters.
+}
+
+func TestCleanupReportsAMemberItCouldNotRead(t *testing.T) {
+	t.Parallel()
+
+	leader, orphan := sleeper(t), sleeper(t)
+	kept := member{pid: orphan.Process.Pid, started: startKey(orphan.Process.Pid)}
+
+	child := terminalProcess(leader, nil)
+	child.members = []member{kept}
+
+	unreadable, _ := failingFirst(math.MaxInt32)
+
+	if err := child.cleanedResult(nil, unreadable); !errors.Is(err, errCleanupIncomplete) {
+		t.Fatal("a clean result hid a member that stayed unreadable:", err)
+	}
+
+	if !slices.Equal(child.members, []member{kept}) {
+		t.Fatal("the unreadable member was dropped:", child.members)
+	}
+
+	failed := errors.New("exit status 3")
+	if err := child.cleanedResult(failed, unreadable); !errors.Is(err, failed) {
+		t.Fatal("a failed result was replaced:", err)
+	}
+
+	readable, _ := failingFirst(0)
+	if err := child.cleanedResult(nil, readable); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(child.members) != 0 {
+		t.Fatal("a swept member stayed recorded:", child.members)
+	}
+}
+
+func TestCanceledLoginStopsADescendantStartedDuringTheGrace(t *testing.T) {
+	t.Parallel()
+
+	base := filepath.Join(t.TempDir(), "note")
+
+	// The handler for SIGTERM starts the sleeper after the cancel's listing. The shell then lives on until the
+	// grace ends and the login kills it.
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c",
+		`trap '/bin/sleep 300 >/dev/null 2>&1 & echo $! > "$0.tmp" && /bin/mv "$0.tmp" "$0.pid"' TERM
+echo ready > "$0.ready"
+while :; do /bin/sleep 0.05; done`, base)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result := make(chan error, 1)
+
+	go func() { result <- waitLogin(ctx, cmd) }()
+
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(base + ".ready"); err == nil {
+			break
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("the shell never started")
+		}
+	}
+
+	cancel()
+
+	var descendant int
+
+	for deadline := time.Now().Add(5 * time.Second); descendant == 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the descendant never started")
+		}
+
+		//nolint:errcheck // A missing or partial file is read again.
+		data, _ := os.ReadFile(base + ".pid")
+		//nolint:errcheck // A partial file is read again.
+		descendant, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+	}
+
+	defer func() {
+		//nolint:errcheck // The process may have ended.
+		_ = syscall.Kill(descendant, syscall.SIGKILL)
+	}()
+
+	if err := <-result; !errors.Is(err, ErrArguments) {
+		t.Fatal(err)
+	}
+
+	waitEnded(t, descendant, "a canceled login left a descendant that started during the grace")
 }
 
 func TestTerminateSignalsNothingAfterTheReap(t *testing.T) {
