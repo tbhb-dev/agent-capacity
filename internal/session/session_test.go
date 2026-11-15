@@ -743,9 +743,10 @@ func TestWarningFlagAndNoOutputStored(t *testing.T) {
 			ExecExit:   0,
 		},
 	)
-	cancel, _ := fixtureValue.run(t)
+	cancel, result := fixtureValue.run(t)
 	fixtureValue.until(t, func() bool { return fixtureValue.status(t).LoginExpiring })
 	cancel()
+	<-result
 
 	root, err := os.OpenRoot(fixtureValue.options.directory())
 	must(t, err)

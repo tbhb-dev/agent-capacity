@@ -76,6 +76,8 @@ type process struct {
 	// reaped is set once cmd.Wait has reaped the leader and the waiter has sent its last group signal. From then
 	// on the process ID may belong to an unrelated process, so nothing signals it again.
 	reaped atomic.Bool
+	// listFailed and listed record whether any process listing failed and whether any succeeded.
+	listFailed, listed atomic.Bool
 }
 
 // member is a descendant with the start time recorded at listing. A process ID that later shows another start
@@ -90,6 +92,7 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 		cmd: cmd, done: make(chan error, 1), terminal: nil, drained: make(chan struct{}),
 		ended: make(chan struct{}), swept: make(chan struct{}), cleaned: make(chan struct{}), members: nil,
 		mutex: sync.Mutex{}, reaped: atomic.Bool{},
+		listFailed: atomic.Bool{}, listed: atomic.Bool{},
 	}
 	if terminal {
 		file, err := pty.Start(cmd)
@@ -336,9 +339,12 @@ func unlessGone(err error) error {
 func (p *process) refresh() {
 	snap, ok := takeSnapshot()
 	if !ok {
+		p.listFailed.Store(true)
+
 		return
 	}
 
+	p.listed.Store(true)
 	p.absorb(snap, stamp)
 }
 
@@ -433,9 +439,13 @@ func (p *process) sweep() {
 }
 
 // cleanedResult sweeps the recorded descendants and returns the child's result. A clean result becomes
-// errCleanupIncomplete when a member couldn't be read, because that descendant may still run.
+// errCleanupIncomplete when a member couldn't be read, or when every listing failed, because a descendant may
+// still run.
 func (p *process) cleanedResult(result error, read func(int) (string, int, error)) error {
-	if left := p.sweepWith(read); len(left) > 0 && result == nil {
+	left := p.sweepWith(read)
+	blind := p.listFailed.Load() && !p.listed.Load()
+
+	if (len(left) > 0 || blind) && result == nil {
 		return errCleanupIncomplete
 	}
 

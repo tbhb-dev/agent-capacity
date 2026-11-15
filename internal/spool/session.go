@@ -230,16 +230,31 @@ func ReadBounded(root *os.Root, name string, limit int64) ([]byte, error) {
 	return data, err
 }
 
-// readRegular returns fs.ErrNotExist for a missing file and errSessionState for every other failure.
+// readAttempts bounds the reads of a name that another process keeps replacing.
+const readAttempts = 3
+
+// readRegular returns fs.ErrNotExist for a missing file and errSessionState for every other failure. A rename over
+// the name between the stat and the open gets a fresh read, up to three reads.
 func readRegular(dir *os.Root, name string, limit int64) ([]byte, fs.FileInfo, error) {
+	for attempt := 1; ; attempt++ {
+		data, info, replaced, err := readOnce(dir, name, limit)
+		// gomutants:disable-next-line CONDITIONALS_BOUNDARY reason="One read more or fewer is moot."
+		if !replaced || attempt == readAttempts {
+			return data, info, err
+		}
+	}
+}
+
+// readOnce reads the file once and reports whether another file took the name after the stat.
+func readOnce(dir *os.Root, name string, limit int64) ([]byte, fs.FileInfo, bool, error) {
 	info, err := lstat(dir, name)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 
 	// gomutants:disable-next-line BRANCH_IF reason="A nil stat result also fails SameFile."
 	if err != nil {
-		return nil, nil, errSessionState
+		return nil, nil, false, errSessionState
 	}
 
 	// gomutants:disable-next-line INVERT_BITWISE reason="Root.OpenFile follows links inside the root either way."
@@ -248,15 +263,19 @@ func readRegular(dir *os.Root, name string, limit int64) ([]byte, fs.FileInfo, e
 	file, err := dir.OpenFile(name, flags|syscall.O_NONBLOCK, 0)
 	// gomutants:disable-next-line BRANCH_IF reason="The nil file also fails the Stat that follows."
 	if err != nil {
-		return nil, nil, errSessionState
+		return nil, nil, false, errSessionState
 	}
 
 	defer file.Close()
 
 	// A failed Stat returns nil, which SameFile never matches.
 	opened, _ := fstat(file) //nolint:errcheck // The nil result carries the error.
-	if !os.SameFile(info, opened) || !opened.Mode().IsRegular() {
-		return nil, nil, errSessionState
+	if !os.SameFile(info, opened) {
+		return nil, nil, true, errSessionState
+	}
+
+	if !opened.Mode().IsRegular() {
+		return nil, nil, false, errSessionState
 	}
 
 	// gomutants:disable-next-line INTEGER_INCREMENT reason="Any length past the limit fails the same check."
@@ -268,10 +287,10 @@ func readRegular(dir *os.Root, name string, limit int64) ([]byte, fs.FileInfo, e
 	}
 
 	if errors.Join(readErr, oversize) != nil {
-		return nil, nil, errSessionState
+		return nil, nil, false, errSessionState
 	}
 
-	return data, opened, nil
+	return data, opened, false, nil
 }
 
 // ReadSession reads only the requested alias's status, for durable restart limits.

@@ -460,6 +460,8 @@ vale_test(
     ],
     config = ".vale.ini",
     packages = VALE_PACKAGES,
+    # Concurrent runs flake on the shared style cache.
+    tags = ["exclusive"],
 )
 
 # `bazel run //:vale_sync` writes the same packages into .vale/, for editors

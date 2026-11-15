@@ -268,7 +268,8 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 	// One listing at the cancel would miss the children of a child that the same terminal signal already ended.
 	tracker := &process{
 		cmd: cmd, done: nil, terminal: nil, drained: nil, ended: make(chan struct{}), swept: make(chan struct{}),
-		cleaned: nil, members: nil, mutex: sync.Mutex{}, reaped: atomic.Bool{},
+		cleaned: nil, members: nil, mutex: sync.Mutex{}, reaped: atomic.Bool{}, listFailed: atomic.Bool{},
+		listed: atomic.Bool{},
 	}
 
 	go tracker.sweepWhileRunning()
@@ -349,6 +350,7 @@ func lockAlias(root *os.Root) (*os.File, error) {
 	}
 
 	if syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 		_ = file.Close()
 
 		return nil, ErrArguments

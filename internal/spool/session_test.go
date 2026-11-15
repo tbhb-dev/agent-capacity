@@ -467,6 +467,27 @@ func TestReadSessionRejectsStatusFileChanges(t *testing.T) {
 	fstat = func(*os.File) (fs.FileInfo, error) { return other, nil }
 	_, err = ReadSession(root, sessionVendor, sessionAlias)
 	require.ErrorIs(t, err, errSessionState)
+
+	// A file replaced during the first lookup gets a second read.
+	fstat = (*os.File).Stat
+	passthrough := lstat
+	calls := 0
+	lstat = func(dir *os.Root, name string) (fs.FileInfo, error) {
+		if name != "codex-sample.json" {
+			return passthrough(dir, name)
+		}
+
+		calls++
+		if calls == 1 {
+			return other, nil
+		}
+
+		return passthrough(dir, name)
+	}
+
+	_, err = ReadSession(root, sessionVendor, sessionAlias)
+	require.NoError(t, err)
+	require.Equal(t, 2, calls)
 }
 
 // canonicalTempDir returns a temporary directory without symbolic link components.

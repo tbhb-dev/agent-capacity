@@ -208,6 +208,8 @@ func (s *running) publish(phase, reason string) error {
 }
 
 func (s *running) finish(code int, reason string) int {
+	s.stopChildren()
+
 	if code == 1 {
 		if reason != "child_exit" {
 			s.status.Restarts = append(s.status.Restarts, s.clock.Now())
@@ -378,9 +380,16 @@ func (s *running) statusFailure(err error) (int, bool) {
 		}
 
 		s.nextCheck = s.clock.Now().Add(statusInterval)
-		s.nextExec = s.nextCheck
+		// An idle Codex runner keeps a later exec time.
+		if restarted || s.nextExec.Before(s.nextCheck) {
+			s.nextExec = s.nextCheck
+		}
 
 		if restarted && s.publish(phaseChecking, reasonNone) != nil {
+			return 1, true
+		}
+
+		if !restarted && s.options.Vendor == vendorCodex && s.publish(phaseIdle, reasonNone) != nil {
 			return 1, true
 		}
 

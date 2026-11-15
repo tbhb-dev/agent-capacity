@@ -38,15 +38,21 @@ func denyList() []string {
 	}
 }
 
-// checkSettings is the launch preflight for the Claude settings file. It refuses a linked file, duplicate or
+// checkSettings is the launch preflight for the Claude settings file. It refuses a linked file or `config`
+// directory, duplicate or
 // case-variant keys, and any file that differs from what RenderSettings writes in its keys, its `allow` list and its
 // `statusLine` command, which must equal command. The top level accepts only `statusLine` and `permissions`. The
 // `permissions` object accepts only `defaultMode`, `disableBypassPermissionsMode`, `allow` and `deny`. The
-// `statusLine` object accepts only `type`, `command` and `padding`. The `deny` list must include every refused tool,
+// `statusLine` object accepts only `type`, `command` and `padding`, and it doesn't check `padding`. The `deny` list must include every refused tool,
 // and extra string entries pass. The check is a floor against a stale or mis-rendered file and doesn't defend against
 // a hostile writer. It doesn't check Codex's configuration, and deny support for the `mcp__*` wildcard is
 // unverified. The `dontAsk` mode is the real control.
 func checkSettings(alias *os.Root, command string) error {
+	// The startup check of the directory ran earlier, so a link made since then is caught here.
+	if realDirectory(alias, "config", true) != nil {
+		return ErrArguments
+	}
+
 	data, err := spool.ReadBounded(alias, settingsPath, maxSettingsBytes)
 	// gomutants:disable-next-line BRANCH_IF reason="Empty data also fails the key check."
 	if err != nil {

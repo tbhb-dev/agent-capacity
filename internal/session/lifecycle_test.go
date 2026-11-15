@@ -372,7 +372,8 @@ func stateFor(t *testing.T, fixtureValue fixture) *running {
 func terminalProcess(cmd *exec.Cmd, reader *os.File) *process {
 	return &process{
 		cmd: cmd, done: make(chan error, 1), terminal: reader, drained: make(chan struct{}), ended: nil, swept: nil,
-		cleaned: nil, members: nil, mutex: sync.Mutex{}, reaped: atomic.Bool{},
+		cleaned: nil, members: nil, mutex: sync.Mutex{}, reaped: atomic.Bool{}, listFailed: atomic.Bool{},
+		listed: atomic.Bool{},
 	}
 }
 
@@ -383,7 +384,7 @@ func finished(err error) *process {
 
 	return &process{
 		cmd: nil, done: done, terminal: nil, drained: nil, ended: nil, swept: nil, cleaned: nil, members: nil,
-		mutex: sync.Mutex{}, reaped: atomic.Bool{},
+		mutex: sync.Mutex{}, reaped: atomic.Bool{}, listFailed: atomic.Bool{}, listed: atomic.Bool{},
 	}
 }
 
@@ -5159,5 +5160,112 @@ func TestSignedOutCheckWithoutAChildPublishesNothing(t *testing.T) {
 
 	if code, done := state.statusFailure(codeError(1)); code != 0 || done || state.status.Phase != "" {
 		t.Fatal(code, done, state.status.Phase)
+	}
+}
+
+func TestCleanupFailsWhenEveryListingFailed(t *testing.T) {
+	t.Parallel()
+
+	readable, _ := failingFirst(0)
+
+	for _, scenario := range []struct {
+		name           string
+		failed, listed bool
+		result, want   error
+	}{
+		{"every listing failed", true, false, nil, errCleanupIncomplete},
+		{"one listing worked", true, true, nil, nil},
+		{"no listing ran", false, false, nil, nil},
+		{"a failed result stays", true, false, errExecTimeout, errExecTimeout},
+	} {
+		child := finished(nil)
+		child.listFailed.Store(scenario.failed)
+		child.listed.Store(scenario.listed)
+
+		if err := child.cleanedResult(scenario.result, readable); !errors.Is(err, scenario.want) {
+			t.Fatal(scenario.name, err)
+		}
+	}
+}
+
+//nolint:paralleltest // The listing program is a package variable.
+func TestRefreshRecordsFailedAndWorkingListings(t *testing.T) {
+	// A reaped process drops the listing, so only the record of the listing is under test.
+	child := finished(nil)
+	child.reaped.Store(true)
+
+	listing(t, "exit 1")
+	child.refresh()
+
+	if !child.listFailed.Load() || child.listed.Load() {
+		t.Fatal("a failed listing was not recorded", child.listFailed.Load(), child.listed.Load())
+	}
+
+	listing(t, "echo 5 1")
+	child.refresh()
+
+	if !child.listed.Load() {
+		t.Fatal("a working listing was not recorded")
+	}
+}
+
+func TestFinishStopsTheChildBeforeItPublishesStopped(t *testing.T) {
+	t.Parallel()
+
+	state := stateFor(t, setup(t, vendorClaude))
+
+	child, err := start(exec.CommandContext(t.Context(), "sleep", "30"), false, new(atomic.Bool))
+	must(t, err)
+
+	state.child = child
+
+	if code := state.finish(1, "interrupted"); code != 1 || state.child != nil {
+		t.Fatal(code, state.child)
+	}
+}
+
+func TestIdleCodexKeepsItsExecTimeAfterOneSignedOutCheck(t *testing.T) {
+	t.Parallel()
+
+	for _, scenario := range []struct {
+		name    string
+		offset  time.Duration
+		wantNow bool
+	}{
+		{"exec far off", time.Hour, false},
+		{"exec due", -time.Minute, true},
+	} {
+		state := stateFor(t, setup(t, vendorCodex))
+		due := state.clock.Now().Add(scenario.offset)
+		state.nextExec = due
+
+		if code, done := state.statusFailure(codeError(1)); code != 0 || done || state.status.Phase != phaseIdle {
+			t.Fatal(scenario.name, code, done, state.status.Phase)
+		}
+
+		if got := state.nextExec.Equal(state.nextCheck); got != scenario.wantNow {
+			t.Fatal(scenario.name, "next exec follows the check:", got)
+		}
+
+		if !scenario.wantNow && !state.nextExec.Equal(due) {
+			t.Fatal(scenario.name, "next exec moved:", state.nextExec)
+		}
+	}
+}
+
+func TestSettingsCheckRefusesAConfigDirectoryLinkedAfterStartup(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	directory := fixtureValue.options.directory()
+	state := stateFor(t, fixtureValue)
+	command := statusCommand(fixtureValue.options.Exporter, fixtureAlias, fixtureValue.options.SpoolDir)
+
+	must(t, checkSettings(state.alias, command))
+	must(t, os.Rename(filepath.Join(directory, "config"), filepath.Join(directory, "work", "moved")))
+	must(t, os.Symlink(filepath.Join("work", "moved"), filepath.Join(directory, "config")))
+
+	if checkSettings(state.alias, command) == nil {
+		t.Fatal("a linked config directory passed")
 	}
 }
