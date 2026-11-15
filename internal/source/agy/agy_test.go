@@ -101,6 +101,7 @@ func TestParse(t *testing.T) {
 		{`{"groups":[]}`, nil, true},
 		{`null`, nil, true},
 		{`{`, nil, true},
+		{`{"groups":[{"buckets":[` + good + `]},{"buckets":[` + good + `]}]}`, nil, true},
 		{`[]`, nil, true},
 		{`{"groups":[{"buckets":[{"id":"gemini-5h","window":"5h","remaining_fraction":1}]}]}`, nil, true},
 		{`{"groups":[{"buckets":[{"id":"gemini-5h","window":"5h","remaining_fraction":1.5,` + reset + `}]}]}`, nil, true},
