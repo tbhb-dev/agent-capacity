@@ -4240,12 +4240,12 @@ func TestSweepDelayIsShortOnlyEarly(t *testing.T) {
 	}
 
 	// The documented values, so that a change to a constant shows here.
-	for running, want := range map[time.Duration]time.Duration{
-		0: 100 * time.Millisecond, 1999 * time.Millisecond: 100 * time.Millisecond,
-		2 * time.Second: 500 * time.Millisecond, 2999 * time.Millisecond: 500 * time.Millisecond,
+	for _, pair := range [][2]time.Duration{
+		{0, 100 * time.Millisecond}, {1999 * time.Millisecond, 100 * time.Millisecond},
+		{2 * time.Second, 500 * time.Millisecond}, {2999 * time.Millisecond, 500 * time.Millisecond},
 	} {
-		if got := sweepDelay(running); got != want {
-			t.Fatal(running, got, want)
+		if got := sweepDelay(pair[0]); got != pair[1] {
+			t.Fatal(pair[0], got, pair[1])
 		}
 	}
 }
@@ -4821,28 +4821,39 @@ func listing(t *testing.T, body string) {
 
 //nolint:paralleltest // The listing program is a package variable.
 func TestTakeSnapshotReportsOnlyACompleteListing(t *testing.T) {
-	for name, tc := range map[string]struct {
-		body string
-		want bool
-	}{
-		"one process":            {"echo 5 1", true},
-		"failure after a lines":  {"echo 5 1\nexit 1", false},
-		"success with no lines":  {"exit 0", false},
-		"success with two lines": {"echo 5 1\necho 6 1", true},
-	} {
-		listing(t, tc.body)
+	for _, body := range []string{"echo 5 1", "echo 5 1\necho 6 1"} {
+		listing(t, body)
 
-		if _, ok := takeSnapshot(); ok != tc.want {
-			t.Fatal(name, ok)
+		if _, ok := takeSnapshot(); !ok {
+			t.Fatal("a complete listing was refused", body)
 		}
 	}
+
+	for _, body := range []string{"echo 5 1\nexit 1", "exit 0"} {
+		listing(t, body)
+
+		if _, ok := takeSnapshot(); ok {
+			t.Fatal("an incomplete listing was accepted", body)
+		}
+	}
+}
+
+// edgesOf lists the edges from a parent to each of its children.
+func edgesOf(parent int, children ...int) []edge {
+	edges := make([]edge, 0, len(children))
+
+	for _, child := range children {
+		edges = append(edges, edge{pid: child, parent: parent})
+	}
+
+	return edges
 }
 
 func TestBelowFollowsEveryLevelInOrder(t *testing.T) {
 	t.Parallel()
 
 	snap := snapshot{children: map[int][]int{1: {2, 3}, 2: {4}, 4: {5}}}
-	want := []edge{{pid: 2, parent: 1}, {pid: 3, parent: 1}, {pid: 4, parent: 2}, {pid: 5, parent: 4}}
+	want := slices.Concat(edgesOf(1, 2, 3), edgesOf(2, 4), edgesOf(4, 5))
 
 	if got := snap.below(1); !slices.Equal(got, want) {
 		t.Fatal(got)
@@ -4852,7 +4863,7 @@ func TestBelowFollowsEveryLevelInOrder(t *testing.T) {
 func TestRecordKeepsOnlyAProcessReadAsListed(t *testing.T) {
 	t.Parallel()
 
-	edges := []edge{{pid: 1, parent: 9}, {pid: 2, parent: 9}, {pid: 3, parent: 9}, {pid: 4, parent: 9}}
+	edges := edgesOf(9, 1, 2, 3, 4)
 	read := func(pid int) (string, int, error) {
 		switch pid {
 		case 1:
@@ -5060,7 +5071,8 @@ func TestChildResultWaitsForAListingThatIsRunning(t *testing.T) {
 	must(t, err)
 	must(t, <-child.done)
 
-	if _, err := os.Stat(marker); err != nil {
+	_, err = os.Stat(marker)
+	if err != nil {
 		t.Fatal("the result came while a listing still ran")
 	}
 }
@@ -5071,15 +5083,17 @@ func TestLoginResultWaitsForAListingThatIsRunning(t *testing.T) {
 
 	must(t, waitLogin(context.Background(), exec.CommandContext(context.Background(), "/bin/sleep", "0.25")))
 
-	if _, err := os.Stat(marker); err != nil {
+	_, err := os.Stat(marker)
+	if err != nil {
 		t.Fatal("the result came while a listing still ran")
 	}
 }
 
+var errLoginFailed = errors.New("login failed")
+
 func TestSettleLoginSweepsWhenCanceledOrFailedAndKeepsTheError(t *testing.T) {
 	t.Parallel()
 
-	failure := errors.New("login failed")
 	canceled, cancel := context.WithCancel(context.Background())
 
 	cancel()
@@ -5087,15 +5101,15 @@ func TestSettleLoginSweepsWhenCanceledOrFailedAndKeepsTheError(t *testing.T) {
 	live := context.Background()
 
 	for name, tc := range map[string]struct {
-		ctx   func() context.Context
 		err   error
-		sweep bool
 		want  error
+		ctx   func() context.Context
+		sweep bool
 	}{
-		"canceled and clean":  {func() context.Context { return canceled }, nil, true, ErrArguments},
-		"canceled and failed": {func() context.Context { return canceled }, failure, true, failure},
-		"failed":              {func() context.Context { return live }, failure, true, failure},
-		"clean":               {func() context.Context { return live }, nil, false, nil},
+		"canceled and clean":  {nil, ErrArguments, func() context.Context { return canceled }, true},
+		"canceled and failed": {errLoginFailed, errLoginFailed, func() context.Context { return canceled }, true},
+		"failed":              {errLoginFailed, errLoginFailed, func() context.Context { return live }, true},
+		"clean":               {nil, nil, func() context.Context { return live }, false},
 	} {
 		member1 := sleeper(t)
 		tracker := terminalProcess(member1, nil)
