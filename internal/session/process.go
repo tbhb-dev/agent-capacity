@@ -218,6 +218,7 @@ func sweepDelay(running time.Duration) time.Duration {
 }
 
 // psTimeout bounds one process listing, so a stuck ps can't hold up the exit sweep.
+// gomutants:disable-next-line INTEGER_DECREMENT,INTEGER_INCREMENT reason="One millisecond of a timeout is moot."
 const psTimeout = 1500 * time.Millisecond
 
 // psFields is the number of fields in a listing line: the ID and the parent ID.
@@ -232,9 +233,6 @@ type snapshot struct {
 //
 //nolint:gochecknoglobals // A package-level hook is the only way to fail the listing from a test.
 var psPath = "/bin/ps"
-
-// A cleanup tries this many listings before it gives up.
-const listAttempts = 3
 
 // takeSnapshot lists every process with one ps run. The second result is false when ps failed, was stopped by the
 // timer, or gave an empty list, because the snapshot is then missing or partial and proves nothing about a process.
@@ -261,22 +259,6 @@ func takeSnapshot() (snapshot, bool) {
 	snap := parseProcesses(out.String())
 
 	return snap, err == nil && len(snap.children) > 0
-}
-
-// reliableSnapshot retries a failed listing, up to three runs. The last snapshot comes back with its result.
-func reliableSnapshot() (snapshot, bool) {
-	var (
-		snap   snapshot
-		listed bool
-	)
-
-	for range listAttempts {
-		if snap, listed = takeSnapshot(); listed {
-			break
-		}
-	}
-
-	return snap, listed
 }
 
 // parseProcesses reads a listing and skips any line that doesn't parse.
@@ -386,6 +368,7 @@ func (p *process) absorb(snap snapshot, read func(int) (string, int, error)) {
 			tracked[entry.pid] = true
 		}
 
+		// gomutants:disable-next-line EXPRESSION_REMOVE reason="A member that is gone has left the list before the roots are built."
 		verified[entry.pid] = err == nil && !gone
 
 		return gone
@@ -416,7 +399,8 @@ func (p *process) absorb(snap snapshot, read func(int) (string, int, error)) {
 // A sweep reads a member that couldn't be read this many times in all, with the wait below between the reads.
 const (
 	sweepAttempts = 5
-	sweepRetry    = 50 * time.Millisecond
+	// gomutants:disable-next-line INTEGER_DECREMENT,INTEGER_INCREMENT reason="One millisecond of a wait is moot."
+	sweepRetry = 50 * time.Millisecond
 )
 
 // stopListed stops each listed process that still shows its recorded start time and returns the ones that couldn't
@@ -467,6 +451,7 @@ func (p *process) sweepWith(read func(int) (string, int, error)) []member {
 	p.mutex.Unlock()
 
 	for attempt := range sweepAttempts {
+		// gomutants:disable-next-line CONDITIONALS_BOUNDARY,INTEGER_DECREMENT reason="A wait before the first read only delays it."
 		if attempt > 0 {
 			time.Sleep(sweepRetry)
 		}

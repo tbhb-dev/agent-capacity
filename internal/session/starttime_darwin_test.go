@@ -41,3 +41,12 @@ func TestEndedOnDarwinMapsOnlyTheEmptyAnswer(t *testing.T) {
 		t.Fatal("another error was mapped")
 	}
 }
+
+func TestStampOfAnEndedProcessHasNoParent(t *testing.T) {
+	t.Parallel()
+
+	started, parent, err := stamp(2000000000)
+	if started != "" || parent != 0 || err != nil {
+		t.Fatal(started, parent, err)
+	}
+}

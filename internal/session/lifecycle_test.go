@@ -1711,6 +1711,10 @@ func TestSecondRunnerLeavesPublishedStatusUntouched(t *testing.T) {
 	lock, err := lockAlias(alias)
 	must(t, err)
 
+	if lock == nil {
+		t.Fatal("a held lock came back as nil")
+	}
+
 	defer lock.Close()
 
 	before, err := os.ReadFile(fixtureValue.statusFile())
@@ -4033,21 +4037,6 @@ func TestFailedListingKeepsMembers(t *testing.T) {
 	}
 }
 
-//nolint:paralleltest // The listing program is a package variable.
-func TestReliableSnapshotRetriesAFailedListing(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "failed-once")
-	script := filepath.Join(t.TempDir(), "ps.sh")
-	body := "#!/bin/sh\nif [ -e " + marker + " ]; then exec /bin/ps \"$@\"; fi\n: > " + marker + "\nexit 1\n"
-
-	must(t, os.WriteFile(script, []byte(body), 0o700)) //nolint:gosec // The script must run.
-	withListing(t, script)
-
-	snap, ok := reliableSnapshot()
-	if !ok || !slices.Contains(snap.below(os.Getppid()), edge{pid: os.Getpid(), parent: os.Getppid()}) {
-		t.Fatal("the retry did not list this process", ok)
-	}
-}
-
 // reading returns a reader that gives the real start time with the parent that the test assigns.
 func reading(parents map[int]int) func(int) (string, int, error) {
 	return func(pid int) (string, int, error) { return startKey(pid), parents[pid], nil }
@@ -4249,13 +4238,25 @@ func TestSweepDelayIsShortOnlyEarly(t *testing.T) {
 	if sweepDelay(0) != firstSweep || sweepDelay(earlyWindow) != sweepInterval {
 		t.Fatal(sweepDelay(0), sweepDelay(earlyWindow))
 	}
+
+	// The documented values, so that a change to a constant shows here.
+	for running, want := range map[time.Duration]time.Duration{
+		0: 100 * time.Millisecond, 1999 * time.Millisecond: 100 * time.Millisecond,
+		2 * time.Second: 500 * time.Millisecond, 2999 * time.Millisecond: 500 * time.Millisecond,
+	} {
+		if got := sweepDelay(running); got != want {
+			t.Fatal(running, got, want)
+		}
+	}
 }
 
 func TestParseProcessesSkipsLinesWithoutNumbers(t *testing.T) {
 	t.Parallel()
 
-	got := parseProcesses("10 1\nx 1\n11 y\nshort\n12 1 extra\n")
-	if len(got.children) != 1 || !slices.Equal(got.below(1), []edge{{pid: 10, parent: 1}}) {
+	// Valid lines follow each kind of bad line, so a skip that stopped the reading would lose them.
+	got := parseProcesses("x 1\n10 1\n11 y\n12 1\nshort\n13 1\n14 1 extra\n15 2\n")
+	if len(got.children) != 2 || !slices.Equal(got.below(1), []edge{{pid: 10, parent: 1}, {pid: 12, parent: 1}, {pid: 13, parent: 1}}) ||
+		!slices.Equal(got.below(2), []edge{{pid: 15, parent: 2}}) {
 		t.Fatal(got)
 	}
 }
@@ -4328,7 +4329,19 @@ func TestCodexExecTimeoutEndsHungRun(t *testing.T) {
 
 	pid := fixtureValue.calls(t)[1].PID
 
-	fixtureValue.clock.advance(execTimeout)
+	// The run is still going one second before the documented limit of thirty minutes.
+	fixtureValue.clock.advance(30*time.Minute - time.Second)
+
+	for range 100 {
+		fixtureValue.clock.tick()
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	if fixtureValue.status(t).Reason == reasonChildExit || processGone(pid) {
+		t.Fatal("the exec ended before its limit", fixtureValue.status(t))
+	}
+
+	fixtureValue.clock.advance(time.Second)
 	fixtureValue.until(t, func() bool {
 		fixtureValue.clock.tick()
 
@@ -4360,6 +4373,11 @@ func TestSignedOutCheckCountsAsRestart(t *testing.T) {
 
 	code, done := state.statusFailure(codeError(1))
 	fixtureValue.wantStopped(t, code, done, 0, reasonRestartLimit)
+
+	// The restart that reached the limit is recorded once.
+	if len(state.status.Restarts) != restartMaximum {
+		t.Fatal(len(state.status.Restarts))
+	}
 }
 
 func TestOtherStatusFailureEndsRunner(t *testing.T) {
@@ -4372,6 +4390,11 @@ func TestOtherStatusFailureEndsRunner(t *testing.T) {
 
 	code, done := state.statusFailure(codeError(2))
 	fixtureValue.wantStopped(t, code, done, 1, reasonStatusFailed)
+
+	// Only a signed-out result counts as a restart of the child, and the stop records one restart.
+	if len(state.status.Restarts) != 1 {
+		t.Fatal(state.status.Restarts)
+	}
 }
 
 // untilFile waits until the file exists and has content.
@@ -4782,5 +4805,337 @@ func TestStatusPublishErrorsEndTheRunner(t *testing.T) {
 				t.Fatal(code, done)
 			}
 		})
+	}
+}
+
+// listing points the process listing at a stand-in that runs the given shell commands.
+func listing(t *testing.T, body string) {
+	t.Helper()
+
+	script := filepath.Join(t.TempDir(), "ps.sh")
+
+	must(t, os.WriteFile(script, []byte("#!/bin/sh\n"+body+"\n"), 0o700)) //nolint:gosec // The script must run.
+	withListing(t, script)
+}
+
+//nolint:paralleltest // The listing program is a package variable.
+func TestTakeSnapshotReportsOnlyACompleteListing(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want bool
+	}{
+		"one process":            {"echo 5 1", true},
+		"failure after a lines":  {"echo 5 1\nexit 1", false},
+		"success with no lines":  {"exit 0", false},
+		"success with two lines": {"echo 5 1\necho 6 1", true},
+	} {
+		listing(t, tc.body)
+
+		if _, ok := takeSnapshot(); ok != tc.want {
+			t.Fatal(name, ok)
+		}
+	}
+}
+
+func TestBelowFollowsEveryLevelInOrder(t *testing.T) {
+	t.Parallel()
+
+	snap := snapshot{children: map[int][]int{1: {2, 3}, 2: {4}, 4: {5}}}
+	want := []edge{{pid: 2, parent: 1}, {pid: 3, parent: 1}, {pid: 4, parent: 2}, {pid: 5, parent: 4}}
+
+	if got := snap.below(1); !slices.Equal(got, want) {
+		t.Fatal(got)
+	}
+}
+
+func TestRecordKeepsOnlyAProcessReadAsListed(t *testing.T) {
+	t.Parallel()
+
+	edges := []edge{{pid: 1, parent: 9}, {pid: 2, parent: 9}, {pid: 3, parent: 9}, {pid: 4, parent: 9}}
+	read := func(pid int) (string, int, error) {
+		switch pid {
+		case 1:
+			return "a", 9, syscall.EMFILE
+		case 2:
+			return "", 9, nil
+		case 3:
+			return "c", 8, nil
+		default:
+			return "d", 9, nil
+		}
+	}
+
+	if got := record(edges, read); !slices.Equal(got, []member{{pid: 4, started: "d"}}) {
+		t.Fatal(got)
+	}
+}
+
+func TestAbsorbDropsAListingOfAReapedChild(t *testing.T) {
+	t.Parallel()
+
+	leader, orphan := sleeper(t), sleeper(t)
+	snap := snapshot{children: map[int][]int{leader.Process.Pid: {orphan.Process.Pid}}}
+
+	child := terminalProcess(leader, nil)
+	child.reaped.Store(true)
+	child.absorb(snap, reading(map[int]int{orphan.Process.Pid: leader.Process.Pid}))
+
+	if len(child.members) != 0 {
+		t.Fatal("a listing of a reaped child was kept", child.members)
+	}
+}
+
+func TestStopListedSignalsOnlyAMemberStillShowingItsStartTime(t *testing.T) {
+	t.Parallel()
+
+	// No process has these IDs, so the hook counts each signal and the kill itself finds nothing.
+	const base = 2000000100
+
+	listed := []member{
+		{pid: base + 1, started: "x"}, {pid: base + 2, started: ""}, {pid: base + 3, started: "x"},
+		{pid: base + 4, started: "x"}, {pid: base + 5, started: "x"},
+	}
+	read := func(pid int) (string, int, error) {
+		switch pid {
+		case base + 1, base + 2:
+			return "", 0, nil
+		case base + 3:
+			return "y", 0, nil
+		case base + 5:
+			return "", 0, syscall.EMFILE
+		default:
+			return "x", 0, nil
+		}
+	}
+
+	unknown := stopListed(listed, read)
+
+	if !slices.Equal(unknown, []member{{pid: base + 5, started: "x"}}) {
+		t.Fatal(unknown)
+	}
+
+	for pid, want := range map[int]int{base + 1: 0, base + 2: 0, base + 3: 0, base + 4: 1, base + 5: 0} {
+		if got := signalTargets.Count(pid); got != want {
+			t.Fatal("signals to", pid, got, want)
+		}
+	}
+}
+
+func TestSweepReadsAnUnreadableMemberFiveTimesWithPauses(t *testing.T) {
+	t.Parallel()
+
+	child := finished(nil)
+	child.members = []member{{pid: 1, started: "x"}}
+	reads := 0
+
+	began := time.Now()
+	left := child.sweepWith(func(int) (string, int, error) {
+		reads++
+
+		return "", 0, syscall.EMFILE
+	})
+
+	if reads != sweepAttempts || len(left) != 1 {
+		t.Fatal(reads, left)
+	}
+
+	// Each of the four pauses lasts at least the retry wait.
+	if time.Since(began) < 4*sweepRetry {
+		t.Fatal("the reads came without their pauses", time.Since(began))
+	}
+}
+
+func TestSweepEndsAtOnceWhenEveryMemberIsSettled(t *testing.T) {
+	t.Parallel()
+
+	// A sweep that kept reading after the list was empty would pause four times. One quick run is enough.
+	for range 3 {
+		child := finished(nil)
+		child.members = []member{{pid: 1, started: "x"}}
+
+		began := time.Now()
+		left := child.sweepWith(func(int) (string, int, error) { return "", 0, nil })
+
+		if len(left) == 0 && time.Since(began) < 3*sweepRetry {
+			return
+		}
+	}
+
+	t.Fatal("a sweep with nothing left to read kept waiting")
+}
+
+func TestSignalGroupSignalsTheGroupAndTheLeader(t *testing.T) {
+	t.Parallel()
+
+	var warning atomic.Bool
+
+	child, err := start(exec.CommandContext(context.Background(), "/bin/sleep", "30"), false, &warning)
+	must(t, err)
+
+	pid := child.cmd.Process.Pid
+
+	t.Cleanup(func() {
+		child.signalGroup(syscall.SIGKILL)
+		<-child.done //nolint:errcheck // Only the end of the process matters.
+	})
+
+	child.signalGroup(syscall.SIGCONT)
+
+	if signalTargets.Count(-pid) == 0 || signalTargets.Count(pid) == 0 {
+		t.Fatal("the group or the leader got no signal", signalTargets.Count(-pid), signalTargets.Count(pid))
+	}
+}
+
+func TestRunningChildGetsListingsAfterTheFirst(t *testing.T) {
+	t.Parallel()
+
+	noted := filepath.Join(t.TempDir(), "pid")
+	cmd := exec.CommandContext(context.Background(), "/bin/sh", "-c",
+		`/bin/sleep 0.6; /bin/sleep 300 >/dev/null 2>&1 & echo $! $$ > "$0.tmp" && /bin/mv "$0.tmp" "$0"; wait`, noted)
+
+	var warning atomic.Bool
+
+	child, err := start(cmd, false, &warning)
+	must(t, err)
+
+	t.Cleanup(func() {
+		child.signalGroup(syscall.SIGKILL)
+		<-child.done //nolint:errcheck // Only the end of the process matters.
+	})
+
+	descendant, _ := loginIDs(t, noted)
+
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		child.mutex.Lock()
+		found := slices.ContainsFunc(child.members, func(entry member) bool { return entry.pid == descendant })
+		child.mutex.Unlock()
+
+		if found {
+			return
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("a descendant started after the first listing was never listed")
+		}
+	}
+}
+
+func TestTerminateAfterTheReapClosesTheTerminal(t *testing.T) {
+	t.Parallel()
+
+	var warning atomic.Bool
+
+	child, err := start(exec.CommandContext(context.Background(), "/bin/sh", "-c", "exit 0"), true, &warning)
+	must(t, err)
+	must(t, <-child.done)
+
+	child.terminate()
+
+	if !errors.Is(child.terminal.Close(), os.ErrClosed) {
+		t.Fatal("a stop after the reap left the terminal open")
+	}
+}
+
+// slowListing points the process listing at a stand-in that takes half a second and then writes a marker.
+func slowListing(t *testing.T) string {
+	t.Helper()
+
+	marker := filepath.Join(t.TempDir(), "listed")
+	listing(t, "/bin/sleep 0.5\n/bin/ps \"$@\"\n: > '"+marker+"'")
+
+	return marker
+}
+
+//nolint:paralleltest // The listing program is a package variable.
+func TestChildResultWaitsForAListingThatIsRunning(t *testing.T) {
+	marker := slowListing(t)
+
+	var warning atomic.Bool
+
+	child, err := start(exec.CommandContext(context.Background(), "/bin/sleep", "0.25"), false, &warning)
+	must(t, err)
+	must(t, <-child.done)
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("the result came while a listing still ran")
+	}
+}
+
+//nolint:paralleltest // The listing program is a package variable.
+func TestLoginResultWaitsForAListingThatIsRunning(t *testing.T) {
+	marker := slowListing(t)
+
+	must(t, waitLogin(context.Background(), exec.CommandContext(context.Background(), "/bin/sleep", "0.25")))
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("the result came while a listing still ran")
+	}
+}
+
+func TestSettleLoginSweepsWhenCanceledOrFailedAndKeepsTheError(t *testing.T) {
+	t.Parallel()
+
+	failure := errors.New("login failed")
+	canceled, cancel := context.WithCancel(context.Background())
+
+	cancel()
+
+	for name, tc := range map[string]struct {
+		ctx   context.Context //nolint:containedctx // The table holds one context per case.
+		err   error
+		sweep bool
+		want  error
+	}{
+		"canceled and clean":  {canceled, nil, true, ErrArguments},
+		"canceled and failed": {canceled, failure, true, failure},
+		"failed":              {context.Background(), failure, true, failure},
+		"clean":               {context.Background(), nil, false, nil},
+	} {
+		member1 := sleeper(t)
+		tracker := terminalProcess(member1, nil)
+		tracker.members = []member{{pid: member1.Process.Pid, started: startKey(member1.Process.Pid)}}
+
+		got := settleLogin(tc.ctx, tracker, tc.err)
+
+		if !errors.Is(got, tc.want) || (signalTargets.Count(member1.Process.Pid) > 0) != tc.sweep {
+			t.Fatal(name, got, signalTargets.Count(member1.Process.Pid))
+		}
+	}
+}
+
+func TestIdleStopClearsTheMissedReading(t *testing.T) {
+	t.Parallel()
+
+	state := stateFor(t, setup(t, vendorClaude))
+	state.readingRestart = true
+	state.status.Reason = reasonOperatorStop
+	state.nextStatus = state.clock.Now().Add(time.Hour)
+
+	if code, done := state.idleStop(); code != 0 || done || state.readingRestart {
+		t.Fatal(code, done, state.readingRestart)
+	}
+}
+
+func TestPassingStatusCheckPublishesIdleOnlyForCodex(t *testing.T) {
+	t.Parallel()
+
+	for vendor, want := range map[string]string{vendorClaude: "", vendorCodex: phaseIdle} {
+		state := stateFor(t, setup(t, vendor))
+		state.check = finished(nil)
+		state.nextExec = state.clock.Now().Add(time.Hour)
+
+		if code, done := state.pollStatusCheck(); code != 0 || done || state.status.Phase != want {
+			t.Fatal(vendor, code, done, state.status.Phase)
+		}
+	}
+}
+
+func TestSignedOutCheckWithoutAChildPublishesNothing(t *testing.T) {
+	t.Parallel()
+
+	state := stateFor(t, setup(t, vendorClaude))
+
+	if code, done := state.statusFailure(codeError(1)); code != 0 || done || state.status.Phase != "" {
+		t.Fatal(code, done, state.status.Phase)
 	}
 }

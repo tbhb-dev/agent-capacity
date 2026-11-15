@@ -746,3 +746,24 @@ func TestFoldKeyMatchesEncodingJSON(t *testing.T) {
 		t.Fatal("different keys fold together")
 	}
 }
+
+func TestReadSessionRejectsAZeroTime(t *testing.T) {
+	t.Parallel()
+	dir, root := testSessionRoot(t)
+	require.NoError(t, WriteSession(root, validStatus()))
+
+	path := filepath.Join(dir, "status", sessionVendor+"-"+sessionAlias+".json")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	var fields map[string]any
+	require.NoError(t, json.Unmarshal(data, &fields))
+
+	fields["time"] = "0001-01-01T00:00:00Z"
+	data, err = json.Marshal(fields)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, sessionFileMode))
+
+	_, err = ReadSession(root, sessionVendor, sessionAlias)
+	require.ErrorIs(t, err, errSessionState)
+}
