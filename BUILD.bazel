@@ -173,13 +173,12 @@ govulncheck(
     proxy = "@go_mod_proxy//:proxy",
 )
 
-# Mutation testing: every mutant gomutants makes of a package must be killed
-# by that package's tests. One cached run per package; by default every
-# package runs in full. For a diff-scope run, write the changes since a base
-# and point the flag at them:
+# Mutation testing runs in full by default. The full target blocks on survivors.
+# The pull request target reports survivors. Other failures still block.
+# For a diff-scope run, write the changes since a base and point the flag at them:
 #
 #   bazel run @tbhb_rules//quality:mutation_changes -- --base origin/main --out .mutation/changes.json
-#   bazel test --@tbhb_rules//quality:changes=//:mutation_changes //:gomutants_test
+#   bazel test --@tbhb_rules//quality:changes=//:mutation_changes //:gomutants_advisory_test
 gomutants_test(
     name = "gomutants_test",
     cpus = 2,
@@ -196,9 +195,34 @@ gomutants_test(
     go_mod = "go.mod",
     go_sum = "go.sum",
     proxy = "@go_mod_proxy//:proxy",
-    # Windows doesn't enforce Unix mode bits, so a mutated file permission
-    # can't be told apart there. No package has Windows-only code, so
-    # mutation testing runs on Linux and macOS only.
+    # Windows does not enforce Unix mode bits. Mutation testing runs only
+    # on Linux and macOS, so tests can detect file permission changes.
+    target_compatible_with = select({
+        "@platforms//os:windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    tests = GO_TESTS,
+)
+
+gomutants_test(
+    name = "gomutants_advisory_test",
+    advisory = True,
+    cpus = 2,
+    data = [
+        "//cmd/agent-capacity:testdata/agy-usage.json",
+        "//internal/keepalive:testdata/stops.json",
+        "//internal/source/agy:testdata/usage-data.json",
+    ],
+    flags = [
+        # Keep mutation runs stable when CI runners are busy.
+        "--timeout-min=20s",
+        "--test-flags=-failfast",
+    ],
+    go_mod = "go.mod",
+    go_sum = "go.sum",
+    proxy = "@go_mod_proxy//:proxy",
+    # Windows does not enforce Unix mode bits. Mutation testing runs only
+    # on Linux and macOS, so tests can detect file permission changes.
     target_compatible_with = select({
         "@platforms//os:windows": ["@platforms//:incompatible"],
         "//conditions:default": [],

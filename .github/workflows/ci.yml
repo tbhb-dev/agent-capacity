@@ -57,7 +57,7 @@ jobs:
       # Hardens the runner, sets up Bazel and fetches, with the platform
       # workarounds, from tbhb-dev/rules.
       - name: Set up Bazel for CI
-        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@d3b22ae1b01ea934ab9b014058752eb2aec5bcbf  # main
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@1fc6bf8b17b14a62712ae9dd076c4171147693d0  # main
         with:
           disk-cache: ${{ github.workflow }}-${{ matrix.os }}
           cache-save: ${{ github.event_name != 'pull_request' }}
@@ -69,7 +69,7 @@ jobs:
       # condition coverage, the docs bundle and REUSE checks, the import
       # contracts, and the preset staleness test.
       - name: Test
-        run: bazelisk test --config=ci --build_tests_only -- //... -//:gomutants_test
+        run: bazelisk test --config=ci --build_tests_only -- //... -//:gomutants_test -//:gomutants_advisory_test
 
       - name: Build the release binary
         env:
@@ -90,7 +90,8 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
-  # Mutation testing on one OS leg: the changed code on a pull request, every package otherwise.
+  # Mutation testing runs on one OS leg. Pull requests report survivors.
+  # The full run on main blocks on survivors.
   mutation:
     name: mutation
     runs-on: ubuntu-26.04
@@ -106,14 +107,14 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Bazel for CI
-        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@d3b22ae1b01ea934ab9b014058752eb2aec5bcbf  # main
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@1fc6bf8b17b14a62712ae9dd076c4171147693d0  # main
         with:
           disk-cache: ${{ github.workflow }}-mutation
           cache-save: ${{ github.event_name != 'pull_request' }}
 
-      # A pull request mutates only what its change set reaches. A change to a
-      # test, data file, go.mod or go.sum widens a unit to its full scope. The
-      # push to main runs in full, and the nightly workflow does too.
+      # A pull request mutates only what its change set reaches. Changes to tests,
+      # data, go.mod or go.sum widen a unit to its full scope. The push to main
+      # and the nightly workflow run in full. Both block on survivors.
       - name: Write the change set
         if: github.event_name == 'pull_request'
         env:
@@ -128,7 +129,7 @@ jobs:
         run: >-
           bazelisk test --config=ci
           --@tbhb_rules//quality:changes=//:mutation_changes
-          //:gomutants_test
+          //:gomutants_advisory_test
 
       - name: Test in full
         if: github.event_name != 'pull_request'
@@ -149,7 +150,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Bazel for CI
-        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@d3b22ae1b01ea934ab9b014058752eb2aec5bcbf  # main
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@1fc6bf8b17b14a62712ae9dd076c4171147693d0  # main
         with:
           disk-cache: ${{ github.workflow }}-container
           cache-save: ${{ github.event_name != 'pull_request' }}
@@ -168,7 +169,7 @@ jobs:
     name: repo
     permissions:
       contents: read
-    uses: tbhb-dev/rules/.github/workflows/repo-checks.yml@d3b22ae1b01ea934ab9b014058752eb2aec5bcbf  # main
+    uses: tbhb-dev/rules/.github/workflows/repo-checks.yml@1fc6bf8b17b14a62712ae9dd076c4171147693d0  # main
     with:
       gazelle-dirs: .
       govulncheck-target: //:govulncheck
@@ -197,7 +198,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Bazel for CI
-        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@d3b22ae1b01ea934ab9b014058752eb2aec5bcbf  # main
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@1fc6bf8b17b14a62712ae9dd076c4171147693d0  # main
         with:
           targets: '@rules_go//go'
 
@@ -240,6 +241,6 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Fail if any needed job did not succeed
-        uses: tbhb-dev/rules/.github/actions/ci-conclusion@d3b22ae1b01ea934ab9b014058752eb2aec5bcbf  # main
+        uses: tbhb-dev/rules/.github/actions/ci-conclusion@1fc6bf8b17b14a62712ae9dd076c4171147693d0  # main
         with:
           needs: ${{ toJSON(needs) }}
