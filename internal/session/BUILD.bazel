@@ -13,13 +13,18 @@ go_library(
         "process.go",
         "runner.go",
         "settings.go",
+        "starttime_darwin.go",
+        "starttime_linux.go",
     ],
     importpath = "go.tbhb.dev/agent-capacity/internal/session",
     visibility = ["//:__subpackages__"],
     deps = [
         "//internal/spool",
         "@com_github_creack_pty//:pty",
-    ],
+    ] + select({
+        "@platforms//os:macos": ["@org_golang_x_sys//unix"],
+        "//conditions:default": [],
+    }),
 )
 
 go_test(
@@ -27,6 +32,8 @@ go_test(
     srcs = [
         "lifecycle_test.go",
         "session_test.go",
+        "starttime_darwin_test.go",
+        "starttime_linux_test.go",
     ],
     embed = [":session"],
     visibility = ["//:__pkg__"],

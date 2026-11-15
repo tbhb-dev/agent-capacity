@@ -371,7 +371,7 @@ func stateFor(t *testing.T, fixtureValue fixture) *running {
 func terminalProcess(cmd *exec.Cmd, reader *os.File) *process {
 	return &process{
 		cmd: cmd, done: make(chan error, 1), terminal: reader, drained: make(chan struct{}), ended: nil, swept: nil,
-		members: nil, mutex: sync.Mutex{}, reaped: atomic.Bool{},
+		cleaned: nil, members: nil, mutex: sync.Mutex{}, reaped: atomic.Bool{},
 	}
 }
 
@@ -381,8 +381,8 @@ func finished(err error) *process {
 	done <- err
 
 	return &process{
-		cmd: nil, done: done, terminal: nil, drained: nil, ended: nil, swept: nil, members: nil, mutex: sync.Mutex{},
-		reaped: atomic.Bool{},
+		cmd: nil, done: done, terminal: nil, drained: nil, ended: nil, swept: nil, cleaned: nil, members: nil,
+		mutex: sync.Mutex{}, reaped: atomic.Bool{},
 	}
 }
 
@@ -3879,7 +3879,7 @@ func withListing(t *testing.T, program string) {
 
 //nolint:paralleltest // The listing program is a package variable.
 func TestFailedListingKeepsMembers(t *testing.T) {
-	for _, program := range []string{"/usr/bin/false", "/usr/bin/true"} {
+	for _, program := range []string{"/usr/bin/false", "/usr/bin/true", "/nonexistent/ps"} {
 		withListing(t, program)
 
 		cmd := exec.CommandContext(context.Background(), "/bin/sleep", "30")
@@ -3911,8 +3911,86 @@ func TestReliableSnapshotRetriesAFailedListing(t *testing.T) {
 	withListing(t, script)
 
 	snap, ok := reliableSnapshot()
-	if !ok || snap.lookup(os.Getpid()) == "" {
+	if !ok || !slices.Contains(snap.below(os.Getppid()), os.Getpid()) {
 		t.Fatal("the retry did not list this process", ok)
+	}
+}
+
+// sleeper starts a long sleep that the test stops at its end.
+func sleeper(t *testing.T) *exec.Cmd {
+	t.Helper()
+
+	cmd := exec.CommandContext(context.Background(), "/bin/sleep", "30")
+	must(t, cmd.Start())
+
+	t.Cleanup(func() {
+		//nolint:errcheck // The process may have ended.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait() //nolint:errcheck // Only the end of the process matters.
+	})
+
+	return cmd
+}
+
+func TestAbsorbFindsChildrenOfARecordedMember(t *testing.T) {
+	t.Parallel()
+
+	leader, orphan, grandchild := sleeper(t), sleeper(t), sleeper(t)
+	ghost := 2000000001
+	snap := snapshot{children: map[int][]int{
+		leader.Process.Pid: {orphan.Process.Pid, ghost},
+		orphan.Process.Pid: {grandchild.Process.Pid},
+	}}
+
+	child := terminalProcess(leader, nil)
+	child.members = []member{{pid: orphan.Process.Pid, started: startKey(orphan.Process.Pid)}}
+
+	child.absorb(snap)
+
+	want := []member{
+		{pid: orphan.Process.Pid, started: startKey(orphan.Process.Pid)},
+		{pid: grandchild.Process.Pid, started: startKey(grandchild.Process.Pid)},
+	}
+	if !slices.Equal(child.members, want) {
+		t.Fatal(child.members)
+	}
+
+	// With the leader gone from the snapshot, the member alone still leads to its own child.
+	snap.children = map[int][]int{orphan.Process.Pid: {grandchild.Process.Pid}}
+	child.members = []member{{pid: orphan.Process.Pid, started: startKey(orphan.Process.Pid)}}
+	child.absorb(snap)
+
+	if !slices.Equal(child.members, want) {
+		t.Fatal("the orphan's child was not found", child.members)
+	}
+}
+
+func TestTerminateWaitsForTheCleanupAfterTheReap(t *testing.T) {
+	t.Parallel()
+
+	child := terminalProcess(sleeper(t), nil)
+	child.cleaned = make(chan struct{})
+	child.reaped.Store(true)
+
+	returned := make(chan struct{})
+
+	go func() {
+		child.terminate()
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+		t.Fatal("terminate returned while the cleanup was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(child.cleaned)
+
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("terminate did not return after the cleanup finished")
 	}
 }
 
@@ -3927,8 +4005,8 @@ func TestSweepDelayIsShortOnlyEarly(t *testing.T) {
 func TestParseProcessesSkipsLinesWithoutNumbers(t *testing.T) {
 	t.Parallel()
 
-	got := parseProcesses("10 1 Sat Nov 14 10:00:00 2026\nx 1 a\n11 y b\nshort\n")
-	if len(got.started) != 1 || got.lookup(10) != "Sat Nov 14 10:00:00 2026" || len(got.below(1)) != 1 {
+	got := parseProcesses("10 1\nx 1\n11 y\nshort\n12 1 extra\n")
+	if len(got.children) != 1 || !slices.Equal(got.below(1), []int{10}) {
 		t.Fatal(got)
 	}
 }
@@ -3946,7 +4024,7 @@ func TestRefreshDropsMembersThatEnded(t *testing.T) {
 	}()
 
 	child := terminalProcess(cmd, nil)
-	alive := member{pid: cmd.Process.Pid, started: lookupNow()(cmd.Process.Pid)}
+	alive := member{pid: cmd.Process.Pid, started: startKey(cmd.Process.Pid)}
 	child.members = []member{alive, {pid: 2000000000, started: "gone"}, {pid: cmd.Process.Pid, started: "reused"}}
 
 	child.refresh()
@@ -4015,7 +4093,7 @@ func TestDescendantsListTheStartTimeThatPsReports(t *testing.T) {
 		_ = grandchild.Wait() //nolint:errcheck // Only the end of the process matters.
 	}()
 
-	want := lookupNow()(grandchild.Process.Pid)
+	want := startKey(grandchild.Process.Pid)
 	if want == "" {
 		t.Fatal("no start time for a live process")
 	}

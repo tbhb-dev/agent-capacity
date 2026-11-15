@@ -24,6 +24,7 @@ vendors:
   otel: {in: go.opentelemetry.io/**}
   testify: {in: github.com/stretchr/testify/**}
   pty: {in: github.com/creack/pty}
+  sys: {in: golang.org/x/sys/**}
 
 # go-arch-lint requires a non-empty dependency list for each component.
 deps:
@@ -44,7 +45,7 @@ deps:
     canUse: [testify]
   session:
     mayDependOn: [session, spool]
-    canUse: [pty]
+    canUse: [pty, sys]
   spool:
     mayDependOn: [spool, capacity]
     canUse: [testify]

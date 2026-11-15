@@ -67,8 +67,10 @@ type process struct {
 	drained  chan struct{}
 	// ended closes when cmd.Wait returns, and swept closes once the periodic listing has stopped.
 	ended, swept chan struct{}
-	members      []member
-	mutex        sync.Mutex
+	// cleaned closes after the waiter has swept the recorded descendants.
+	cleaned chan struct{}
+	members []member
+	mutex   sync.Mutex
 	// reaped is set once cmd.Wait has reaped the leader and the waiter has sent its last group signal. From then
 	// on the process ID may belong to an unrelated process, so nothing signals it again.
 	reaped atomic.Bool
@@ -84,7 +86,7 @@ type member struct {
 func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error) {
 	child := &process{
 		cmd: cmd, done: make(chan error, 1), terminal: nil, drained: make(chan struct{}),
-		ended: make(chan struct{}), swept: make(chan struct{}), members: nil,
+		ended: make(chan struct{}), swept: make(chan struct{}), cleaned: make(chan struct{}), members: nil,
 		mutex: sync.Mutex{}, reaped: atomic.Bool{},
 	}
 	if terminal {
@@ -134,6 +136,7 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 		// Descendants that left the group are stopped from the list kept while the child lived, each after a
 		// check of its start time.
 		child.sweep()
+		close(child.cleaned)
 
 		child.done <- err
 
@@ -213,13 +216,12 @@ func sweepDelay(running time.Duration) time.Duration {
 // psTimeout bounds one process listing, so a stuck ps can't hold up the exit sweep.
 const psTimeout = 5 * time.Second
 
-// psFields is the fewest fields in a listing line: the ID, the parent ID and one word of the start time.
-const psFields = 3
+// psFields is the number of fields in a listing line: the ID and the parent ID.
+const psFields = 2
 
-// snapshot is one process listing: the members by parent ID and the start time of each process ID.
+// snapshot is one process listing: the process IDs by parent ID.
 type snapshot struct {
-	children map[int][]member
-	started  map[int]string
+	children map[int][]int
 }
 
 // The listing program is a variable so that tests can point it at stand-ins that fail.
@@ -236,7 +238,7 @@ func takeSnapshot() (snapshot, bool) {
 	var out strings.Builder
 
 	//nolint:noctx // A timer stops a stuck listing, which keeps the callers free of a context parameter.
-	cmd := exec.Command(psPath, "-A", "-o", "pid=,ppid=,lstart=")
+	cmd := exec.Command(psPath, "-A", "-o", "pid=,ppid=")
 	cmd.Stdout = &out
 
 	// A failed start makes Wait return at once, before the timer can fire. The timer never meets a missing process.
@@ -254,7 +256,7 @@ func takeSnapshot() (snapshot, bool) {
 
 	snap := parseProcesses(out.String())
 
-	return snap, err == nil && len(snap.started) > 0
+	return snap, err == nil && len(snap.children) > 0
 }
 
 // reliableSnapshot retries a failed listing, up to three runs. The last snapshot comes back with its result.
@@ -275,11 +277,11 @@ func reliableSnapshot() (snapshot, bool) {
 
 // parseProcesses reads a listing and skips any line that doesn't parse.
 func parseProcesses(listing string) snapshot {
-	snap := snapshot{children: map[int][]member{}, started: map[int]string{}}
+	snap := snapshot{children: map[int][]int{}}
 
 	for line := range strings.SplitSeq(listing, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < psFields {
+		if len(fields) != psFields {
 			continue
 		}
 
@@ -290,51 +292,50 @@ func parseProcesses(listing string) snapshot {
 			continue
 		}
 
-		started := strings.Join(fields[2:], " ")
-		snap.children[parent] = append(snap.children[parent], member{pid: child, started: started})
-		snap.started[child] = started
+		snap.children[parent] = append(snap.children[parent], child)
 	}
 
 	return snap
 }
 
-// below lists the processes under a process ID, found from the parent links. A process in a new session has left
-// the group but keeps its parent link until the parent ends.
-func (s snapshot) below(pid int) []member {
-	var found []member
+// below lists the process IDs under a process ID, found from the parent links. A process in a new session has
+// left the group but keeps its parent link until the parent ends.
+func (s snapshot) below(pid int) []int {
+	var found []int
 
 	for queue := []int{pid}; len(queue) > 0; queue = queue[1:] {
 		for _, child := range s.children[queue[0]] {
 			found = append(found, child)
-			queue = append(queue, child.pid)
+			queue = append(queue, child)
 		}
 	}
 
 	return found
 }
 
-// lookup returns the start time of a process ID, or an empty string when the listing doesn't show it.
-func (s snapshot) lookup(pid int) string {
-	return s.started[pid]
+// record pairs each process ID with its start time. A process that has already ended is left out.
+func record(pids []int) []member {
+	var found []member
+
+	for _, pid := range pids {
+		if started := startKey(pid); started != "" {
+			found = append(found, member{pid: pid, started: started})
+		}
+	}
+
+	return found
 }
 
 // descendants lists the processes below a process ID with their start times.
 func descendants(pid int) []member {
 	snap, _ := reliableSnapshot()
 
-	return snap.below(pid)
-}
-
-// lookupNow returns a lookup that reads one fresh listing. A failed listing finds nothing, so nothing is signaled.
-func lookupNow() func(int) string {
-	snap, _ := reliableSnapshot()
-
-	return snap.lookup
+	return record(snap.below(pid))
 }
 
 // killAll stops each listed process that still shows its recorded start time. A process that has
-// ended, or whose ID another process now holds, is skipped. The lookup comes from one listing, so a process that
-// ends between that listing and its signal leaves a window of milliseconds for the later entries.
+// ended, or whose ID another process now holds, is skipped. The lookup and the signal are two steps, so a process
+// that ends between them leaves a window of microseconds.
 func killAll(listed []member, lookup func(int) string) {
 	for _, entry := range listed {
 		if started := lookup(entry.pid); started == "" || started != entry.started {
@@ -346,17 +347,21 @@ func killAll(listed []member, lookup func(int) string) {
 	}
 }
 
-// refresh adds the current descendants to the list and drops each member that the listing no longer shows with
-// its recorded start time. After a failed listing the list stays as recorded, and a listing of a reaped child
-// is dropped, because its process ID may then belong to another process.
+// refresh lists the processes and merges them into the members. A failed listing leaves the members as recorded.
 func (p *process) refresh() {
 	snap, ok := takeSnapshot()
 	if !ok {
 		return
 	}
 
-	found := snap.below(p.cmd.Process.Pid)
+	p.absorb(snap)
+}
 
+// absorb drops each member that has ended or lost its ID to another process, then adds the descendants of the
+// leader and of every remaining member. A member whose parent ended has a new parent, so its own children are
+// found through the member. A listing of a reaped child is dropped, because its process ID may belong to another
+// process.
+func (p *process) absorb(snap snapshot) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
@@ -365,22 +370,33 @@ func (p *process) refresh() {
 		return
 	}
 
-	p.members = slices.DeleteFunc(p.members, func(entry member) bool { return snap.lookup(entry.pid) != entry.started })
+	p.members = slices.DeleteFunc(p.members, func(entry member) bool { return startKey(entry.pid) != entry.started })
 
-	for _, entry := range found {
-		if !slices.Contains(p.members, entry) {
-			p.members = append(p.members, entry)
+	roots := []int{p.cmd.Process.Pid}
+	tracked := map[int]bool{}
+
+	for _, entry := range p.members {
+		roots = append(roots, entry.pid)
+		tracked[entry.pid] = true
+	}
+
+	for _, root := range roots {
+		for _, entry := range record(snap.below(root)) {
+			if !tracked[entry.pid] {
+				tracked[entry.pid] = true
+				p.members = append(p.members, entry)
+			}
 		}
 	}
 }
 
-// sweep stops every listed descendant that still shows its recorded start time. It takes one listing, with retries.
+// sweep stops every listed descendant that still shows its recorded start time. It runs without a process listing.
 func (p *process) sweep() {
 	p.mutex.Lock()
 	listed := slices.Clone(p.members)
 	p.mutex.Unlock()
 
-	killAll(listed, lookupNow())
+	killAll(listed, startKey)
 }
 
 func (p *process) terminate() {
@@ -388,8 +404,10 @@ func (p *process) terminate() {
 		return
 	}
 
-	// A leader reaped before the stop has nothing left to signal, and its process ID may be reused.
+	// A leader reaped before the stop has nothing left to signal, and its process ID may be reused. The waiter
+	// may still be sweeping the recorded descendants, and the stop waits for that sweep.
 	if p.reaped.Load() {
+		<-p.cleaned
 		p.closeTerminal()
 
 		return
