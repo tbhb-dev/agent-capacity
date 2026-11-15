@@ -3576,7 +3576,7 @@ func TestCompletedStatusCheckSchedulesTheNext(t *testing.T) {
 	}
 }
 
-func TestLaunchStartsReadingTimeOnlyWhenUnset(t *testing.T) {
+func TestLaunchStartsReadingTimeAtTheLaunch(t *testing.T) {
 	t.Parallel()
 
 	for name, preset := range map[string]bool{"unset": false, "already set": true} {
@@ -3593,13 +3593,8 @@ func TestLaunchStartsReadingTimeOnlyWhenUnset(t *testing.T) {
 
 			must(t, state.launch())
 
-			want := state.started
-			if preset {
-				want = earlier
-			}
-
-			if state.started.IsZero() || !state.readingAt.Equal(want) {
-				t.Fatal("reading time", state.readingAt, want)
+			if state.started.IsZero() || !state.readingAt.Equal(state.started) {
+				t.Fatal("reading time", state.readingAt, state.started)
 			}
 		})
 	}
@@ -4674,5 +4669,44 @@ func TestCanceledLoginNeverReportsSuccess(t *testing.T) {
 
 	if err := settleLogin(ctx, finished(nil), nil); err == nil {
 		t.Fatal("a canceled login that ended cleanly reported success")
+	}
+}
+
+func TestRelaunchAfterAStopGivesTheChildItsOwnReadingWindow(t *testing.T) {
+	t.Parallel()
+
+	for name, restarting := range map[string]bool{"first reading": false, "after a reading restart": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorClaude)
+
+			var control fakeControl
+
+			control.Hold = true
+			fixtureValue.control(t, control)
+
+			state := stateFor(t, fixtureValue)
+			must(t, state.launch())
+
+			state.readingRestart = restarting
+
+			fixtureValue.clock.advance(5 * time.Minute)
+
+			if code, done := state.idleStop(); code != 1 || done {
+				t.Fatal(code, done)
+			}
+
+			// The operator removes the stop long after the last reading.
+			fixtureValue.clock.advance(20 * time.Minute)
+			state.nextCheck = time.Time{}
+
+			must(t, state.launch())
+
+			code, done := state.considerRestart()
+			if code != 0 || done || state.status.Reason == "reading_restart" || len(state.status.Restarts) != 0 {
+				t.Fatal("the new child was stopped at once", code, done, state.status.Reason)
+			}
+		})
 	}
 }
