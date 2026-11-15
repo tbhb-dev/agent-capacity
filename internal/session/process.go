@@ -71,13 +71,16 @@ type process struct {
 	ended, swept chan struct{}
 	// cleaned closes after the waiter has swept the recorded descendants.
 	cleaned chan struct{}
+	// unread holds the IDs a listing named that couldn't be read for their start time. The mutex guards it.
+	unread  map[int]bool
 	members []member
 	mutex   sync.Mutex
 	// reaped is set once cmd.Wait has reaped the leader and the waiter has sent its last group signal. From then
 	// on the process ID may belong to an unrelated process, so nothing signals it again.
 	reaped atomic.Bool
-	// listFailed and listed record whether any process listing failed and whether any succeeded.
-	listFailed, listed atomic.Bool
+	// listFailed is set when the latest process listing failed and cleared by a listing that worked, because only a
+	// working listing sees the descendants that started since the one before.
+	listFailed atomic.Bool
 }
 
 // member is a descendant with the start time recorded at listing. A process ID that later shows another start
@@ -92,7 +95,7 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 		cmd: cmd, done: make(chan error, 1), terminal: nil, drained: make(chan struct{}),
 		ended: make(chan struct{}), swept: make(chan struct{}), cleaned: make(chan struct{}), members: nil,
 		mutex: sync.Mutex{}, reaped: atomic.Bool{},
-		listFailed: atomic.Bool{}, listed: atomic.Bool{},
+		listFailed: atomic.Bool{}, unread: map[int]bool{},
 	}
 	if terminal {
 		file, err := pty.Start(cmd)
@@ -311,18 +314,23 @@ func (s snapshot) below(pid int) []edge {
 // record pairs each process ID with its start time. The start time and the parent come from one read of the
 // process. The result leaves out an ended process, a process that can't be read now, and one whose parent differs
 // from the listing, since an ID reused after the listing belongs to another process with another parent. A
-// process left out here appears again in a later listing.
-func record(edges []edge, read func(int) (string, int, error)) []member {
+// process left out here appears again in a later listing. The map has an entry for each ID read in this call: true
+// when the read failed for a reason other than the process having ended, so a descendant may be missing.
+func record(edges []edge, read func(int) (string, int, error)) ([]member, map[int]bool) {
 	var found []member
+
+	unread := map[int]bool{}
 
 	for _, entry := range edges {
 		started, parent, err := read(entry.pid)
+		unread[entry.pid] = unlessGone(err) != nil
+
 		if err == nil && started != "" && parent == entry.parent {
 			found = append(found, member{pid: entry.pid, started: started})
 		}
 	}
 
-	return found
+	return found, unread
 }
 
 // unlessGone turns the error of a read of an ended process into nil. Any other error, such as too many open
@@ -344,7 +352,7 @@ func (p *process) refresh() {
 		return
 	}
 
-	p.listed.Store(true)
+	p.listFailed.Store(false)
 	p.absorb(snap, stamp)
 }
 
@@ -393,11 +401,26 @@ func (p *process) absorb(snap snapshot, read func(int) (string, int, error)) {
 	}
 
 	for _, root := range roots {
-		for _, entry := range record(snap.below(root), read) {
+		found, unread := record(snap.below(root), read)
+		p.noteUnread(unread)
+
+		for _, entry := range found {
 			if !tracked[entry.pid] {
 				tracked[entry.pid] = true
 				p.members = append(p.members, entry)
 			}
+		}
+	}
+}
+
+// noteUnread keeps the IDs that a listing couldn't read, and drops the ones a later read settled. The caller holds
+// the mutex.
+func (p *process) noteUnread(unread map[int]bool) {
+	for pid, failed := range unread {
+		if failed {
+			p.unread[pid] = true
+		} else {
+			delete(p.unread, pid)
 		}
 	}
 }
@@ -439,13 +462,16 @@ func (p *process) sweep() {
 }
 
 // cleanedResult sweeps the recorded descendants and returns the child's result. A clean result becomes
-// errCleanupIncomplete when a member couldn't be read, or when every listing failed, because a descendant may
-// still run.
+// errCleanupIncomplete when a member couldn't be read, when a listed process couldn't be read to start with, or when
+// the latest listing failed, because a descendant may still run.
 func (p *process) cleanedResult(result error, read func(int) (string, int, error)) error {
 	left := p.sweepWith(read)
-	blind := p.listFailed.Load() && !p.listed.Load()
 
-	if (len(left) > 0 || blind) && result == nil {
+	p.mutex.Lock()
+	missed := len(p.unread) > 0
+	p.mutex.Unlock()
+
+	if (len(left) > 0 || missed || p.listFailed.Load()) && result == nil {
 		return errCleanupIncomplete
 	}
 

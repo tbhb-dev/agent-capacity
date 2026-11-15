@@ -269,7 +269,7 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 	tracker := &process{
 		cmd: cmd, done: nil, terminal: nil, drained: nil, ended: make(chan struct{}), swept: make(chan struct{}),
 		cleaned: nil, members: nil, mutex: sync.Mutex{}, reaped: atomic.Bool{}, listFailed: atomic.Bool{},
-		listed: atomic.Bool{},
+		unread: map[int]bool{},
 	}
 
 	go tracker.sweepWhileRunning()

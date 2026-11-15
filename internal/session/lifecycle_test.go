@@ -373,7 +373,7 @@ func terminalProcess(cmd *exec.Cmd, reader *os.File) *process {
 	return &process{
 		cmd: cmd, done: make(chan error, 1), terminal: reader, drained: make(chan struct{}), ended: nil, swept: nil,
 		cleaned: nil, members: nil, mutex: sync.Mutex{}, reaped: atomic.Bool{}, listFailed: atomic.Bool{},
-		listed: atomic.Bool{},
+		unread: map[int]bool{},
 	}
 }
 
@@ -384,7 +384,7 @@ func finished(err error) *process {
 
 	return &process{
 		cmd: nil, done: done, terminal: nil, drained: nil, ended: nil, swept: nil, cleaned: nil, members: nil,
-		mutex: sync.Mutex{}, reaped: atomic.Bool{}, listFailed: atomic.Bool{}, listed: atomic.Bool{},
+		mutex: sync.Mutex{}, reaped: atomic.Bool{}, listFailed: atomic.Bool{}, unread: map[int]bool{},
 	}
 }
 
@@ -4053,7 +4053,7 @@ func TestRecordSkipsAProcessWhoseParentChangedAfterTheListing(t *testing.T) {
 	edges := []edge{{pid: reused.Process.Pid, parent: 100}, {pid: kept.Process.Pid, parent: 100}}
 
 	// The listing showed both under parent 100. The reused ID now belongs to a process with another parent.
-	got := record(edges, reading(map[int]int{reused.Process.Pid: 200, kept.Process.Pid: 100}))
+	got, _ := record(edges, reading(map[int]int{reused.Process.Pid: 200, kept.Process.Pid: 100}))
 
 	if !slices.Equal(got, []member{{pid: kept.Process.Pid, started: startKey(kept.Process.Pid)}}) {
 		t.Fatal(got)
@@ -4088,7 +4088,7 @@ func TestAbsorbKeepsAMemberItCannotRead(t *testing.T) {
 		t.Fatal("a failed read dropped a live member", child.members)
 	}
 
-	if got := record(snap.below(leader.Process.Pid), unreadable); len(got) != 0 {
+	if got, _ := record(snap.below(leader.Process.Pid), unreadable); len(got) != 0 {
 		t.Fatal("an unreadable process was recorded", got)
 	}
 }
@@ -4883,7 +4883,7 @@ func TestRecordKeepsOnlyAProcessReadAsListed(t *testing.T) {
 		}
 	}
 
-	if got := record(edges, read); !slices.Equal(got, []member{{pid: 4, started: "d"}}) {
+	if got, _ := record(edges, read); !slices.Equal(got, []member{{pid: 4, started: "d"}}) {
 		t.Fatal(got)
 	}
 }
@@ -5166,7 +5166,7 @@ func TestSignedOutCheckWithoutAChildPublishesNothing(t *testing.T) {
 	}
 }
 
-func TestCleanupFailsWhenEveryListingFailed(t *testing.T) {
+func TestCleanupFailsWhenTheLatestListingFailed(t *testing.T) {
 	t.Parallel()
 
 	readable, _ := failingFirst(0)
@@ -5175,21 +5175,42 @@ func TestCleanupFailsWhenEveryListingFailed(t *testing.T) {
 		result, want error
 		name         string
 		failed       bool
-		listed       bool
 	}{
-		{nil, errCleanupIncomplete, "every listing failed", true, false},
-		{nil, nil, "one listing worked", true, true},
-		{nil, nil, "no listing ran", false, false},
-		{errExecTimeout, errExecTimeout, "a failed result stays", true, false},
+		{nil, errCleanupIncomplete, "the latest listing failed", true},
+		{nil, nil, "the latest listing worked", false},
+		{errExecTimeout, errExecTimeout, "a failed result stays", true},
 	} {
 		child := finished(nil)
 		child.listFailed.Store(scenario.failed)
-		child.listed.Store(scenario.listed)
 
 		err := child.cleanedResult(scenario.result, readable)
 		if !errors.Is(err, scenario.want) {
 			t.Fatal(scenario.name, err)
 		}
+	}
+}
+
+func TestCleanupFailsWhenAListedProcessCouldNotBeRead(t *testing.T) {
+	t.Parallel()
+
+	leader, other := sleeper(t), sleeper(t)
+	child := terminalProcess(leader, nil)
+	snap := snapshot{children: map[int][]int{leader.Process.Pid: {other.Process.Pid}}}
+	broken := func(int) (string, int, error) { return "", 0, syscall.EMFILE }
+
+	child.absorb(snap, broken)
+
+	err := child.cleanedResult(nil, broken)
+	if !errors.Is(err, errCleanupIncomplete) {
+		t.Fatal("an unread descendant went unreported", err)
+	}
+
+	// A later listing that reads the process clears the mark.
+	child.absorb(snap, stamp)
+
+	err = child.cleanedResult(nil, stamp)
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -5202,15 +5223,15 @@ func TestRefreshRecordsFailedAndWorkingListings(t *testing.T) {
 	listing(t, "exit 1")
 	child.refresh()
 
-	if !child.listFailed.Load() || child.listed.Load() {
-		t.Fatal("a failed listing was not recorded", child.listFailed.Load(), child.listed.Load())
+	if !child.listFailed.Load() {
+		t.Fatal("a failed listing was not recorded")
 	}
 
 	listing(t, "echo 5 1")
 	child.refresh()
 
-	if !child.listed.Load() {
-		t.Fatal("a working listing was not recorded")
+	if child.listFailed.Load() {
+		t.Fatal("a working listing did not clear the record")
 	}
 }
 
