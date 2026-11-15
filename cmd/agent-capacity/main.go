@@ -79,6 +79,10 @@ var errArguments = errors.New("invalid arguments")
 
 // Run executes serve or another subcommand. Errors log fixed messages and safe classes.
 func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *slog.Logger) int {
+	if code, handled := runCommand(ctx, args, out, logger); handled {
+		return code
+	}
+
 	command := r.subcommand(ctx, args, out, logger)
 	if command != nil {
 		return command()
@@ -150,6 +154,23 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 	return 0
 }
 
+// runCommand runs the login and session commands. The second result is false for any other arguments.
+func runCommand(ctx context.Context, args []string, out io.Writer, _ *slog.Logger) (int, bool) {
+	if len(args) == 0 {
+		return 0, false
+	}
+
+	switch args[0] {
+	case "login":
+		// gomutants:disable-next-line INTEGER_INCREMENT,INTEGER_DECREMENT reason="Any other slice ends in the same refusal."
+		return loginCommand(ctx, args[1:], os.Stdin, out, os.Stderr), true
+	case "session":
+		return sessionCommand(ctx, args[1:], out), true
+	default:
+		return 0, false
+	}
+}
+
 // subcommand returns the command other than serve that the arguments name, or nil for serve.
 func (r Runtime) subcommand(ctx context.Context, args []string, out io.Writer, logger *slog.Logger) func() int {
 	if len(args) == 1 && args[0] == "version" {
@@ -169,11 +190,6 @@ func (r Runtime) subcommand(ctx context.Context, args []string, out io.Writer, l
 		return func() int { return statusline(ctx, args[1:], os.Stdin, logger) }
 	case "probe":
 		return func() int { return probe(ctx, args[1:], r.Usage, logger) }
-	case "login":
-		// gomutants:disable-next-line INTEGER_INCREMENT,INTEGER_DECREMENT reason="Any other slice ends in the same refusal."
-		return func() int { return loginCommand(ctx, args[1:], os.Stdin, out, os.Stderr) }
-	case "session":
-		return func() int { return sessionCommand(ctx, args[1:], out) }
 	default:
 		return nil
 	}
