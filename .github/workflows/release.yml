@@ -19,28 +19,46 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Refuses a tag whose commit has no passing `ci` result. It looks for the
-  # `conclusion` check run, the one ci.yml gives branch protection, from the
-  # GitHub Actions app (ID 15368, as in the ruleset) on the exact tagged sha.
+  # Refuses a tag unless its commit is on main and its newest `conclusion`
+  # check run succeeded. `conclusion` is the check ci.yml gives branch
+  # protection; it must come from the GitHub Actions app (ID 15368, as in the
+  # ruleset) on the exact tagged sha. A tag ruleset is the real control over
+  # who can push a tag; this job only checks the commit.
   verify:
     name: verify
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
+      contents: read  # Compare the tagged commit with main.
       checks: read  # List the check runs of the tagged commit.
     steps:
+      - name: Require the tagged commit to be on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          status=$(gh api "repos/${GH_REPO}/compare/main...${SHA}" --jq .status)
+          case "${status}" in
+            identical | behind) ;;
+            *)
+              echo "::error::${SHA} is not reachable from main (compare status: ${status})."
+              exit 1
+              ;;
+          esac
+
       - name: Require a passing conclusion check on the tagged commit
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
-          passed=$(gh api --paginate "repos/${GH_REPO}/commits/${SHA}/check-runs?per_page=100" \
-            --jq '.check_runs[]
-              | select(.name == "conclusion" and .app.id == 15368 and .conclusion == "success")
-              | .id')
+          passed=$(gh api --paginate --slurp \
+            "repos/${GH_REPO}/commits/${SHA}/check-runs?check_name=conclusion&filter=all&per_page=100" \
+            | jq -r '[.[].check_runs[] | select(.app.id == 15368)]
+              | sort_by(.id) | last | select(.conclusion == "success") | .id')
           if [ -z "${passed}" ]; then
-            echo "::error::No successful conclusion check run exists for ${SHA}. Tag a commit whose ci run passed."
+            echo "::error::The newest conclusion check run for ${SHA} did not succeed. Tag a commit that passed ci."
             exit 1
           fi
 
@@ -73,6 +91,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 0
 
@@ -122,11 +141,20 @@ jobs:
         working-directory: dist
         run: sha256sum agent-capacity-* > SHA256SUMS
 
-      - name: Create the release
+      # A draft, so nobody sees a release without its files. It goes public
+      # after the binaries and SHA256SUMS are attached.
+      - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: >-
           gh release create "${TAG}" dist/agent-capacity-* dist/SHA256SUMS
-          --verify-tag --title "${TAG}" --generate-notes
+          --draft --verify-tag --title "${TAG}" --generate-notes
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "${TAG}" --draft=false
