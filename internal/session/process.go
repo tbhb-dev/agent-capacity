@@ -393,7 +393,7 @@ func (p *process) refresh() {
 }
 
 // absorb drops each member that has ended or lost its ID to another process, then adds the descendants of the
-// leader and of every remaining member. A member whose parent ended has a new parent, so its own children are
+// leader and of every member read as unchanged. A member whose parent ended has a new parent, so its own children are
 // found through the member. A listing of a reaped child is dropped, because its process ID may belong to another
 // process.
 func (p *process) absorb(snap snapshot, read func(int) (string, int, error)) {
@@ -406,6 +406,7 @@ func (p *process) absorb(snap snapshot, read func(int) (string, int, error)) {
 	}
 
 	tracked := map[int]bool{}
+	verified := map[int]bool{}
 
 	// The listing is older than this check, so an ID dropped here stays out until the next listing. A member that
 	// can't be read now stays, because a failed read says nothing about the process.
@@ -417,14 +418,21 @@ func (p *process) absorb(snap snapshot, read func(int) (string, int, error)) {
 			tracked[entry.pid] = true
 		}
 
+		verified[entry.pid] = err == nil && !gone
+
 		return gone
 	})
 
 	roots := []int{p.cmd.Process.Pid}
 
 	for _, entry := range p.members {
-		roots = append(roots, entry.pid)
 		tracked[entry.pid] = true
+
+		// A member that can't be read may be an ID that a different process now uses, and that process's children
+		// would be recorded as the leader's. Only a member read as unchanged seeds discovery.
+		if verified[entry.pid] {
+			roots = append(roots, entry.pid)
+		}
 	}
 
 	for _, root := range roots {
