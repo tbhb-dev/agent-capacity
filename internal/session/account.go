@@ -35,6 +35,8 @@ const (
 	phaseStopped      = "stopped"
 	phaseIdle         = "idle"
 	reasonNone        = "none"
+	reasonInterrupted = "interrupted"
+	reasonApproval    = "approval_unavailable"
 	refusalExit       = 2
 	privateMode       = 0o600
 )

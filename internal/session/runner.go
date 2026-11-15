@@ -144,7 +144,7 @@ func (s *running) initialApproval() (int, bool) {
 func (s *running) checkApproval() (int, bool) {
 	approved, err := s.options.Approved()
 	if err != nil {
-		return s.finish(1, "approval_unavailable"), true
+		return s.finish(1, reasonApproval), true
 	}
 
 	if !approved {
@@ -187,7 +187,7 @@ func (s *running) loop(ctx context.Context) int {
 
 		select {
 		case <-ctx.Done():
-			return s.finish(1, "interrupted")
+			return s.finish(1, reasonInterrupted)
 		case <-s.clock.After(time.Second):
 		}
 	}
@@ -214,7 +214,7 @@ func (s *running) finish(code int, reason string) int {
 	if code == 1 {
 		// An operator interrupt and a failed state or approval read aren't failures of the child, so they don't
 		// spend the restart budget.
-		if !slices.Contains([]string{"child_exit", "interrupted", "approval_unavailable", "invalid_state"}, reason) {
+		if !slices.Contains([]string{"child_exit", reasonInterrupted, reasonApproval, "invalid_state"}, reason) {
 			s.status.Restarts = append(s.status.Restarts, s.clock.Now())
 		}
 
@@ -248,7 +248,7 @@ func (s *running) step(ctx context.Context) (int, bool) {
 	}
 
 	if ctx.Err() != nil {
-		return s.finish(1, "interrupted"), true
+		return s.finish(1, reasonInterrupted), true
 	}
 
 	code, done := s.checkApproval()
@@ -462,7 +462,8 @@ func (s *running) launch() error {
 
 	// A start that can't list processes would never record a descendant, and the cleanup would report success. The
 	// start fails first and the run stops.
-	if _, err := os.Stat(psPath); err != nil {
+	_, err := os.Stat(psPath)
+	if err != nil {
 		return ErrArguments
 	}
 

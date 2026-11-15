@@ -907,7 +907,7 @@ func TestRunRefusals(t *testing.T) {
 		"linked lock": {func(f *fixture) error {
 			return os.Symlink(f.base, filepath.Join(f.options.directory(), ".runner.lock"))
 		}, noStatus},
-		"missing allow list": {func(f *fixture) error { return os.Remove(f.options.AliasFile) }, "approval_unavailable"},
+		"missing allow list": {func(f *fixture) error { return os.Remove(f.options.AliasFile) }, reasonApproval},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -936,7 +936,7 @@ func TestRunWithoutClockStopsOnCancel(t *testing.T) {
 		t.Fatal(got)
 	}
 
-	if fixtureValue.status(t).Reason != "interrupted" {
+	if fixtureValue.status(t).Reason != reasonInterrupted {
 		t.Fatal(fixtureValue.status(t))
 	}
 }
@@ -1354,7 +1354,7 @@ func TestRemoveOldRolloutAgeRule(t *testing.T) {
 func TestFinishWithoutAFailureKeepsTheRestartBudget(t *testing.T) {
 	t.Parallel()
 
-	for _, reason := range []string{"interrupted", "approval_unavailable", "invalid_state"} {
+	for _, reason := range []string{reasonInterrupted, reasonApproval, "invalid_state"} {
 		fixtureValue := setup(t, vendorClaude)
 		state := stateFor(t, fixtureValue)
 
@@ -1731,8 +1731,7 @@ func TestEarlyFailuresKeepRestartHistory(t *testing.T) {
 	checkRunnerExit(t, fixtureValue, 1)
 
 	got := fixtureValue.status(t)
-	if got.Reason != "approval_unavailable" || len(got.Restarts) != len(previous.Restarts)+1 ||
-		!slices.Equal(got.Restarts[:len(previous.Restarts)], previous.Restarts) {
+	if got.Reason != reasonApproval || !slices.Equal(got.Restarts, previous.Restarts) {
 		t.Fatal(got)
 	}
 }
@@ -2904,7 +2903,7 @@ func TestMissingApprovalFileEndsStepWithOne(t *testing.T) {
 	must(t, os.Remove(fixtureValue.options.AliasFile))
 
 	code, done := state.step(context.Background())
-	fixtureValue.wantStopped(t, code, done, 1, "approval_unavailable")
+	fixtureValue.wantStopped(t, code, done, 1, reasonApproval)
 }
 
 func TestCancelledStepDoesNoWork(t *testing.T) {
@@ -2916,7 +2915,7 @@ func TestCancelledStepDoesNoWork(t *testing.T) {
 	cancel()
 
 	code, done := state.step(ctx)
-	fixtureValue.wantStopped(t, code, done, 1, "interrupted")
+	fixtureValue.wantStopped(t, code, done, 1, reasonInterrupted)
 
 	if state.check != nil {
 		t.Fatal("status check started")
@@ -2935,7 +2934,7 @@ func TestCancelWhileWaitingEndsInterrupted(t *testing.T) {
 	code := (Runner{Options: fixtureValue.options, Clock: clock}).Run(ctx)
 	status := fixtureValue.status(t)
 
-	if code != 1 || status.Phase != phaseStopped || status.Reason != "interrupted" || len(status.Restarts) != 1 {
+	if code != 1 || status.Phase != phaseStopped || status.Reason != reasonInterrupted || len(status.Restarts) != 0 {
 		t.Fatal(code, status)
 	}
 }
@@ -5345,7 +5344,7 @@ func TestFinishStopsTheChildBeforeItPublishesStopped(t *testing.T) {
 
 	state.child = child
 
-	if code := state.finish(1, "interrupted"); code != 1 || state.child != nil {
+	if code := state.finish(1, reasonInterrupted); code != 1 || state.child != nil {
 		t.Fatal(code, state.child)
 	}
 }
