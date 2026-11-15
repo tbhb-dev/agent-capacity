@@ -91,16 +91,43 @@ func TestReadSessionRequiresRegularStatusFile(t *testing.T) {
 	swapHooks(t)
 
 	other := otherDirInfo(t)
+	lstat = lstatReporting("codex-sample.json", other)
+	fstat = func(*os.File) (fs.FileInfo, error) { return other, nil }
+	_, err := ReadSession(root, sessionVendor, sessionAlias)
+	require.ErrorIs(t, err, errSessionState)
+}
+
+func lstatReporting(target string, info fs.FileInfo) func(*os.Root, string) (fs.FileInfo, error) {
 	passthrough := lstat
-	lstat = func(root *os.Root, name string) (fs.FileInfo, error) {
-		if name == "codex-sample.json" {
-			return other, nil
+
+	return func(root *os.Root, name string) (fs.FileInfo, error) {
+		if name == target {
+			return info, nil
 		}
 
 		return passthrough(root, name)
 	}
-	fstat = func(*os.File) (fs.FileInfo, error) { return other, nil }
-	_, err := ReadSession(root, sessionVendor, sessionAlias)
+}
+
+// Reading must not block when a named pipe replaces the file that the stat described.
+//
+//nolint:paralleltest // Faked file info swaps package hooks.
+func TestReadBoundedOpensWithoutBlockingOrFollowing(t *testing.T) {
+	dir, root := testSessionRoot(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "plain"), []byte("abc"), sessionFileMode))
+	require.NoError(t, syscall.Mkfifo(filepath.Join(dir, "pipe"), sessionFileMode))
+	swapHooks(t)
+
+	plain, err := os.Lstat(filepath.Join(dir, "plain"))
+	require.NoError(t, err)
+
+	lstat = lstatReporting("pipe", plain)
+
+	err = withinFiveSeconds(t, func() error {
+		_, readErr := ReadBounded(root, "pipe", 3)
+
+		return readErr
+	})
 	require.ErrorIs(t, err, errSessionState)
 }
 

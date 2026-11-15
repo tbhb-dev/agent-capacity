@@ -625,18 +625,28 @@ func TestReadSessionRejectsPipeWithoutBlocking(t *testing.T) {
 	require.NoError(t, os.Mkdir(status, sessionDirectoryMode))
 	require.NoError(t, syscall.Mkfifo(filepath.Join(status, "codex-sample.json"), sessionFileMode))
 
+	err := withinFiveSeconds(t, func() error {
+		_, readErr := ReadSession(root, sessionVendor, sessionAlias)
+
+		return readErr
+	})
+	require.ErrorIs(t, err, errSessionState)
+}
+
+func withinFiveSeconds(t *testing.T, read func() error) error {
+	t.Helper()
+
 	result := make(chan error, 1)
 
-	go func() {
-		_, err := ReadSession(root, sessionVendor, sessionAlias)
-		result <- err
-	}()
+	go func() { result <- read() }()
 
 	select {
 	case err := <-result:
-		require.ErrorIs(t, err, errSessionState)
+		return err
 	case <-time.After(5 * time.Second):
 		require.Fail(t, "read blocked on a pipe")
+
+		return nil
 	}
 }
 

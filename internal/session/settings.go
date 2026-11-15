@@ -21,7 +21,6 @@ const (
 	safeBypassMode  = "disable"
 	maxDepth        = 32
 	// maxSettingsBytes bounds the settings read. The rendered file is about 1 KiB.
-	// gomutants:disable-next-line INTEGER_INCREMENT,INTEGER_DECREMENT reason="A size bound moved by one step is moot."
 	maxSettingsBytes = 64 << 10
 	settingsPath     = "config/settings.json"
 	commandKey       = "command"
@@ -54,7 +53,6 @@ func checkSettings(alias *os.Root, command string) error {
 		return ErrArguments
 	}
 
-	// gomutants:disable-next-line INTEGER_INCREMENT,INTEGER_DECREMENT reason="The nesting test pins the cap."
 	if checkKeys(json.NewDecoder(bytes.NewReader(data)), 0) != nil {
 		return ErrArguments
 	}

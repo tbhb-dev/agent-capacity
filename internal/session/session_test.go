@@ -52,6 +52,7 @@ type fakeControl struct {
 	Grandchild bool `json:"grandchild"`
 	SelfKill   bool `json:"selfKill"`
 	NewSession bool `json:"newSession"`
+	Linger     bool `json:"linger"`
 }
 type fakeCall struct {
 	Dir  string   `json:"dir"`
@@ -70,6 +71,11 @@ func TestMain(m *testing.M) {
 	syscall.Umask(0)
 
 	exited = func(pid int) { exitedPIDs.Store(pid, true) }
+	sendSignal = func(pid int, signal syscall.Signal) error {
+		signalTargets.Add(int64(pid))
+
+		return syscall.Kill(pid, signal)
+	}
 
 	os.Exit(m.Run())
 }
@@ -93,6 +99,11 @@ func fakeVendor() int {
 
 	if control.Grandchild && startGrandchild(control.NewSession) != nil {
 		return 9
+	}
+
+	if control.Linger {
+		// Long enough for the runner to list the grandchild before this process exits.
+		time.Sleep(3 * sweepInterval)
 	}
 
 	if control.SelfKill {
@@ -405,6 +416,7 @@ func TestSignedOutNeverStartsChild(t *testing.T) {
 					Grandchild: false,
 					SelfKill:   false,
 					NewSession: false,
+					Linger:     false,
 				},
 			)
 			_, result := fixtureValue.run(t)
@@ -449,6 +461,7 @@ func TestStopWinsAndTerminatesChild(t *testing.T) {
 					Grandchild: false,
 					SelfKill:   false,
 					NewSession: false,
+					Linger:     false,
 					ExecExit:   0,
 				},
 			)
@@ -500,6 +513,7 @@ func TestInitiallyStoppedSkipsStatus(t *testing.T) {
 			Grandchild: false,
 			SelfKill:   false,
 			NewSession: false,
+			Linger:     false,
 			ExecExit:   0,
 			Warning:    false,
 			Hold:       false,
@@ -695,6 +709,7 @@ func TestWarningFlagAndNoOutputStored(t *testing.T) {
 			Grandchild: false,
 			SelfKill:   false,
 			NewSession: false,
+			Linger:     false,
 			Status:     0,
 			ExecExit:   0,
 		},
@@ -985,7 +1000,7 @@ func TestSettingsAndHardening(t *testing.T) {
 	for _, arguments := range [][]string{
 		{vendorClaude, "relative-binary", dir},
 		{vendorClaude, binary, "relative-dir"},
-		{"other", binary, dir},
+		{otherName, binary, dir},
 	} {
 		_, err = RenderSettings(arguments[0], fixtureAlias, arguments[1], arguments[2])
 		if !errors.Is(err, ErrArguments) {
@@ -1045,6 +1060,32 @@ func TestWallClockAfterFires(t *testing.T) {
 		t.Fatal("wall clock After never fired")
 	}
 }
+
+// signalCounts counts the signals sent to each process or group ID, keyed by the ID the runner passed.
+type signalCounts struct {
+	counts map[int]int
+	mutex  sync.Mutex
+}
+
+func (c *signalCounts) Add(pid int64) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	if c.counts == nil {
+		c.counts = map[int]int{}
+	}
+
+	c.counts[int(pid)]++
+}
+
+func (c *signalCounts) Count(pid int) int {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	return c.counts[pid]
+}
+
+var signalTargets signalCounts //nolint:gochecknoglobals // The hook in process.go has no other way to report to a test.
 
 // exitedPIDs holds the process IDs whose results the runner's waiter has queued.
 var exitedPIDs sync.Map //nolint:gochecknoglobals // The hook in process.go has no other way to report to a test.

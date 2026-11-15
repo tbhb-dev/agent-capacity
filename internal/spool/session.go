@@ -242,8 +242,10 @@ func readRegular(dir *os.Root, name string, limit int64) ([]byte, fs.FileInfo, e
 		return nil, nil, errSessionState
 	}
 
-	// gomutants:disable-next-line INTEGER_INCREMENT,INVERT_BITWISE reason="SameFile refuses a followed link."
-	file, err := dir.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	// gomutants:disable-next-line INVERT_BITWISE reason="Root.OpenFile follows links inside the root either way."
+	flags := os.O_RDONLY | syscall.O_NOFOLLOW
+	// gomutants:disable-next-line INTEGER_INCREMENT reason="The mode is ignored without a create flag."
+	file, err := dir.OpenFile(name, flags|syscall.O_NONBLOCK, 0)
 	// gomutants:disable-next-line BRANCH_IF reason="The nil file also fails the Stat that follows."
 	if err != nil {
 		return nil, nil, errSessionState

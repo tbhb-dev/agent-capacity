@@ -23,7 +23,6 @@ import (
 )
 
 const (
-	// gomutants:disable-next-line INTEGER_INCREMENT,INTEGER_DECREMENT reason="A size bound moved by one step is moot."
 	maxAllowListBytes = 64 << 10
 	vendorClaude      = "claude"
 	vendorCodex       = "codex"
@@ -274,7 +273,7 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 		// The child shares the caller's terminal, so a separate process group would stop it on terminal input.
 		// Its descendants are found first and killed by process ID after it ends.
 		below := descendants(cmd.Process.Pid)
-		defer killAll(below)
+		defer killAll(below, startTime)
 
 		//nolint:errcheck // The child may already have exited.
 		_ = cmd.Process.Signal(syscall.SIGTERM)
