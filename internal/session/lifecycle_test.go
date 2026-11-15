@@ -4241,8 +4241,10 @@ func TestSweepDelayIsShortOnlyEarly(t *testing.T) {
 
 	// The documented values, so that a change to a constant shows here.
 	for _, pair := range [][2]time.Duration{
-		{0, 100 * time.Millisecond}, {1999 * time.Millisecond, 100 * time.Millisecond},
-		{2 * time.Second, 500 * time.Millisecond}, {2999 * time.Millisecond, 500 * time.Millisecond},
+		{0, 100 * time.Millisecond},
+		{1999 * time.Millisecond, 100 * time.Millisecond},
+		{2 * time.Second, 500 * time.Millisecond},
+		{2999 * time.Millisecond, 500 * time.Millisecond},
 	} {
 		if got := sweepDelay(pair[0]); got != pair[1] {
 			t.Fatal(pair[0], got, pair[1])
@@ -5100,7 +5102,7 @@ func TestSettleLoginSweepsWhenCanceledOrFailedAndKeepsTheError(t *testing.T) {
 
 	live := context.Background()
 
-	for name, tc := range map[string]struct {
+	for name, scenario := range map[string]struct {
 		err   error
 		want  error
 		ctx   func() context.Context
@@ -5115,9 +5117,9 @@ func TestSettleLoginSweepsWhenCanceledOrFailedAndKeepsTheError(t *testing.T) {
 		tracker := terminalProcess(member1, nil)
 		tracker.members = []member{{pid: member1.Process.Pid, started: startKey(member1.Process.Pid)}}
 
-		got := settleLogin(tc.ctx(), tracker, tc.err)
+		got := settleLogin(scenario.ctx(), tracker, scenario.err)
 
-		if !errors.Is(got, tc.want) || (signalTargets.Count(member1.Process.Pid) > 0) != tc.sweep {
+		if !errors.Is(got, scenario.want) || (signalTargets.Count(member1.Process.Pid) > 0) != scenario.sweep {
 			t.Fatal(name, got, signalTargets.Count(member1.Process.Pid))
 		}
 	}
