@@ -4776,25 +4776,23 @@ func TestStatusFailureThatStopsAChildPublishesTheStop(t *testing.T) {
 func TestStatusPublishErrorsEndTheRunner(t *testing.T) {
 	t.Parallel()
 
+	idleCodex := func(t *testing.T, _ fixture, state *running) {
+		t.Helper()
+
+		state.nextExec = state.clock.Now().Add(execInterval)
+	}
+
 	for name, test := range map[string]struct {
 		prepare func(*testing.T, fixture, *running)
 		check   error
 		vendor  string
 	}{
-		"idle Codex after a passing check": {func(t *testing.T, _ fixture, state *running) {
-			t.Helper()
-
-			state.nextExec = state.clock.Now().Add(execInterval)
-		}, nil, vendorCodex},
+		"idle Codex after a passing check": {idleCodex, nil, vendorCodex},
 		"stopped child after a status failure": {func(t *testing.T, fixtureValue fixture, state *running) {
 			t.Helper()
 			liveChild(t, fixtureValue, state)
 		}, codeError(1), vendorClaude},
-		"idle Codex after a status failure": {func(t *testing.T, _ fixture, state *running) {
-			t.Helper()
-
-			state.nextExec = state.clock.Now().Add(execInterval)
-		}, codeError(1), vendorCodex},
+		"idle Codex after a status failure": {idleCodex, codeError(1), vendorCodex},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -5174,20 +5172,22 @@ func TestCleanupFailsWhenEveryListingFailed(t *testing.T) {
 	readable, _ := failingFirst(0)
 
 	for _, scenario := range []struct {
-		name           string
-		failed, listed bool
-		result, want   error
+		result, want error
+		name         string
+		failed       bool
+		listed       bool
 	}{
-		{"every listing failed", true, false, nil, errCleanupIncomplete},
-		{"one listing worked", true, true, nil, nil},
-		{"no listing ran", false, false, nil, nil},
-		{"a failed result stays", true, false, errExecTimeout, errExecTimeout},
+		{nil, errCleanupIncomplete, "every listing failed", true, false},
+		{nil, nil, "one listing worked", true, true},
+		{nil, nil, "no listing ran", false, false},
+		{errExecTimeout, errExecTimeout, "a failed result stays", true, false},
 	} {
 		child := finished(nil)
 		child.listFailed.Store(scenario.failed)
 		child.listed.Store(scenario.listed)
 
-		if err := child.cleanedResult(scenario.result, readable); !errors.Is(err, scenario.want) {
+		err := child.cleanedResult(scenario.result, readable)
+		if !errors.Is(err, scenario.want) {
 			t.Fatal(scenario.name, err)
 		}
 	}

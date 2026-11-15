@@ -43,10 +43,10 @@ func denyList() []string {
 // case-variant keys, and any file that differs from what RenderSettings writes in its keys, its `allow` list and its
 // `statusLine` command, which must equal command. The top level accepts only `statusLine` and `permissions`. The
 // `permissions` object accepts only `defaultMode`, `disableBypassPermissionsMode`, `allow` and `deny`. The
-// `statusLine` object accepts only `type`, `command` and `padding`, and it doesn't check `padding`. The `deny` list must include every refused tool,
-// and extra string entries pass. The check is a floor against a stale or mis-rendered file and doesn't defend against
-// a hostile writer. It doesn't check Codex's configuration, and deny support for the `mcp__*` wildcard is
-// unverified. The `dontAsk` mode is the real control.
+// `statusLine` object accepts only `type`, `command` and `padding`, and it doesn't check `padding`. The `deny` list
+// must include every refused tool, and extra string entries pass. The check is a floor against a stale or
+// mis-rendered file and doesn't defend against a hostile writer. It doesn't check Codex's configuration, and deny
+// support for the `mcp__*` wildcard is unverified. The `dontAsk` mode is the real control.
 func checkSettings(alias *os.Root, command string) error {
 	// The startup check of the directory ran earlier, so a link made since then is caught here.
 	if realDirectory(alias, "config", true) != nil {

@@ -385,11 +385,7 @@ func (s *running) statusFailure(err error) (int, bool) {
 			s.nextExec = s.nextCheck
 		}
 
-		if restarted && s.publish(phaseChecking, reasonNone) != nil {
-			return 1, true
-		}
-
-		if !restarted && s.options.Vendor == vendorCodex && s.publish(phaseIdle, reasonNone) != nil {
+		if s.publishAfterFailure(restarted) != nil {
 			return 1, true
 		}
 
@@ -397,6 +393,19 @@ func (s *running) statusFailure(err error) (int, bool) {
 	}
 
 	return s.finish(1, "status_failed"), true
+}
+
+// publishAfterFailure reports the phase after one failed status check.
+func (s *running) publishAfterFailure(restarted bool) error {
+	if restarted {
+		return s.publish(phaseChecking, reasonNone)
+	}
+
+	if s.options.Vendor == vendorCodex {
+		return s.publish(phaseIdle, reasonNone)
+	}
+
+	return nil
 }
 
 func (s *running) limitReached() bool {

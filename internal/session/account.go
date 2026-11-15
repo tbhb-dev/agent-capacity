@@ -350,7 +350,6 @@ func lockAlias(root *os.Root) (*os.File, error) {
 	}
 
 	if syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
-		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 		_ = file.Close()
 
 		return nil, ErrArguments
