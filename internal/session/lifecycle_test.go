@@ -1351,6 +1351,21 @@ func TestRemoveOldRolloutAgeRule(t *testing.T) {
 	must(t, err)
 }
 
+func TestFinishWithoutAFailureKeepsTheRestartBudget(t *testing.T) {
+	t.Parallel()
+
+	for _, reason := range []string{"interrupted", "approval_unavailable", "invalid_state"} {
+		fixtureValue := setup(t, vendorClaude)
+		state := stateFor(t, fixtureValue)
+
+		fixtureValue.wantStopped(t, state.finish(1, reason), true, 1, reason)
+
+		if len(state.status.Restarts) != 0 {
+			t.Fatal(reason, "spent a restart", state.status.Restarts)
+		}
+	}
+}
+
 func TestFinishAtRestartLimit(t *testing.T) {
 	t.Parallel()
 

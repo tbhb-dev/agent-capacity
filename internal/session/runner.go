@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -211,7 +212,9 @@ func (s *running) finish(code int, reason string) int {
 	s.stopChildren()
 
 	if code == 1 {
-		if reason != "child_exit" {
+		// An operator interrupt and a failed state or approval read aren't failures of the child, so they don't
+		// spend the restart budget.
+		if !slices.Contains([]string{"child_exit", "interrupted", "approval_unavailable", "invalid_state"}, reason) {
 			s.status.Restarts = append(s.status.Restarts, s.clock.Now())
 		}
 
