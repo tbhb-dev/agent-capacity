@@ -68,11 +68,14 @@ jobs:
           cache-save: ${{ github.event_name != 'pull_request' }}
 
       # The bazel-r2-cache remote cache. A fork pull request gets no secrets
-      # and builds without it.
+      # and builds without it. A scheduled run passes an empty token, because
+      # the Worker rejects a pull request token that has no pull request number.
       - name: Use the remote cache
         uses: tbhb-dev/bazel-r2-cache/.github/actions/remote-cache@7b7c1c129366cc6ea7d1817f7b2d82df6550162c  # main
         with:
-          token: ${{ github.event_name == 'push' && secrets.BAZEL_CACHE_TOKEN || secrets.BAZEL_CACHE_PR_TOKEN }}
+          token: >-
+            ${{ github.event_name == 'push' && secrets.BAZEL_CACHE_TOKEN ||
+            github.event_name == 'pull_request' && secrets.BAZEL_CACHE_PR_TOKEN || '' }}
           pull-request: ${{ github.event.pull_request.number }}
 
       # //... is every hermetic gate: the whole-tree lint tests (secrets in
