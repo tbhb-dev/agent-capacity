@@ -209,3 +209,8 @@ creack
 noctx
 unopenable
 lstart
+Kinfo
+Usec
+pids
+sysctl
+starttime
