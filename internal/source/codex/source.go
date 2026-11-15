@@ -280,7 +280,7 @@ func (s *snapshot) readings(account string) ([]capacity.Reading, error) {
 		}
 
 		reading := capacity.Reading{
-			Vendor: "openai", Window: label, Account: account, Source: capacity.CodexRollout,
+			Bucket: "", Vendor: "openai", Window: label, Account: account, Source: capacity.CodexRollout,
 			UsedRatio: *window.UsedPercent / percentScale, ObservedAt: s.observed, ResetAt: time.Time{},
 		}
 		if window.ResetsAt != nil {

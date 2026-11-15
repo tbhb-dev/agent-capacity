@@ -6,6 +6,11 @@ load("@tbhb_rules//repo:defs.bzl", "repo_files")
 
 repo_files()
 
+exports_files(
+    ["testdata/usage-data.json"],
+    visibility = ["//:__pkg__"],
+)
+
 go_library(
     name = "agy",
     srcs = ["agy.go"],
@@ -20,6 +25,7 @@ go_library(
 go_test(
     name = "agy_test",
     srcs = ["agy_test.go"],
+    data = glob(["testdata/**"]),
     embed = [":agy"],
     visibility = ["//:__pkg__"],
     deps = [

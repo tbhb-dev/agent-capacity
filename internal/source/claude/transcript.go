@@ -219,7 +219,7 @@ func transcriptReading(value *transcriptWindow, name, account string, observed t
 	}
 
 	reading := capacity.Reading{
-		Vendor: "anthropic", Source: capacity.ClaudeTranscript, Account: account, Window: name,
+		Bucket: "", Vendor: "anthropic", Source: capacity.ClaudeTranscript, Account: account, Window: name,
 		UsedRatio: *value.Utilization, ResetAt: reset.Time, ObservedAt: observed,
 	}
 

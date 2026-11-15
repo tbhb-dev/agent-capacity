@@ -19,70 +19,106 @@ import (
 	"go.tbhb.dev/agent-capacity/internal/spool"
 )
 
-const agyVendor = "agy"
+const (
+	agyVendor = "agy"
+	validData = `{"groups":[{"buckets":[{"id":"gemini-weekly","window":"weekly","remaining_fraction":0.5,
+"reset_time":"2026-11-21T02:22:26Z"}]}]}`
+)
+
+func snapshot(data string) spool.Snapshot {
+	return spool.Snapshot{
+		Vendor: agyVendor, Account: "work", ObservedAt: time.Unix(100000, 0).UTC(), Data: json.RawMessage(data),
+	}
+}
+
+func TestParseFixture(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile("testdata/usage-data.json")
+	require.NoError(t, err)
+
+	got, err := Parse(snapshot(string(data)))
+	require.NoError(t, err)
+
+	// Subtract at run time, as the parser does, rather than in constant arithmetic.
+	used := func(remaining float64) float64 { return 1 - remaining }
+	want := []struct {
+		window, bucket, reset string
+		used                  float64
+	}{
+		{"7d", "gemini", "2026-11-21T02:22:26Z", used(0.9976193308830261)},
+		{"5h", "gemini", "2026-11-15T07:19:38Z", used(0.9904893636703491)},
+		{"7d", "3p", "2026-11-22T02:20:48Z", 0},
+		{"5h", "3p", "2026-11-15T07:20:48Z", 0},
+	}
+	require.Len(t, got, len(want))
+
+	for index, reading := range got {
+		reset, parseErr := time.Parse(time.RFC3339, want[index].reset)
+		require.NoError(t, parseErr)
+		assert.Equal(t, capacity.Reading{
+			Vendor: "google", Window: want[index].window, Bucket: want[index].bucket, Account: "work",
+			Source: capacity.AGYStatusline, UsedRatio: want[index].used, ResetAt: reset,
+			ObservedAt: time.Unix(100000, 0).UTC(),
+		}, reading)
+	}
+}
 
 func TestParse(t *testing.T) {
 	t.Parallel()
 
+	const (
+		reset = `"reset_time":"2026-11-15T07:19:38Z"`
+		good  = `{"id":"gemini-5h","window":"5h","remaining_fraction":0.25,` + reset + `}`
+	)
+
 	for _, testCase := range []struct {
 		data    string
-		windows []string
-		ratios  []float64
+		used    []float64
 		invalid bool
 	}{
-		{`{"five_hour":{"used_percentage":25,
-"resets_at":200000},
-"seven_day":{"used_percentage":75,
-"resets_at":200000}}`, []string{"5h", "7d"}, []float64{0.25, 0.75}, false},
-		{`{"seven_day":{"used_percentage":40,"resets_at":200000}}`, []string{"7d"}, []float64{0.4}, false},
-		{`{"five_hour":{"used_percentage":100,"resets_at":200000}}`, []string{"5h"}, []float64{1}, false},
-		{`{"five_hour":{"used_percentage":0,"resets_at":200000}}`, []string{"5h"}, []float64{0}, false},
-		{`null`, nil, nil, false},
-		{`{}`, nil, nil, false},
-		{`{"five_hour":null,"seven_day":null}`, nil, nil, false},
-		{`{`, nil, nil, true},
-		{`[]`, nil, nil, true},
-		{`{"five_hour":4}`, nil, nil, true},
-		{`{"five_hour":{"used_percentage":-0.1,"resets_at":200000}}`, nil, nil, true},
-		{`{"five_hour":{"used_percentage":25,
-"resets_at":200000},
-"seven_day":{"used_percentage":100.1,
-"resets_at":200000}}`, nil, nil, true},
-		{`{"five_hour":{"used_percentage":null,"resets_at":200000}}`, nil, nil, true},
-		{`{"five_hour":{"used_percentage":25}}`, nil, nil, true},
+		{
+			`{"groups":[{"buckets":[{"id":"gemini-5h","window":"5h","remaining_fraction":0.25,` + reset + `}]}]}`,
+			[]float64{0.75},
+			false,
+		},
+		{`{"groups":[{"buckets":[{"id":"3p-weekly","window":"weekly",` + reset + `},
+{"id":"3p-5h","window":"5h","remaining_fraction":0.5,` + reset + `}]}]}`, []float64{1, 0.5}, false},
+		{`{"groups":[{"buckets":[{"id":"3p-5h","window":"5h","remaining_fraction":0.5,` + reset + `},
+{"id":"3p-weekly","window":"weekly",` + reset + `}]}]}`, []float64{0.5, 1}, false},
+		{`{"groups":[{"buckets":[` + good + `]},{"buckets":"none"}]}`, nil, true},
+		{`{"groups":[{"buckets":[` + good + `,
+{"id":"gemini-weekly","window":"weekly","remaining_fraction":1}]}]}`, nil, true},
+		{`{"groups":[{"buckets":[` + good + `,
+{"id":"3p-5h","window":"5h","remaining_fraction":1.5,` + reset + `}]}]}`, nil, true},
+		{`{"groups":[{"buckets":[{"id":"other-5h","window":"5h","remaining_fraction":1,` + reset + `},
+{"id":"3p-weekly","window":"weekly",` + reset + `},
+{"id":"gemini-5h","window":"5h",` + reset + `}]}]}`, nil, true},
+		{`{"groups":[{"buckets":[{"id":"other-5h","window":"5h","remaining_fraction":1,` + reset + `},
+{"id":"gemini-month","window":"month","remaining_fraction":1,` + reset + `},
+{"id":"gemini-5h","window":"5h","remaining_fraction":1,` + reset + `}]}]}`, []float64{0}, false},
+		{`{"groups":[{"buckets":[{"id":"other-5h","window":"5h","remaining_fraction":1,` + reset + `}]}]}`, nil, true},
+		{`{"groups":[]}`, nil, true},
+		{`null`, nil, true},
+		{`{`, nil, true},
+		{`[]`, nil, true},
+		{`{"groups":[{"buckets":[{"id":"gemini-5h","window":"5h","remaining_fraction":1}]}]}`, nil, true},
+		{`{"groups":[{"buckets":[{"id":"gemini-5h","window":"5h","remaining_fraction":1.5,` + reset + `}]}]}`, nil, true},
+		{`{"groups":[{"buckets":[{"id":"gemini-5h","window":"5h","remaining_fraction":-0.1,` + reset + `}]}]}`, nil, true},
 	} {
-		snapshot := spool.Snapshot{
-			Vendor:     agyVendor,
-			Account:    "work",
-			ObservedAt: time.Unix(100000, 0).UTC(),
-			Data:       json.RawMessage(testCase.data),
-		}
-
-		got, err := parse(snapshot)
+		got, err := Parse(snapshot(testCase.data))
 		if testCase.invalid {
-			require.ErrorIs(t, err, capacity.ErrInvalidReading)
+			require.ErrorIs(t, err, capacity.ErrInvalidReading, testCase.data)
 			assert.Nil(t, got)
 
 			continue
 		}
 
-		require.NoError(t, err)
-		require.Len(t, got, len(testCase.windows))
+		require.NoError(t, err, testCase.data)
+		require.Len(t, got, len(testCase.used))
 
 		for index, reading := range got {
-			assert.Equal(
-				t,
-				capacity.Reading{
-					Vendor:     "google",
-					Account:    "work",
-					Source:     capacity.AGYStatusline,
-					Window:     testCase.windows[index],
-					UsedRatio:  testCase.ratios[index],
-					ObservedAt: snapshot.ObservedAt,
-					ResetAt:    time.Unix(200000, 0).UTC(),
-				},
-				reading,
-			)
+			assert.InDelta(t, testCase.used[index], reading.UsedRatio, 0, testCase.data)
 		}
 	}
 }
@@ -107,7 +143,7 @@ func TestSource(t *testing.T) {
 					Vendor:     agyVendor,
 					Account:    account,
 					ObservedAt: time.Unix(100000, 0).UTC(),
-					Data:       json.RawMessage(`{"seven_day":{"used_percentage":50,"resets_at":200000}}`),
+					Data:       json.RawMessage(validData),
 				},
 			),
 		)
@@ -119,7 +155,7 @@ func TestSource(t *testing.T) {
 
 	for _, fixture := range []struct{ vendor, account, data string }{
 		{"claude", "other", `{}`},
-		{agyVendor, "invalid", `{"five_hour":{"used_percentage":101,"resets_at":200000}}`},
+		{agyVendor, "invalid", `{"groups":[]}`},
 	} {
 		require.NoError(
 			t,

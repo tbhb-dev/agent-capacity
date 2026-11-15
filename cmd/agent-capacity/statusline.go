@@ -41,7 +41,8 @@ func capture(args []string, input io.Reader, now time.Time) error {
 	vendor := flags.String("vendor", "", "snapshot vendor")
 
 	account := flags.String("account", "", "account alias")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || !spool.ValidIdentity(*vendor, *account) {
+	// Antigravity usage comes from the probe command, not from a status line.
+	if flags.Parse(args) != nil || flags.NArg() != 0 || *vendor != "claude" || !spool.ValidIdentity(*vendor, *account) {
 		return capacity.ErrInvalidReading
 	}
 
@@ -63,12 +64,7 @@ func capture(args []string, input io.Reader, now time.Time) error {
 		return capacity.ErrInvalidReading
 	}
 
-	key := "rate_limits"
-	if *vendor == "agy" {
-		key = "quota"
-	}
-
-	subtree, present := payload[key]
+	subtree, present := payload["rate_limits"]
 	if !present {
 		return nil
 	}
