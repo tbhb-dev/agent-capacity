@@ -22,7 +22,7 @@ dev = [
   # tbhb_rules_python's pip_audit reads the audit set from uv.lock.
   "pip-audit>=2.10.1",
   # The git hook runner used by the configured hooks.
-  "prek==0.5.9",
+  "prek==0.5.10",
 ]
 
 [tool.uv]
