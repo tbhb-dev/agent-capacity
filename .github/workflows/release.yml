@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Tony Burns
+
+---
+# Release on a pushed `v*` tag: build the static binary on a native runner
+# for each platform, then attach the binaries and a SHA256SUMS file to a
+# GitHub release. Only the `release` job can write to the repository.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # The stamped release build, as the `bazel` job in ci.yml builds it. The
+  # binary is static: `//cmd/agent-capacity` sets `pure = "on"`, so cgo is
+  # off.
+  build:
+    name: "build (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            platform: darwin-arm64
+          - os: ubuntu-26.04
+            platform: linux-amd64
+          - os: ubuntu-26.04-arm
+            platform: linux-arm64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Full history: the release build stamps the version through
+      # `git describe`.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Bazel for CI
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@d3b22ae1b01ea934ab9b014058752eb2aec5bcbf  # main
+        with:
+          disk-cache: ${{ github.workflow }}-${{ matrix.os }}
+          cache-save: false
+
+      - name: Build the release binary
+        run: bazelisk build --config=ci --config=release //cmd/agent-capacity
+
+      - name: Name the binary for its platform
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          # The query prints the path relative to the execution root.
+          relative=$(bazelisk cquery --config=ci --config=release --output=files //cmd/agent-capacity)
+          root=$(bazelisk info --config=ci --config=release execution_root)
+          mkdir dist
+          cp "${root}/${relative}" "dist/agent-capacity-${PLATFORM}"
+
+      - name: Keep the binary
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: agent-capacity-${{ matrix.platform }}
+          path: dist/agent-capacity-${{ matrix.platform }}
+          if-no-files-found: error
+
+  # The only job with write access. It runs only when every build passed.
+  release:
+    name: release
+    needs: [build]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: write  # Create the release and attach the files.
+    steps:
+      - name: Download the binaries
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: agent-capacity-*
+          path: dist
+          merge-multiple: true
+
+      - name: Write the checksums
+        working-directory: dist
+        run: sha256sum agent-capacity-* > SHA256SUMS
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: >-
+          gh release create "${TAG}" dist/agent-capacity-* dist/SHA256SUMS
+          --verify-tag --title "${TAG}" --generate-notes
