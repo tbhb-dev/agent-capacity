@@ -162,6 +162,7 @@ func runSessionCommand(ctx context.Context, args []string, out io.Writer, _ *slo
 
 	switch args[0] {
 	case "login":
+		// gomutants:disable-next-line INTEGER_INCREMENT,INTEGER_DECREMENT reason="Any other slice ends in the same refusal."
 		return loginCommand(ctx, args[1:], os.Stdin, out, os.Stderr), true
 	case "session":
 		return sessionCommand(ctx, args[1:], out), true
