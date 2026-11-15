@@ -3247,6 +3247,7 @@ func TestCleanupReportsAMemberItCouldNotRead(t *testing.T) {
 	}
 
 	readable, _ := failingFirst(0)
+
 	err = child.cleanedResult(nil, readable)
 	if err != nil {
 		t.Fatal(err)
