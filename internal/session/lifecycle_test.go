@@ -3886,7 +3886,7 @@ func TestFailedListingKeepsMembers(t *testing.T) {
 		must(t, cmd.Start())
 
 		child := terminalProcess(cmd, nil)
-		kept := []member{{pid: 2000000000, started: "recorded"}}
+		kept := []member{{pid: 2000000000, started: recorded}}
 		child.members = slices.Clone(kept)
 
 		child.refresh()
@@ -4128,8 +4128,11 @@ func TestParseProcessesSkipsLinesWithoutNumbers(t *testing.T) {
 	}
 }
 
-// gone marks a start time that never matches a live process.
-const gone = "gone"
+// gone marks a start time that never matches a live process, and recorded one that a test lists for a member.
+const (
+	gone     = "gone"
+	recorded = "recorded"
+)
 
 func TestRefreshDropsMembersThatEnded(t *testing.T) {
 	t.Parallel()
@@ -4255,7 +4258,7 @@ func TestAbsorbDoesNotSeedFromAMemberItCannotRead(t *testing.T) {
 
 	leader, member1, other := sleeper(t), sleeper(t), sleeper(t)
 	snap := snapshot{children: map[int][]int{member1.Process.Pid: {other.Process.Pid}}}
-	kept := member{pid: member1.Process.Pid, started: "recorded"}
+	kept := member{pid: member1.Process.Pid, started: recorded}
 
 	child := terminalProcess(leader, nil)
 	child.members = []member{kept}
@@ -4470,7 +4473,7 @@ func TestStopListedSkipsMembersThatEndedOrWereReused(t *testing.T) {
 		_ = cmd.Wait() //nolint:errcheck // Only the end of the process matters.
 	}()
 
-	listed := []member{{pid: cmd.Process.Pid, started: "recorded"}}
+	listed := []member{{pid: cmd.Process.Pid, started: recorded}}
 
 	for _, shown := range []string{"", "other"} {
 		unknown := stopListed(listed, func(int) (string, int, error) { return shown, 0, nil })
