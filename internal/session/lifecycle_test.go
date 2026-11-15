@@ -5084,22 +5084,24 @@ func TestSettleLoginSweepsWhenCanceledOrFailedAndKeepsTheError(t *testing.T) {
 
 	cancel()
 
+	live := context.Background()
+
 	for name, tc := range map[string]struct {
-		ctx   context.Context //nolint:containedctx // The table holds one context per case.
+		ctx   func() context.Context
 		err   error
 		sweep bool
 		want  error
 	}{
-		"canceled and clean":  {canceled, nil, true, ErrArguments},
-		"canceled and failed": {canceled, failure, true, failure},
-		"failed":              {context.Background(), failure, true, failure},
-		"clean":               {context.Background(), nil, false, nil},
+		"canceled and clean":  {func() context.Context { return canceled }, nil, true, ErrArguments},
+		"canceled and failed": {func() context.Context { return canceled }, failure, true, failure},
+		"failed":              {func() context.Context { return live }, failure, true, failure},
+		"clean":               {func() context.Context { return live }, nil, false, nil},
 	} {
 		member1 := sleeper(t)
 		tracker := terminalProcess(member1, nil)
 		tracker.members = []member{{pid: member1.Process.Pid, started: startKey(member1.Process.Pid)}}
 
-		got := settleLogin(tc.ctx, tracker, tc.err)
+		got := settleLogin(tc.ctx(), tracker, tc.err)
 
 		if !errors.Is(got, tc.want) || (signalTargets.Count(member1.Process.Pid) > 0) != tc.sweep {
 			t.Fatal(name, got, signalTargets.Count(member1.Process.Pid))
