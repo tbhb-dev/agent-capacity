@@ -4710,3 +4710,38 @@ func TestRelaunchAfterAStopGivesTheChildItsOwnReadingWindow(t *testing.T) {
 		})
 	}
 }
+
+func TestIdleCodexReportsIdleAfterAPassingStatusCheck(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorCodex)
+	state := stateFor(t, fixtureValue)
+	state.nextExec = state.clock.Now().Add(execInterval)
+	must(t, state.publish(phaseChecking, reasonNone))
+	state.check = finished(nil)
+
+	if code, done := state.pollStatusCheck(); code != 0 || done {
+		t.Fatal(code, done)
+	}
+
+	if got := fixtureValue.status(t).Phase; got != phaseIdle {
+		t.Fatalf("an idle runner reported %q", got)
+	}
+}
+
+func TestStatusFailureThatStopsAChildPublishesTheStop(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	state := stateFor(t, fixtureValue)
+	liveChild(t, fixtureValue, state)
+	state.check = finished(codeError(1))
+
+	if code, done := state.pollStatusCheck(); code != 0 || done {
+		t.Fatal(code, done)
+	}
+
+	if got := fixtureValue.status(t).Phase; got == phaseRunning {
+		t.Fatal("the status still reports a running child after the stop")
+	}
+}

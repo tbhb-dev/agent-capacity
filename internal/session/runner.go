@@ -344,6 +344,11 @@ func (s *running) pollStatusCheck() (int, bool) {
 		if s.child == nil && !s.clock.Now().Before(s.nextExec) && s.launch() != nil {
 			return s.finish(1, "start_failed"), true
 		}
+
+		// The check published "checking" for an idle Codex runner, and nothing else would restore the idle phase.
+		if s.child == nil && s.options.Vendor == vendorCodex && s.publish(phaseIdle, reasonNone) != nil {
+			return 1, true
+		}
 	default:
 		if s.clock.Now().Sub(s.checkAt) >= checkTimeout {
 			s.stopChildren()
@@ -375,6 +380,10 @@ func (s *running) statusFailure(err error) (int, bool) {
 
 		s.nextCheck = s.clock.Now().Add(statusInterval)
 		s.nextExec = s.nextCheck
+
+		if restarted && s.publish(phaseChecking, reasonNone) != nil {
+			return 1, true
+		}
 
 		return 0, false
 	}
