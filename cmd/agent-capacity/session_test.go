@@ -131,7 +131,7 @@ func TestRunCommandRoutesSessionCommands(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 
 	for _, args := range [][]string{{loginCommandName, unknownFlag}, {sessionRoute}} {
-		code, handled := runCommand(context.Background(), args, io.Discard, logger)
+		code, handled := runSessionCommand(context.Background(), args, io.Discard, logger)
 		if !handled || code != 2 {
 			t.Fatalf("command %v returned %d, %t", args, code, handled)
 		}
@@ -179,7 +179,7 @@ func TestRunCommandPassesLoginArgumentsAfterTheCommandName(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		code, handled := runCommand(context.Background(), testCase.args, io.Discard, logger)
+		code, handled := runSessionCommand(context.Background(), testCase.args, io.Discard, logger)
 
 		got, readErr := os.ReadFile(diagnostic.Name())
 		if readErr != nil {
@@ -290,7 +290,7 @@ func TestRunCommandPassesLoginArguments(t *testing.T) {
 
 	args := append([]string{loginCommandName}, loginFixture(t, false)...)
 
-	code, handled := runCommand(context.Background(), args, io.Discard, slog.New(slog.DiscardHandler))
+	code, handled := runSessionCommand(context.Background(), args, io.Discard, slog.New(slog.DiscardHandler))
 	if !handled || code != 2 {
 		t.Fatalf("login returned %d, %t", code, handled)
 	}
@@ -311,7 +311,7 @@ func TestRunCommandPassesSessionArguments(t *testing.T) {
 		"--spool-dir=" + dir,
 	}
 
-	code, handled := runCommand(context.Background(), args, &out, slog.New(slog.DiscardHandler))
+	code, handled := runSessionCommand(context.Background(), args, &out, slog.New(slog.DiscardHandler))
 	if !handled || code != 0 || out.Len() == 0 {
 		t.Fatalf("session returned %d, %t with %d bytes", code, handled, out.Len())
 	}
@@ -321,7 +321,7 @@ func TestRunCommandLeavesOtherArgumentsUnhandled(t *testing.T) {
 	t.Parallel()
 
 	for _, args := range [][]string{nil, {versionCommand, extraArgument}, {unknownCommand}} {
-		code, handled := runCommand(context.Background(), args, io.Discard, slog.New(slog.DiscardHandler))
+		code, handled := runSessionCommand(context.Background(), args, io.Discard, slog.New(slog.DiscardHandler))
 		if handled || code != 0 {
 			t.Fatalf("command %v returned %d, %t", args, code, handled)
 		}
