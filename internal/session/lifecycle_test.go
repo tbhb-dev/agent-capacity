@@ -1394,7 +1394,7 @@ func wantRefusedLaunch(t *testing.T, fixtureValue fixture) {
 	state.check = finished(nil)
 
 	code, done := state.pollStatusCheck()
-	fixtureValue.wantStopped(t, code, done, 1, "start_failed")
+	fixtureValue.wantStopped(t, code, done, 1, "settings_refused")
 
 	if state.child != nil || len(fixtureValue.calls(t)) != 0 {
 		t.Fatal("child started with unsafe settings")

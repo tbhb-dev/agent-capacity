@@ -343,8 +343,8 @@ func (s *running) pollStatusCheck() (int, bool) {
 		s.signedOutCount = 0
 
 		s.nextCheck = s.clock.Now().Add(statusInterval)
-		if s.child == nil && !s.clock.Now().Before(s.nextExec) && s.launch() != nil {
-			return s.finish(1, "start_failed"), true
+		if s.child == nil && !s.clock.Now().Before(s.nextExec) {
+			return s.launchAfterCheck()
 		}
 
 		if s.child == nil && s.options.Vendor == vendorCodex && s.publish(phaseIdle, reasonNone) != nil {
@@ -356,6 +356,21 @@ func (s *running) pollStatusCheck() (int, bool) {
 
 			return s.finish(1, "status_failed"), true
 		}
+	}
+
+	return 0, false
+}
+
+// launchAfterCheck starts the child once a status check passes. A settings file the runner refuses gets its own
+// reason, so it reads differently from a child that couldn't start.
+func (s *running) launchAfterCheck() (int, bool) {
+	err := s.launch()
+	if errors.Is(err, errSettingsRefused) {
+		return s.finish(1, "settings_refused"), true
+	}
+
+	if err != nil {
+		return s.finish(1, "start_failed"), true
 	}
 
 	return 0, false
@@ -434,7 +449,7 @@ func codexExecArgs(prompt string) []string {
 func (s *running) launch() error {
 	command := statusCommand(s.options.Exporter, s.options.Account, s.options.SpoolDir)
 	if s.options.Vendor == vendorClaude && checkSettings(s.alias, command) != nil {
-		return ErrArguments
+		return errSettingsRefused
 	}
 
 	args := []string{"--model", "claude-haiku-5-5", "/loop 5m " + s.options.Prompt}
@@ -559,6 +574,8 @@ func exitCode(err error) int {
 }
 
 var errExecTimeout = errors.New("execution timed out")
+
+var errSettingsRefused = errors.New("the settings file was refused")
 
 // errCleanupIncomplete is the result of a child that ended cleanly while a recorded descendant couldn't be read.
 var errCleanupIncomplete = errors.New("a descendant could not be checked")
