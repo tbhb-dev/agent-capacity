@@ -52,7 +52,7 @@ type fakeControl struct {
 	Grandchild bool `json:"grandchild"`
 	SelfKill   bool `json:"selfKill"`
 	NewSession bool `json:"newSession"`
-	Linger     bool `json:"linger"`
+	LingerMs   int  `json:"lingerMs"`
 }
 type fakeCall struct {
 	Dir  string   `json:"dir"`
@@ -101,9 +101,8 @@ func fakeVendor() int {
 		return 9
 	}
 
-	if control.Linger {
-		// Long enough for the runner to list the grandchild before this process exits.
-		time.Sleep(3 * sweepInterval)
+	if control.LingerMs > 0 {
+		time.Sleep(time.Duration(control.LingerMs) * time.Millisecond)
 	}
 
 	if control.SelfKill {
@@ -416,7 +415,7 @@ func TestSignedOutNeverStartsChild(t *testing.T) {
 					Grandchild: false,
 					SelfKill:   false,
 					NewSession: false,
-					Linger:     false,
+					LingerMs:   0,
 				},
 			)
 			_, result := fixtureValue.run(t)
@@ -461,7 +460,7 @@ func TestStopWinsAndTerminatesChild(t *testing.T) {
 					Grandchild: false,
 					SelfKill:   false,
 					NewSession: false,
-					Linger:     false,
+					LingerMs:   0,
 					ExecExit:   0,
 				},
 			)
@@ -513,7 +512,7 @@ func TestInitiallyStoppedSkipsStatus(t *testing.T) {
 			Grandchild: false,
 			SelfKill:   false,
 			NewSession: false,
-			Linger:     false,
+			LingerMs:   0,
 			ExecExit:   0,
 			Warning:    false,
 			Hold:       false,
@@ -709,7 +708,7 @@ func TestWarningFlagAndNoOutputStored(t *testing.T) {
 			Grandchild: false,
 			SelfKill:   false,
 			NewSession: false,
-			Linger:     false,
+			LingerMs:   0,
 			Status:     0,
 			ExecExit:   0,
 		},

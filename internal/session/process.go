@@ -25,6 +25,9 @@ const (
 	// sweepInterval is how often a running child's descendants are listed, so that a descendant that left the
 	// process group is known when the child ends on its own.
 	sweepInterval = 500 * time.Millisecond
+	// The first listings of a new child come at the short delay below, until the window after it has passed.
+	firstSweep  = 100 * time.Millisecond
+	earlyWindow = 2 * time.Second
 )
 
 // exited runs after a process result is queued on done. Tests replace it to wait for that point.
@@ -110,33 +113,27 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 		close(child.drained)
 	}
 
-	go func() {
-		defer close(child.swept)
-
-		ticker := time.NewTicker(sweepInterval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				child.refresh()
-			case <-child.ended:
-				return
-			}
-		}
-	}()
+	go child.sweepWhileRunning()
 
 	go func() {
 		err := cmd.Wait()
+
+		// One last group signal stops children the dead leader left behind. It runs right after the reap, in
+		// the window that the group-signal method describes. From the flag on, nothing signals or lists by the
+		// leader's ID.
+		//nolint:errcheck // The process group may already have exited.
+		_ = sendSignal(-cmd.Process.Pid, syscall.SIGKILL)
+
+		child.mutex.Lock()
+		child.reaped.Store(true)
+		child.mutex.Unlock()
 
 		close(child.ended)
 		<-child.swept
 
 		// Descendants that left the group are stopped from the list kept while the child lived, each after a
 		// check of its start time.
-		child.signalGroup(syscall.SIGKILL)
 		child.sweep()
-		child.reaped.Store(true)
 
 		child.done <- err
 
@@ -149,9 +146,10 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 // signalGroup signals the process group of the leader. The waiter sends one last SIGKILL right after cmd.Wait
 // reaps the leader, which stops children a dead leader left behind. That signal runs in a window of
 // microseconds in which the kernel could already have reused the process ID, and macOS offers Go no
-// wait-without-reap call to close it. Every later call returns without signaling, because by then the
-// process ID may belong to an unrelated group. The flag check and the signal are two steps, so a leader that
-// exits between them leaves the same window of microseconds.
+// wait-without-reap call to close it. The waiter then sets the flag, before any cleanup, and every later
+// call returns without signaling, because by then the process ID may belong to an unrelated group. The flag
+// check and the signal are two steps, so a leader that exits between them leaves the same window of
+// microseconds.
 func (p *process) signalGroup(signal syscall.Signal) {
 	if p.reaped.Load() {
 		return
@@ -180,6 +178,36 @@ func (p *process) closeTerminal() {
 	case <-p.drained:
 	case <-time.After(terminationGrace):
 	}
+}
+
+// sweepWhileRunning lists the descendants until the leader ends. A new child gets frequent early listings, so a
+// descendant that a quick child starts and leaves behind is seen within a tenth of a second.
+func (p *process) sweepWhileRunning() {
+	defer close(p.swept)
+
+	began := time.Now()
+	timer := time.NewTimer(firstSweep)
+
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			p.refresh()
+			timer.Reset(sweepDelay(time.Since(began)))
+		case <-p.ended:
+			return
+		}
+	}
+}
+
+// sweepDelay is the wait before the next listing of a child that has run for the given time.
+func sweepDelay(running time.Duration) time.Duration {
+	if running < earlyWindow {
+		return firstSweep
+	}
+
+	return sweepInterval
 }
 
 // psTimeout bounds one process listing, so a stuck ps can't hold up the exit sweep.
@@ -287,15 +315,16 @@ func killAll(listed []member, lookup func(int) string) {
 // its recorded start time. It lists nothing once the child has been reaped, because the process ID may then
 // belong to another process.
 func (p *process) refresh() {
-	if p.reaped.Load() {
-		return
-	}
-
 	snap := takeSnapshot()
 	found := snap.below(p.cmd.Process.Pid)
 
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
+
+	// The flag is read under the mutex, so a listing that ran across the reap is dropped.
+	if p.reaped.Load() {
+		return
+	}
 
 	p.members = slices.DeleteFunc(p.members, func(entry member) bool { return snap.lookup(entry.pid) != entry.started })
 
