@@ -128,16 +128,16 @@ func start(cmd *exec.Cmd, terminal bool, warning *atomic.Bool) (*process, error)
 		//nolint:errcheck // The process group may already have exited.
 		_ = sendSignal(-cmd.Process.Pid, syscall.SIGKILL)
 
-		child.mutex.Lock()
+		// The flag is set before any lock is taken, so a stop that comes in while a listing holds the lock still
+		// sees the reap. The sweep below takes the lock too, so it waits for a listing that began earlier.
 		child.reaped.Store(true)
-		child.mutex.Unlock()
 
 		close(child.ended)
 		<-child.swept
 
 		// Descendants that left the group are stopped from the list kept while the child lived, each after a
-		// check of its start time.
-		child.sweep()
+		// check of its start time. A member that stayed unreadable turns a clean result into a failure.
+		err = child.cleanedResult(err, stamp)
 		close(child.cleaned)
 
 		child.done <- err
@@ -448,9 +448,19 @@ func (p *process) sweep() {
 	p.sweepWith(stamp)
 }
 
+// cleanedResult sweeps the recorded descendants and returns the child's result. A clean result becomes
+// errCleanupIncomplete when a member stayed unreadable, because that descendant may still run.
+func (p *process) cleanedResult(result error, read func(int) (string, int, error)) error {
+	if left := p.sweepWith(read); len(left) > 0 && result == nil {
+		return errCleanupIncomplete
+	}
+
+	return result
+}
+
 // sweepWith reads again each member that couldn't be read, so a short failure such as too many open files doesn't
 // leave a descendant running. It returns the members that were never readable, which are left alone because their
-// IDs may belong to other processes.
+// IDs may belong to other processes. The same members stay recorded.
 func (p *process) sweepWith(read func(int) (string, int, error)) []member {
 	p.mutex.Lock()
 	listed := slices.Clone(p.members)
@@ -466,6 +476,10 @@ func (p *process) sweepWith(read func(int) (string, int, error)) []member {
 			break
 		}
 	}
+
+	p.mutex.Lock()
+	p.members = listed
+	p.mutex.Unlock()
 
 	return listed
 }
