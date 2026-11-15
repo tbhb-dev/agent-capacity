@@ -36,6 +36,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Unmeasured without mutation testing: keep the 90-minute limit until a run shows the time.
     timeout-minutes: 90
+    # The push to main run writes the shared action cache with the main
+    # token, a secret of the main-only `cache` environment that no pull
+    # request can read. Pull requests use the org PR token, which writes only
+    # their own namespace.
+    environment: ${{ github.event_name == 'push' && 'cache' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -59,8 +64,16 @@ jobs:
       - name: Set up Bazel for CI
         uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@b6f375a670601f5e505138c7ee86f9e259149c65  # main
         with:
-          disk-cache: ${{ github.workflow }}-${{ matrix.os }}
+          disk-cache: ${{ github.event_name == 'push' && 'false' || format('{0}-{1}', github.workflow, matrix.os) }}
           cache-save: ${{ github.event_name != 'pull_request' }}
+
+      # The bazel-r2-cache remote cache. A fork pull request gets no secrets
+      # and builds without it.
+      - name: Use the remote cache
+        uses: tbhb-dev/bazel-r2-cache/.github/actions/remote-cache@7b7c1c129366cc6ea7d1817f7b2d82df6550162c  # main
+        with:
+          token: ${{ github.event_name == 'push' && secrets.BAZEL_CACHE_TOKEN || secrets.BAZEL_CACHE_PR_TOKEN }}
+          pull-request: ${{ github.event.pull_request.number }}
 
       # //... is every hermetic gate: the whole-tree lint tests (secrets in
       # the working tree, YAML, TOML, Markdown, prose, EditorConfig,
@@ -90,13 +103,14 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
-  # Mutation testing runs on one OS leg. Pull requests report survivors.
-  # The job is not in `conclusion`'s needs, so its 64-minute run does not hold
-  # the required check. A failure on main shows in the run, not in `conclusion`.
+  # Mutation testing runs on one OS leg, on pushes to main and nightly only.
+  # Pull requests skip it: the advisory run took 64 minutes there. The job is
+  # not in `conclusion`'s needs, so a failure on main shows in the run.
   mutation:
     name: mutation
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-26.04
-    # Measured: the pull request run took 64 minutes (787c89f, 16:12Z to 17:16Z).
+    # The full run is unmeasured. The advisory pull request run took 64 minutes (787c89f).
     timeout-minutes: 90
     permissions:
       contents: read
