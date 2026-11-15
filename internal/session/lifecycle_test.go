@@ -4697,6 +4697,7 @@ func TestRelaunchAfterAStopGivesTheChildItsOwnReadingWindow(t *testing.T) {
 
 			// The operator removes the stop long after the last reading.
 			fixtureValue.clock.advance(20 * time.Minute)
+
 			state.nextCheck = time.Time{}
 
 			must(t, state.launch())
@@ -4749,19 +4750,19 @@ func TestStatusPublishErrorsEndTheRunner(t *testing.T) {
 	t.Parallel()
 
 	for name, test := range map[string]struct {
-		vendor  string
 		prepare func(*testing.T, fixture, *running)
 		check   error
+		vendor  string
 	}{
-		"idle Codex after a passing check": {vendorCodex, func(t *testing.T, _ fixture, state *running) {
+		"idle Codex after a passing check": {func(t *testing.T, _ fixture, state *running) {
 			t.Helper()
 
 			state.nextExec = state.clock.Now().Add(execInterval)
-		}, nil},
-		"stopped child after a status failure": {vendorClaude, func(t *testing.T, fixtureValue fixture, state *running) {
+		}, nil, vendorCodex},
+		"stopped child after a status failure": {func(t *testing.T, fixtureValue fixture, state *running) {
 			t.Helper()
 			liveChild(t, fixtureValue, state)
-		}, codeError(1)},
+		}, codeError(1), vendorClaude},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
