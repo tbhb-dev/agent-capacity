@@ -31,6 +31,10 @@ jobs:
     permissions:
       contents: read  # Compare the tagged commit with main.
       checks: read  # List the check runs of the tagged commit.
+    # bash runs with pipefail, so a failing `gh api` aborts the check-run step at the assignment.
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Require the tagged commit to be on main
         env:
@@ -171,9 +175,19 @@ jobs:
           gh release create "${TAG}" dist/agent-capacity-* dist/SHA256SUMS
           --draft --verify-tag --title "${TAG}" --generate-notes
 
+      # Check that the draft holds exactly the release files before publishing.
+      # The list is fixed, so a missing binary or an extra file fails here.
+      # Update it with the build matrix, and keep it in the order jq sorts to (uppercase first).
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
-        run: gh release edit "${TAG}" --draft=false
+        run: |
+          expected="SHA256SUMS agent-capacity-darwin-arm64 agent-capacity-linux-amd64 agent-capacity-linux-arm64"
+          attached=$(gh release view "${TAG}" --json assets --jq '[.assets[].name] | sort | join(" ")')
+          if [ "${attached}" != "${expected}" ]; then
+            echo "::error::Draft ${TAG} holds [${attached}], not [${expected}]."
+            exit 1
+          fi
+          gh release edit "${TAG}" --draft=false
