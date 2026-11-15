@@ -175,40 +175,10 @@ govulncheck(
     proxy = "@go_mod_proxy//:proxy",
 )
 
-# Mutation testing runs in full by default. The full target blocks on survivors.
-# The pull request target reports survivors. Other failures still block.
-# For a diff-scope run, write the changes since a base and point the flag at them:
-#
-#   bazel run @tbhb_rules//quality:mutation_changes -- --base origin/main --out .mutation/changes.json
-#   bazel test --@tbhb_rules//quality:changes=//:mutation_changes //:gomutants_advisory_test
+# Mutation testing runs in full, on pushes to main and nightly only. The target
+# blocks on survivors. Pull requests never run it.
 gomutants_test(
     name = "gomutants_test",
-    cpus = 2,
-    data = [
-        "//cmd/agent-capacity:testdata/agy-usage.json",
-        "//internal/keepalive:testdata/stops.json",
-        "//internal/source/agy:testdata/usage-data.json",
-    ],
-    flags = [
-        # Keep mutation runs stable when CI runners are busy.
-        "--timeout-min=20s",
-        "--test-flags=-failfast",
-    ],
-    go_mod = "go.mod",
-    go_sum = "go.sum",
-    proxy = "@go_mod_proxy//:proxy",
-    # Windows does not enforce Unix mode bits. Mutation testing runs only
-    # on Linux and macOS, so tests can detect file permission changes.
-    target_compatible_with = select({
-        "@platforms//os:windows": ["@platforms//:incompatible"],
-        "//conditions:default": [],
-    }),
-    tests = GO_TESTS,
-)
-
-gomutants_test(
-    name = "gomutants_advisory_test",
-    advisory = True,
     cpus = 2,
     data = [
         "//cmd/agent-capacity:testdata/agy-usage.json",
@@ -306,17 +276,6 @@ gobco_test(
     go_sum = "go.sum",
     proxy = "@go_mod_proxy//:proxy",
     tests = ["//internal/source/agy:agy_test"],
-)
-
-# The changes file for a diff-scope mutation run: empty, so full scope,
-# unless mutation_changes has written one.
-filegroup(
-    name = "mutation_changes",
-    # buildifier: disable=constant-glob
-    srcs = glob(
-        [".mutation/changes.json"],
-        allow_empty = True,
-    ),
 )
 
 # Every file of the repository, for the whole-tree checks below. Each package
