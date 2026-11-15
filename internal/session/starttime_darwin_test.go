@@ -16,6 +16,10 @@ func TestStartKeyIsStableForALiveProcessAndEmptyForAMissingOne(t *testing.T) {
 		t.Fatal("unstable or empty start time", first)
 	}
 
+	if _, parent := stamp(os.Getpid()); parent != os.Getppid() {
+		t.Fatal("wrong parent", parent)
+	}
+
 	if startKey(2000000000) != "" {
 		t.Fatal("a missing process has a start time")
 	}
