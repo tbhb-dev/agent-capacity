@@ -49,6 +49,7 @@ go_test(
     deps = [
         "//internal/capacity",
         "//internal/export",
+        "//internal/session",
         "//internal/source/claude",
         "//internal/spool",
         "@com_github_stretchr_testify//assert",
