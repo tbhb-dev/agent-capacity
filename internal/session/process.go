@@ -340,24 +340,6 @@ func record(edges []edge, read func(int) (string, int, error)) []member {
 	return found
 }
 
-// descendants lists the processes below a process ID with their start times. A failed listing gives none.
-func descendants(pid int) []member {
-	snap, listed := reliableSnapshot()
-	if !listed {
-		return nil
-	}
-
-	return record(snap.below(pid), stamp)
-}
-
-// startKey returns the start time of a process, or an empty string when it has ended.
-func startKey(pid int) string {
-	//nolint:errcheck // A process that can't be read has no start time to compare.
-	started, _, _ := stamp(pid)
-
-	return started
-}
-
 // unlessGone turns the error of a read of an ended process into nil. Any other error, such as too many open
 // files, leaves the process unknown.
 func unlessGone(err error) error {
@@ -366,20 +348,6 @@ func unlessGone(err error) error {
 	}
 
 	return err
-}
-
-// killAll stops each listed process that still shows its recorded start time. A process that has
-// ended, or whose ID another process now holds, is skipped. The lookup and the signal are two steps, so a process
-// that ends between them leaves a window of microseconds.
-func killAll(listed []member, lookup func(int) string) {
-	for _, entry := range listed {
-		if started := lookup(entry.pid); started == "" || started != entry.started {
-			continue
-		}
-
-		//nolint:errcheck // The process may already have exited.
-		_ = sendSignal(entry.pid, syscall.SIGKILL)
-	}
 }
 
 // refresh lists the processes and merges them into the members. A failed listing leaves the members as recorded.
@@ -445,13 +413,61 @@ func (p *process) absorb(snap snapshot, read func(int) (string, int, error)) {
 	}
 }
 
+// A sweep reads a member that couldn't be read this many times in all, with the wait below between the reads.
+const (
+	sweepAttempts = 5
+	sweepRetry    = 50 * time.Millisecond
+)
+
+// stopListed stops each listed process that still shows its recorded start time and returns the ones that
+// couldn't be read. A failed read says nothing about the process, so the process is neither signaled nor taken as ended.
+func stopListed(listed []member, read func(int) (string, int, error)) []member {
+	var unknown []member
+
+	for _, entry := range listed {
+		started, _, err := read(entry.pid)
+		if err != nil {
+			unknown = append(unknown, entry)
+
+			continue
+		}
+
+		if started == "" || started != entry.started {
+			continue
+		}
+
+		//nolint:errcheck // The process may already have exited.
+		_ = sendSignal(entry.pid, syscall.SIGKILL)
+	}
+
+	return unknown
+}
+
 // sweep stops every listed descendant that still shows its recorded start time. It runs without a process listing.
 func (p *process) sweep() {
+	p.sweepWith(stamp)
+}
+
+// sweepWith reads again each member that couldn't be read, so a short failure such as too many open files doesn't
+// leave a descendant running. It returns the members that were never readable, which are left alone because their
+// IDs may belong to other processes.
+func (p *process) sweepWith(read func(int) (string, int, error)) []member {
 	p.mutex.Lock()
 	listed := slices.Clone(p.members)
 	p.mutex.Unlock()
 
-	killAll(listed, startKey)
+	for attempt := range sweepAttempts {
+		if attempt > 0 {
+			time.Sleep(sweepRetry)
+		}
+
+		listed = stopListed(listed, read)
+		if len(listed) == 0 {
+			break
+		}
+	}
+
+	return listed
 }
 
 func (p *process) terminate() {
