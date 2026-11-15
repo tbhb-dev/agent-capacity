@@ -313,9 +313,19 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 		err = ErrArguments
 	}
 
+	return settleLogin(ctx, tracker, err)
+}
+
+// settleLogin takes the result of the login child after it has ended.
+func settleLogin(ctx context.Context, tracker *process, err error) error {
 	// A terminal interrupt goes to the child and this process together, so the child may end first.
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || err != nil {
 		tracker.sweep()
+	}
+
+	// A child that traps the interrupt and exits cleanly is still an interrupted login.
+	if ctx.Err() != nil && err == nil {
+		return ErrArguments
 	}
 
 	return err
