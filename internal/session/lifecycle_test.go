@@ -3862,8 +3862,31 @@ func TestParseProcessesSkipsLinesWithoutNumbers(t *testing.T) {
 	t.Parallel()
 
 	got := parseProcesses("10 1 Sat Nov 14 10:00:00 2026\nx 1 a\n11 y b\nshort\n")
-	if len(got) != 1 || len(got[1]) != 1 || got[1][0].pid != 10 || got[1][0].started != "Sat Nov 14 10:00:00 2026" {
+	if len(got.started) != 1 || got.lookup(10) != "Sat Nov 14 10:00:00 2026" || len(got.below(1)) != 1 {
 		t.Fatal(got)
+	}
+}
+
+func TestRefreshDropsMembersThatEnded(t *testing.T) {
+	t.Parallel()
+
+	cmd := exec.CommandContext(context.Background(), "/bin/sleep", "30")
+	must(t, cmd.Start())
+
+	defer func() {
+		//nolint:errcheck // The process may have ended.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait() //nolint:errcheck // Only the end of the process matters.
+	}()
+
+	child := terminalProcess(cmd, nil)
+	alive := member{pid: cmd.Process.Pid, started: takeSnapshot().lookup(cmd.Process.Pid)}
+	child.members = []member{alive, {pid: 2000000000, started: "gone"}, {pid: cmd.Process.Pid, started: "reused"}}
+
+	child.refresh()
+
+	if !slices.Equal(child.members, []member{alive}) {
+		t.Fatal(child.members)
 	}
 }
 
@@ -3926,7 +3949,7 @@ func TestDescendantsListTheStartTimeThatPsReports(t *testing.T) {
 		_ = grandchild.Wait() //nolint:errcheck // Only the end of the process matters.
 	}()
 
-	want := startTime(grandchild.Process.Pid)
+	want := takeSnapshot().lookup(grandchild.Process.Pid)
 	if want == "" {
 		t.Fatal("no start time for a live process")
 	}

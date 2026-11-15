@@ -182,32 +182,46 @@ func (p *process) closeTerminal() {
 	}
 }
 
-// descendants lists the processes below a process ID, found from the parent links that ps reports, each with its
-// start time. A process in a new session has left the group but keeps its parent link until the parent ends.
-func descendants(pid int) []member {
-	//nolint:errcheck,noctx // A failed listing leaves no output. The listing is short and needs no deadline.
-	out, _ := exec.Command("/bin/ps", "-A", "-o", "pid=,ppid=,lstart=").Output()
-
-	children := parseProcesses(string(out))
-
-	var found []member
-
-	for queue := []int{pid}; len(queue) > 0; queue = queue[1:] {
-		for _, child := range children[queue[0]] {
-			found = append(found, child)
-			queue = append(queue, child.pid)
-		}
-	}
-
-	return found
-}
+// psTimeout bounds one process listing, so a stuck ps can't hold up the exit sweep.
+const psTimeout = 5 * time.Second
 
 // psFields is the fewest fields in a listing line: the ID, the parent ID and one word of the start time.
 const psFields = 3
 
-// parseProcesses groups the members of a listing by parent ID and skips any line that doesn't parse.
-func parseProcesses(listing string) map[int][]member {
-	children := map[int][]member{}
+// snapshot is one process listing: the members by parent ID and the start time of each process ID.
+type snapshot struct {
+	children map[int][]member
+	started  map[int]string
+}
+
+// takeSnapshot lists every process with one ps run. A failed or late listing yields an empty snapshot.
+func takeSnapshot() snapshot {
+	var out strings.Builder
+
+	//nolint:noctx // A timer stops a stuck listing, which keeps the callers free of a context parameter.
+	cmd := exec.Command("/bin/ps", "-A", "-o", "pid=,ppid=,lstart=")
+	cmd.Stdout = &out
+
+	// A failed start makes Wait return at once, before the timer can fire. The timer never meets a missing process.
+	//nolint:errcheck // A failed listing leaves no output.
+	_ = cmd.Start()
+
+	stuck := time.AfterFunc(psTimeout, func() {
+		//nolint:errcheck // The listing may have ended already.
+		_ = cmd.Process.Kill()
+	})
+
+	//nolint:errcheck // A failed or stopped listing leaves partial output, which parses line by line.
+	_ = cmd.Wait()
+
+	stuck.Stop()
+
+	return parseProcesses(out.String())
+}
+
+// parseProcesses reads a listing and skips any line that doesn't parse.
+func parseProcesses(listing string) snapshot {
+	snap := snapshot{children: map[int][]member{}, started: map[int]string{}}
 
 	for line := range strings.SplitSeq(listing, "\n") {
 		fields := strings.Fields(line)
@@ -222,23 +236,42 @@ func parseProcesses(listing string) map[int][]member {
 			continue
 		}
 
-		children[parent] = append(children[parent], member{pid: child, started: strings.Join(fields[2:], " ")})
+		started := strings.Join(fields[2:], " ")
+		snap.children[parent] = append(snap.children[parent], member{pid: child, started: started})
+		snap.started[child] = started
 	}
 
-	return children
+	return snap
 }
 
-// startTime returns the start time that ps reports for a process, or an empty string when it has ended.
-func startTime(pid int) string {
-	//nolint:errcheck,noctx,gosec // A failed listing means the process is gone. The ID is an integer.
-	out, _ := exec.Command("/bin/ps", "-o", "lstart=", "-p", strconv.Itoa(pid)).Output()
+// below lists the processes under a process ID, found from the parent links. A process in a new session has left
+// the group but keeps its parent link until the parent ends.
+func (s snapshot) below(pid int) []member {
+	var found []member
 
-	return strings.Join(strings.Fields(string(out)), " ")
+	for queue := []int{pid}; len(queue) > 0; queue = queue[1:] {
+		for _, child := range s.children[queue[0]] {
+			found = append(found, child)
+			queue = append(queue, child.pid)
+		}
+	}
+
+	return found
+}
+
+// lookup returns the start time of a process ID, or an empty string when the listing doesn't show it.
+func (s snapshot) lookup(pid int) string {
+	return s.started[pid]
+}
+
+// descendants lists the processes below a process ID with their start times.
+func descendants(pid int) []member {
+	return takeSnapshot().below(pid)
 }
 
 // killAll stops each listed process that still shows its recorded start time. A process that has
-// ended, or whose ID another process now holds, is skipped. The lookup and the signal are two steps, so a
-// process that ends between them leaves a window of microseconds.
+// ended, or whose ID another process now holds, is skipped. The lookup comes from one listing, so a process that
+// ends between that listing and its signal leaves a window of milliseconds for the later entries.
 func killAll(listed []member, lookup func(int) string) {
 	for _, entry := range listed {
 		if started := lookup(entry.pid); started == "" || started != entry.started {
@@ -250,17 +283,21 @@ func killAll(listed []member, lookup func(int) string) {
 	}
 }
 
-// refresh adds the current descendants to the list. It lists nothing once the child has been reaped, because the
-// process ID may then belong to another process.
+// refresh adds the current descendants to the list and drops each member that the listing no longer shows with
+// its recorded start time. It lists nothing once the child has been reaped, because the process ID may then
+// belong to another process.
 func (p *process) refresh() {
 	if p.reaped.Load() {
 		return
 	}
 
-	found := descendants(p.cmd.Process.Pid)
+	snap := takeSnapshot()
+	found := snap.below(p.cmd.Process.Pid)
 
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
+
+	p.members = slices.DeleteFunc(p.members, func(entry member) bool { return snap.lookup(entry.pid) != entry.started })
 
 	for _, entry := range found {
 		if !slices.Contains(p.members, entry) {
@@ -269,13 +306,13 @@ func (p *process) refresh() {
 	}
 }
 
-// sweep stops every listed descendant that still shows its recorded start time.
+// sweep stops every listed descendant that still shows its recorded start time, from one listing.
 func (p *process) sweep() {
 	p.mutex.Lock()
 	listed := slices.Clone(p.members)
 	p.mutex.Unlock()
 
-	killAll(listed, startTime)
+	killAll(listed, takeSnapshot().lookup)
 }
 
 func (p *process) terminate() {
