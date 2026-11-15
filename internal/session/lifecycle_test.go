@@ -3232,7 +3232,8 @@ func TestCleanupReportsAMemberItCouldNotRead(t *testing.T) {
 
 	unreadable, _ := failingFirst(math.MaxInt32)
 
-	if err := child.cleanedResult(nil, unreadable); !errors.Is(err, errCleanupIncomplete) {
+	err := child.cleanedResult(nil, unreadable)
+	if !errors.Is(err, errCleanupIncomplete) {
 		t.Fatal("a clean result hid a member that could not be read:", err)
 	}
 
@@ -3240,13 +3241,14 @@ func TestCleanupReportsAMemberItCouldNotRead(t *testing.T) {
 		t.Fatal("the unreadable member was dropped:", child.members)
 	}
 
-	failed := errors.New("exit status 3")
-	if err := child.cleanedResult(failed, unreadable); !errors.Is(err, failed) {
+	err = child.cleanedResult(errExecTimeout, unreadable)
+	if !errors.Is(err, errExecTimeout) {
 		t.Fatal("a failed result was replaced:", err)
 	}
 
 	readable, _ := failingFirst(0)
-	if err := child.cleanedResult(nil, readable); err != nil {
+	err = child.cleanedResult(nil, readable)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -3275,7 +3277,8 @@ while :; do /bin/sleep 0.05; done`, base)
 	go func() { result <- waitLogin(ctx, cmd) }()
 
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := os.Stat(base + ".ready"); err == nil {
+		_, err := os.Stat(base + ".ready")
+		if err == nil {
 			break
 		}
 
@@ -3304,7 +3307,8 @@ while :; do /bin/sleep 0.05; done`, base)
 		_ = syscall.Kill(descendant, syscall.SIGKILL)
 	}()
 
-	if err := <-result; !errors.Is(err, ErrArguments) {
+	err := <-result
+	if !errors.Is(err, ErrArguments) {
 		t.Fatal(err)
 	}
 
