@@ -451,7 +451,7 @@ func (p *process) sweepWith(read func(int) (string, int, error)) []member {
 	p.mutex.Unlock()
 
 	for attempt := range sweepAttempts {
-		// gomutants:disable-next-line CONDITIONALS_BOUNDARY,INTEGER_DECREMENT reason="A wait before the first read only delays it."
+		// gomutants:disable-next-line CONDITIONALS_BOUNDARY,INTEGER_DECREMENT reason="The first read only starts later."
 		if attempt > 0 {
 			time.Sleep(sweepRetry)
 		}
