@@ -273,7 +273,7 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 		// The child shares the caller's terminal, so a separate process group would stop it on terminal input.
 		// Its descendants are found first and killed by process ID after it ends.
 		below := descendants(cmd.Process.Pid)
-		defer killAll(below, startTime)
+		defer func() { killAll(below, takeSnapshot().lookup) }()
 
 		//nolint:errcheck // The child may already have exited.
 		_ = cmd.Process.Signal(syscall.SIGTERM)
