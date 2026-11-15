@@ -290,14 +290,10 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 		done <- err
 	}()
 
-	select {
-	case err := <-done:
-		// A terminal interrupt goes to the child and this process together, so the child may end first.
-		if ctx.Err() != nil {
-			tracker.sweep()
-		}
+	var err error
 
-		return err
+	select {
+	case err = <-done:
 	case <-ctx.Done():
 		// One more listing catches a descendant started since the last one. The listing is dropped if the child has ended.
 		tracker.refresh()
@@ -314,10 +310,15 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 			<-done //nolint:errcheck // Shutdown only needs process completion.
 		}
 
-		tracker.sweep()
-
-		return ErrArguments
+		err = ErrArguments
 	}
+
+	// A terminal interrupt goes to the child and this process together, so the child may end first.
+	if ctx.Err() != nil {
+		tracker.sweep()
+	}
+
+	return err
 }
 
 const lockName = ".runner.lock"
