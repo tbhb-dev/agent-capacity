@@ -67,7 +67,10 @@ func TestParseFixture(t *testing.T) {
 func TestParse(t *testing.T) {
 	t.Parallel()
 
-	const reset = `"reset_time":"2026-11-15T07:19:38Z"`
+	const (
+		reset = `"reset_time":"2026-11-15T07:19:38Z"`
+		good  = `{"id":"gemini-5h","window":"5h","remaining_fraction":0.25,` + reset + `}`
+	)
 
 	for _, testCase := range []struct {
 		data    string
@@ -81,6 +84,13 @@ func TestParse(t *testing.T) {
 		},
 		{`{"groups":[{"buckets":[{"id":"3p-weekly","window":"weekly",` + reset + `},
 {"id":"3p-5h","window":"5h","remaining_fraction":0.5,` + reset + `}]}]}`, []float64{1, 0.5}, false},
+		{`{"groups":[{"buckets":[{"id":"3p-5h","window":"5h","remaining_fraction":0.5,` + reset + `},
+{"id":"3p-weekly","window":"weekly",` + reset + `}]}]}`, []float64{0.5, 1}, false},
+		{`{"groups":[{"buckets":[` + good + `]},{"buckets":"none"}]}`, nil, true},
+		{`{"groups":[{"buckets":[` + good + `,
+{"id":"gemini-weekly","window":"weekly","remaining_fraction":1}]}]}`, nil, true},
+		{`{"groups":[{"buckets":[` + good + `,
+{"id":"3p-5h","window":"5h","remaining_fraction":1.5,` + reset + `}]}]}`, nil, true},
 		{`{"groups":[{"buckets":[{"id":"other-5h","window":"5h","remaining_fraction":1,` + reset + `},
 {"id":"3p-weekly","window":"weekly",` + reset + `},
 {"id":"gemini-5h","window":"5h",` + reset + `}]}]}`, nil, true},

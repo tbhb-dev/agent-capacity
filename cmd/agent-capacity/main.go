@@ -79,9 +79,9 @@ var errArguments = errors.New("invalid arguments")
 
 // Run executes serve or another subcommand. Errors log fixed messages and safe classes.
 func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *slog.Logger) int {
-	code, ran := r.subcommand(ctx, args, out, logger)
-	if ran {
-		return code
+	command := r.subcommand(ctx, args, out, logger)
+	if command != nil {
+		return command()
 	}
 
 	options, err := parseServe(args)
@@ -150,25 +150,27 @@ func (r Runtime) Run(ctx context.Context, args []string, out io.Writer, logger *
 	return 0
 }
 
-// subcommand runs any command other than serve and reports whether it ran one.
-func (r Runtime) subcommand(ctx context.Context, args []string, out io.Writer, logger *slog.Logger) (int, bool) {
+// subcommand returns the command other than serve that the arguments name, or nil for serve.
+func (r Runtime) subcommand(ctx context.Context, args []string, out io.Writer, logger *slog.Logger) func() int {
 	if len(args) == 1 && args[0] == "version" {
-		fmt.Fprintln(out, "agent-capacity 0.0.0-dev")
+		return func() int {
+			fmt.Fprintln(out, "agent-capacity 0.0.0-dev")
 
-		return 0, true
+			return 0
+		}
 	}
 
 	if len(args) == 0 {
-		return 0, false
+		return nil
 	}
 
 	switch args[0] {
 	case "statusline":
-		return statusline(ctx, args[1:], os.Stdin, logger), true
+		return func() int { return statusline(ctx, args[1:], os.Stdin, logger) }
 	case "probe":
-		return probe(ctx, args[1:], r.Usage, logger), true
+		return func() int { return probe(ctx, args[1:], r.Usage, logger) }
 	default:
-		return 0, false
+		return nil
 	}
 }
 

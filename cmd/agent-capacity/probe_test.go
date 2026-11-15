@@ -6,10 +6,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,11 +25,16 @@ import (
 	"go.tbhb.dev/agent-capacity/internal/spool"
 )
 
-const usageFixture = "testdata/agy-usage.json"
+const (
+	usageFixture = "testdata/agy-usage.json"
+	// The probe gives the usage command two minutes. Spelled out here so a changed constant fails the tests.
+	usageDeadline = 2 * time.Minute
+)
 
 func fixed(output []byte, err error) func(context.Context) ([]byte, error) {
 	return func(ctx context.Context) ([]byte, error) {
-		if _, found := ctx.Deadline(); !found {
+		deadline, found := ctx.Deadline()
+		if left := time.Until(deadline); !found || left > usageDeadline || left < usageDeadline-time.Minute {
 			return nil, errors.ErrUnsupported
 		}
 
@@ -63,6 +71,9 @@ func TestProbeUsage(t *testing.T) {
 	)
 	assert.Empty(t, readFailures)
 	assert.Len(t, readings, 4)
+
+	padded := append(bytes.Clone(output), bytes.Repeat([]byte(" "), inputLimit-len(output))...)
+	require.NoError(t, probeUsage(t.Context(), []string{"--spool-dir=" + dir, workFlag}, fixed(padded, nil), observed))
 }
 
 func TestProbeUsageErrors(t *testing.T) {
@@ -83,7 +94,7 @@ func TestProbeUsageErrors(t *testing.T) {
 		{fixed(valid, nil), capacity.ErrInvalidReading, []string{"--account=@"}},
 		{fixed(valid, nil), capacity.ErrInvalidReading, []string{unknownFlag}},
 		{fixed(valid, nil), capacity.ErrInvalidReading, []string{workFlag, "extra"}},
-		{fixed(valid, nil), spool.ErrDirectory, []string{workFlag, "--spool-dir="}},
+		{fixed(nil, os.ErrNotExist), spool.ErrDirectory, []string{workFlag, "--spool-dir="}},
 		{fixed(nil, os.ErrNotExist), os.ErrNotExist, nil},
 		{fixed([]byte(`{`), nil), capacity.ErrInvalidReading, nil},
 		{fixed(bytes.Replace(valid, []byte(`"SUCCESS"`), []byte(`"ERROR"`), 1), nil), capacity.ErrInvalidReading, nil},
@@ -101,7 +112,8 @@ func TestProbeUsageErrors(t *testing.T) {
 
 		got := probeUsage(t.Context(), args, testCase.usage, time.Now())
 		if errors.Is(testCase.want, os.ErrExist) {
-			require.Error(t, got)
+			var pathErr *fs.PathError
+			require.ErrorAs(t, got, &pathErr)
 			require.NotErrorIs(t, got, capacity.ErrInvalidReading)
 
 			continue
@@ -189,6 +201,9 @@ func TestRunUsage(t *testing.T) {
 
 	output, err = runUsage(t.Context())
 	require.ErrorContains(t, err, "run usage command")
+
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr)
 	assert.Equal(t, "read", capacity.ErrorClass(err))
 	assert.Nil(t, output)
 
@@ -205,5 +220,38 @@ func TestRunUsage(t *testing.T) {
 
 	_, err = runUsage(t.Context())
 	require.ErrorIs(t, err, fs.ErrNotExist)
+	require.ErrorIs(t, err, exec.ErrNotFound)
 	assert.Equal(t, "missing", capacity.ErrorClass(err))
+}
+
+// TestProbeProcess checks the exit code and that a bad flag logs one line and no usage text.
+func TestProbeProcess(t *testing.T) {
+	t.Parallel()
+
+	executable, err := os.Executable()
+	require.NoError(t, err)
+
+	command := exec.CommandContext(t.Context(), executable, "probe", unknownFlag)
+
+	command.Env = append(os.Environ(), processTest+"=1")
+
+	var out, logs bytes.Buffer
+
+	command.Stdout = &out
+	command.Stderr = &logs
+
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, command.Run(), &exitErr)
+	assert.Equal(t, 1, exitErr.ExitCode())
+	assert.Empty(t, out.String())
+
+	decoder := json.NewDecoder(&logs)
+
+	var entry map[string]any
+	require.NoError(t, decoder.Decode(&entry))
+	assert.Equal(t, "probe failed", entry["msg"])
+	assert.Equal(t, invalidClass, entry["class"])
+
+	var trailing any
+	require.ErrorIs(t, decoder.Decode(&trailing), io.EOF)
 }
