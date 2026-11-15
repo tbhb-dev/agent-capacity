@@ -4128,6 +4128,9 @@ func TestParseProcessesSkipsLinesWithoutNumbers(t *testing.T) {
 	}
 }
 
+// gone is a start time that no process shows.
+const gone = "gone"
+
 func TestRefreshDropsMembersThatEnded(t *testing.T) {
 	t.Parallel()
 
@@ -4142,7 +4145,7 @@ func TestRefreshDropsMembersThatEnded(t *testing.T) {
 
 	child := terminalProcess(cmd, nil)
 	alive := member{pid: cmd.Process.Pid, started: startKey(cmd.Process.Pid)}
-	child.members = []member{alive, {pid: 2000000000, started: "gone"}, {pid: cmd.Process.Pid, started: "reused"}}
+	child.members = []member{alive, {pid: 2000000000, started: gone}, {pid: cmd.Process.Pid, started: "reused"}}
 
 	child.refresh()
 
@@ -4331,10 +4334,10 @@ func TestSweepLeavesAMemberThatStaysUnreadable(t *testing.T) {
 	kept := member{pid: orphan.Process.Pid, started: startKey(orphan.Process.Pid)}
 
 	child := terminalProcess(leader, nil)
-	child.members = []member{kept, {pid: 2000000000, started: "gone"}}
+	child.members = []member{kept, {pid: 2000000000, started: gone}}
 
 	read, calls := failingFirst(2 * sweepAttempts)
-	if left := child.sweepWith(read); !slices.Equal(left, []member{kept, {pid: 2000000000, started: "gone"}}) {
+	if left := child.sweepWith(read); !slices.Equal(left, []member{kept, {pid: 2000000000, started: gone}}) {
 		t.Fatal(left)
 	}
 
@@ -4373,6 +4376,7 @@ func TestCanceledLoginStopsADescendantThatOutlivesTheChild(t *testing.T) {
 
 		//nolint:errcheck // A missing or partial file is read again.
 		data, _ := os.ReadFile(noted)
+		//nolint:errcheck // A partial file is read again.
 		descendant, _ = strconv.Atoi(strings.TrimSpace(string(data)))
 	}
 
@@ -4383,15 +4387,12 @@ func TestCanceledLoginStopsADescendantThatOutlivesTheChild(t *testing.T) {
 
 	cancel()
 
-	if err := <-result; !errors.Is(err, ErrArguments) {
+	err := <-result
+	if !errors.Is(err, ErrArguments) {
 		t.Fatal(err)
 	}
 
-	for deadline := time.Now().Add(2 * time.Second); startKey(descendant) != ""; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("a canceled login left its descendant running")
-		}
-	}
+	waitEnded(t, descendant, "a canceled login left its descendant running")
 }
 
 func TestLoginInterruptedWithItsChildStopsTheDescendant(t *testing.T) {
@@ -4419,7 +4420,9 @@ func TestLoginInterruptedWithItsChildStopsTheDescendant(t *testing.T) {
 		//nolint:errcheck // A missing or partial file is read again.
 		data, _ := os.ReadFile(noted)
 		if fields := strings.Fields(string(data)); len(fields) == 2 {
+			//nolint:errcheck // A partial file is read again.
 			descendant, _ = strconv.Atoi(fields[0])
+			//nolint:errcheck // A partial file is read again.
 			shell, _ = strconv.Atoi(fields[1])
 		}
 	}
@@ -4437,13 +4440,42 @@ func TestLoginInterruptedWithItsChildStopsTheDescendant(t *testing.T) {
 	must(t, syscall.Kill(shell, syscall.SIGKILL))
 	cancel()
 
-	if err := <-result; err == nil {
+	err := <-result
+	if err == nil {
 		t.Fatal("an interrupted login reported success")
 	}
 
-	for deadline := time.Now().Add(2 * time.Second); startKey(descendant) != ""; time.Sleep(10 * time.Millisecond) {
+	waitEnded(t, descendant, "an interrupted login left its descendant running")
+}
+
+func waitEnded(t *testing.T, pid int, failure string) {
+	t.Helper()
+
+	for deadline := time.Now().Add(2 * time.Second); startKey(pid) != ""; time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatal("an interrupted login left its descendant running")
+			t.Fatal(failure)
+		}
+	}
+}
+
+func TestStopListedSkipsMembersThatEndedOrWereReused(t *testing.T) {
+	t.Parallel()
+
+	cmd := exec.CommandContext(context.Background(), "/bin/sleep", "30")
+	must(t, cmd.Start())
+
+	defer func() {
+		//nolint:errcheck // The process may have ended.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait() //nolint:errcheck // Only the end of the process matters.
+	}()
+
+	listed := []member{{pid: cmd.Process.Pid, started: "recorded"}}
+
+	for _, shown := range []string{"", "other"} {
+		unknown := stopListed(listed, func(int) (string, int, error) { return shown, 0, nil })
+		if len(unknown) != 0 || startKey(cmd.Process.Pid) == "" {
+			t.Fatalf("a member showing %q was signaled or reported unreadable", shown)
 		}
 	}
 }
