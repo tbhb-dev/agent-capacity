@@ -76,7 +76,7 @@ func TestOtherChildEndsRequestRestart(t *testing.T) {
 					Grandchild: false,
 					SelfKill:   false,
 					NewSession: false,
-					Linger:     false,
+					LingerMs:   0,
 				},
 			)
 			_, result := fixtureValue.run(t)
@@ -108,7 +108,7 @@ func TestStatusFailureAndTimeout(t *testing.T) {
 					Grandchild: false,
 					SelfKill:   false,
 					NewSession: false,
-					Linger:     false,
+					LingerMs:   0,
 					Hold:       false,
 					EndClaude:  false,
 					IgnoreTerm: false,
@@ -197,7 +197,7 @@ func TestCodexDoesNotOverlapExec(t *testing.T) {
 			Grandchild: false,
 			SelfKill:   false,
 			NewSession: false,
-			Linger:     false,
+			LingerMs:   0,
 			Status:     0,
 			ExecExit:   0,
 			Warning:    false,
@@ -2297,7 +2297,7 @@ func TestHeldPipeResults(t *testing.T) {
 				EndClaude: test.endClaude, IgnoreTerm: false, HoldStatus: false, Grandchild: true,
 				SelfKill:   test.selfKill,
 				NewSession: false,
-				Linger:     false,
+				LingerMs:   0,
 			})
 			grandchildFile := filepath.Join(fixtureValue.options.directory(), directoryWork, "grandchild")
 			killGrandchildAfter(t, grandchildFile)
@@ -3828,33 +3828,50 @@ func TestTerminateKillsDescendantInAnotherSession(t *testing.T) {
 func TestNaturalExitStopsDescendantInAnotherSession(t *testing.T) {
 	t.Parallel()
 
-	for _, terminal := range []bool{false, true} {
-		t.Run(fmt.Sprint("terminal ", terminal), func(t *testing.T) {
-			t.Parallel()
+	// The short linger ends the child before the first full sweep interval has passed.
+	for _, linger := range []int{400, int(3 * sweepInterval / time.Millisecond)} {
+		for _, terminal := range []bool{false, true} {
+			testNaturalExit(t, terminal, linger)
+		}
+	}
+}
 
-			fixtureValue := setup(t, vendorClaude)
+func testNaturalExit(t *testing.T, terminal bool, linger int) {
+	t.Helper()
 
-			var control fakeControl
+	t.Run(fmt.Sprint("terminal ", terminal, " linger ", linger), func(t *testing.T) {
+		t.Parallel()
 
-			control.Grandchild, control.NewSession, control.Linger = true, true, true
-			fixtureValue.control(t, control)
+		fixtureValue := setup(t, vendorClaude)
 
-			grandchildFile := filepath.Join(fixtureValue.options.directory(), directoryWork, "grandchild")
-			killGrandchildAfter(t, grandchildFile)
+		var control fakeControl
 
-			var warning atomic.Bool
+		control.Grandchild, control.NewSession, control.LingerMs = true, true, linger
+		fixtureValue.control(t, control)
 
-			child, err := start(fixtureValue.options.command(commandExec), terminal, &warning)
-			must(t, err)
+		grandchildFile := filepath.Join(fixtureValue.options.directory(), directoryWork, "grandchild")
+		killGrandchildAfter(t, grandchildFile)
 
-			defer child.signalGroup(syscall.SIGKILL)
+		var warning atomic.Bool
 
-			must(t, <-child.done)
+		child, err := start(fixtureValue.options.command(commandExec), terminal, &warning)
+		must(t, err)
 
-			if !processGone(grandchildPID(t, grandchildFile)) {
-				t.Fatal("a descendant in another session survived the child's own exit")
-			}
-		})
+		defer child.signalGroup(syscall.SIGKILL)
+
+		must(t, <-child.done)
+
+		if !processGone(grandchildPID(t, grandchildFile)) {
+			t.Fatal("a descendant in another session survived the child's own exit")
+		}
+	})
+}
+
+func TestSweepDelayIsShortOnlyEarly(t *testing.T) {
+	t.Parallel()
+
+	if sweepDelay(0) != firstSweep || sweepDelay(earlyWindow) != sweepInterval {
+		t.Fatal(sweepDelay(0), sweepDelay(earlyWindow))
 	}
 }
 
