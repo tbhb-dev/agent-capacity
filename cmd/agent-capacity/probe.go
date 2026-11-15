@@ -24,15 +24,35 @@ import (
 // The usage command waits up to 100 seconds for its own answer.
 const probeTimeout = 2 * time.Minute
 
-// runUsage asks the Antigravity command on PATH for quota, which neither starts an agent turn nor spends quota.
-// It inherits the environment. The caller picks the account through the home directory.
+// usageWaitDelay bounds the wait for the output pipe after the deadline kills the command.
+// A child process of the command could otherwise hold the pipe open past the deadline.
+const usageWaitDelay = 5 * time.Second
+
+// usageCommand builds the request to the Antigravity command on PATH for quota, which neither starts an agent turn
+// nor spends quota. It inherits the environment. The caller picks the account through the home directory.
+func usageCommand(ctx context.Context) *exec.Cmd {
+	command := exec.CommandContext(
+		ctx, "agy", "-p", "/usage", "--output-format", "json", "--print-timeout", "100s",
+	)
+	command.WaitDelay = usageWaitDelay
+
+	return command
+}
+
+// runUsage asks the Antigravity command for quota.
+func runUsage(ctx context.Context) ([]byte, error) {
+	return runCommand(ctx, usageCommand(ctx))
+}
+
+// runCommand keeps at most one byte past the size limit of the output, which the caller rejects.
 // Errors keep their cause for logging: a missing command counts as a missing file,
 // and a command killed at the deadline or on cancel reports the context's error
 // instead of the signal.
-func runUsage(ctx context.Context) ([]byte, error) {
-	output, err := exec.CommandContext(
-		ctx, "agy", "-p", "/usage", "--output-format", "json", "--print-timeout", "100s",
-	).Output()
+func runCommand(ctx context.Context, command *exec.Cmd) ([]byte, error) {
+	output := &limitedBuffer{data: nil, limit: maxStatusline + 1}
+	command.Stdout = output
+
+	err := command.Run()
 
 	switch {
 	case err == nil:
@@ -44,7 +64,20 @@ func runUsage(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("run usage command: %w", err)
 	}
 
-	return output, nil
+	return output.data, nil
+}
+
+// limitedBuffer keeps the first limit bytes written to it and drops the rest without an error.
+type limitedBuffer struct {
+	data  []byte
+	limit int
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	keep := min(len(p), b.limit-len(b.data))
+	b.data = append(b.data, p[:keep]...)
+
+	return len(p), nil
 }
 
 func probe(ctx context.Context, args []string, usage func(context.Context) ([]byte, error), logger *slog.Logger) int {
@@ -77,6 +110,10 @@ func probeUsage(ctx context.Context, args []string, usage func(context.Context) 
 
 	if *dir == "" {
 		return spool.ErrDirectory
+	}
+
+	if usage == nil {
+		return capacity.ErrInvalidReading
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)

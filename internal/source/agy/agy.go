@@ -88,8 +88,8 @@ func (s Source) Read(ctx context.Context, _ time.Time) ([]capacity.Reading, erro
 
 // Parse reads the data object of the usage command, with its model groups and
 // quota buckets, and skips buckets it doesn't know. When no known bucket appears,
-// or none carries a remaining fraction, it fails: a changed output format then
-// reports an error instead of an empty or fully used batch.
+// none carries a remaining fraction, or one window of a group appears twice, it
+// fails: a changed output format then reports an error instead of a wrong batch.
 func Parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
 	var payload struct {
 		Groups []struct {
@@ -100,21 +100,32 @@ func Parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
 		return nil, capacity.ErrInvalidReading
 	}
 
+	var entries []bucket
+	for _, group := range payload.Groups {
+		entries = append(entries, group.Buckets...)
+	}
+
 	var readings []capacity.Reading
 
 	carried := false
+	seen := map[[2]string]bool{}
 
-	for _, group := range payload.Groups {
-		for _, entry := range group.Buckets {
-			reading, err := convert(snapshot, entry)
-			if err != nil {
-				return nil, err
+	for _, entry := range entries {
+		reading, err := convert(snapshot, entry)
+		if err != nil {
+			return nil, err
+		}
+
+		if reading != nil {
+			key := [2]string{reading.Window, reading.Bucket}
+			if seen[key] {
+				return nil, capacity.ErrInvalidReading
 			}
 
-			if reading != nil {
-				readings = append(readings, *reading)
-				carried = carried || entry.RemainingFraction != nil
-			}
+			seen[key] = true
+
+			readings = append(readings, *reading)
+			carried = carried || entry.RemainingFraction != nil
 		}
 	}
 

@@ -104,6 +104,7 @@ func TestProbeUsageErrors(t *testing.T) {
 		{fixed([]byte(`{"status":"SUCCESS","command":{"name":"usage","data":{}}}`), nil), capacity.ErrInvalidReading, nil},
 		{fixed(append(valid, bytes.Repeat([]byte(" "), inputLimit)...), nil), capacity.ErrInvalidReading, nil},
 		{fixed(valid, nil), os.ErrExist, []string{workFlag, "--spool-dir=" + blocked}},
+		{nil, capacity.ErrInvalidReading, nil},
 	} {
 		args := testCase.args
 		if args == nil {
@@ -222,6 +223,56 @@ func TestRunUsage(t *testing.T) {
 	require.ErrorIs(t, err, fs.ErrNotExist)
 	require.ErrorIs(t, err, exec.ErrNotFound)
 	assert.Equal(t, "missing", capacity.ErrorClass(err))
+}
+
+func TestUsageCommand(t *testing.T) {
+	t.Parallel()
+
+	command := usageCommand(t.Context())
+	assert.Equal(t, 5*time.Second, command.WaitDelay)
+	assert.Equal(t, []string{"agy", "-p", "/usage", "--output-format", "json", "--print-timeout", "100s"}, command.Args)
+}
+
+// TestRunCommandChild checks that a child process holding the output pipe open can't stretch the deadline.
+func TestRunCommandChild(t *testing.T) {
+	t.Parallel()
+
+	stub := filepath.Join(t.TempDir(), "agy")
+	//nolint:gosec // The stand-in must be executable.
+	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\n/bin/sleep 3 &\nwait\n"), 0o700))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+
+	command := exec.CommandContext(ctx, stub)
+	command.WaitDelay = 100 * time.Millisecond
+	start := time.Now()
+
+	_, err := runCommand(ctx, command)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(start), 2*time.Second)
+}
+
+func TestRunCommandLimit(t *testing.T) {
+	t.Parallel()
+
+	command := exec.CommandContext(t.Context(), "/usr/bin/head", "-c", "1048600", "/dev/zero")
+	output, err := runCommand(t.Context(), command)
+	require.NoError(t, err)
+	assert.Len(t, output, inputLimit+1)
+}
+
+func TestLimitedBuffer(t *testing.T) {
+	t.Parallel()
+
+	buffer := &limitedBuffer{data: nil, limit: 4}
+	for _, chunk := range []string{"abc", "def", "g"} {
+		written, err := buffer.Write([]byte(chunk))
+		require.NoError(t, err)
+		assert.Equal(t, len(chunk), written)
+	}
+
+	assert.Equal(t, "abcd", string(buffer.data))
 }
 
 // TestProbeProcess checks the exit code and that a bad flag logs one line and no usage text.
