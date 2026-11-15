@@ -129,6 +129,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write  # Create the release and attach the files.
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Download the binaries
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
@@ -171,18 +174,19 @@ jobs:
           gh release create "${TAG}" dist/agent-capacity-* dist/SHA256SUMS
           --draft --verify-tag --title "${TAG}" --generate-notes
 
-      # Publishing is the step nobody can undo quietly, so it checks that the
-      # draft holds exactly the files built above before it goes public.
+      # Check that the draft holds exactly the release files before publishing.
+      # The list is fixed, so a missing binary or an extra file fails here.
+      # Update it with the build matrix. Both sides are in the order jq sorts to.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          expected=$(find dist -type f -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')
+          expected="SHA256SUMS agent-capacity-darwin-arm64 agent-capacity-linux-amd64 agent-capacity-linux-arm64"
           attached=$(gh release view "${TAG}" --json assets --jq '[.assets[].name] | sort | join(" ")')
-          if [ "${attached% }" != "${expected% }" ]; then
-            echo "::error::Draft ${TAG} holds [${attached}], not [${expected% }]."
+          if [ "${attached}" != "${expected}" ]; then
+            echo "::error::Draft ${TAG} holds [${attached}], not [${expected}]."
             exit 1
           fi
           gh release edit "${TAG}" --draft=false
