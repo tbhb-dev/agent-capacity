@@ -4790,6 +4790,11 @@ func TestStatusPublishErrorsEndTheRunner(t *testing.T) {
 			t.Helper()
 			liveChild(t, fixtureValue, state)
 		}, codeError(1), vendorClaude},
+		"idle Codex after a status failure": {func(t *testing.T, _ fixture, state *running) {
+			t.Helper()
+
+			state.nextExec = state.clock.Now().Add(execInterval)
+		}, codeError(1), vendorCodex},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -5214,7 +5219,7 @@ func TestFinishStopsTheChildBeforeItPublishesStopped(t *testing.T) {
 
 	state := stateFor(t, setup(t, vendorClaude))
 
-	child, err := start(exec.CommandContext(t.Context(), "sleep", "30"), false, new(atomic.Bool))
+	child, err := start(exec.CommandContext(t.Context(), "/bin/sleep", "30"), false, new(atomic.Bool))
 	must(t, err)
 
 	state.child = child
