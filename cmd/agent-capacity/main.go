@@ -164,7 +164,6 @@ func runCommand(ctx context.Context, args []string, out io.Writer, logger *slog.
 	case "statusline":
 		return statusline(ctx, args[1:], os.Stdin, logger), true
 	case "login":
-		// gomutants:disable-next-line INTEGER_INCREMENT,INTEGER_DECREMENT reason="Any other slice ends in the same refusal."
 		return loginCommand(ctx, args[1:], os.Stdin, out, os.Stderr), true
 	case "session":
 		return sessionCommand(ctx, args[1:], out), true

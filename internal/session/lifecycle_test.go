@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -75,6 +76,7 @@ func TestOtherChildEndsRequestRestart(t *testing.T) {
 					Grandchild: false,
 					SelfKill:   false,
 					NewSession: false,
+					Linger:     false,
 				},
 			)
 			_, result := fixtureValue.run(t)
@@ -106,6 +108,7 @@ func TestStatusFailureAndTimeout(t *testing.T) {
 					Grandchild: false,
 					SelfKill:   false,
 					NewSession: false,
+					Linger:     false,
 					Hold:       false,
 					EndClaude:  false,
 					IgnoreTerm: false,
@@ -194,6 +197,7 @@ func TestCodexDoesNotOverlapExec(t *testing.T) {
 			Grandchild: false,
 			SelfKill:   false,
 			NewSession: false,
+			Linger:     false,
 			Status:     0,
 			ExecExit:   0,
 			Warning:    false,
@@ -363,12 +367,23 @@ func stateFor(t *testing.T, fixtureValue fixture) *running {
 	return state
 }
 
+// terminalProcess returns a process around a running command with the given terminal side and an open drain.
+func terminalProcess(cmd *exec.Cmd, reader *os.File) *process {
+	return &process{
+		cmd: cmd, done: make(chan error, 1), terminal: reader, drained: make(chan struct{}), ended: nil, swept: nil,
+		members: nil, mutex: sync.Mutex{}, reaped: atomic.Bool{},
+	}
+}
+
 // finished returns a process whose wait result is already available.
 func finished(err error) *process {
 	done := make(chan error, 1)
 	done <- err
 
-	return &process{cmd: nil, done: done, terminal: nil, drained: nil}
+	return &process{
+		cmd: nil, done: done, terminal: nil, drained: nil, ended: nil, swept: nil, members: nil, mutex: sync.Mutex{},
+		reaped: atomic.Bool{},
+	}
 }
 
 // breakStatus makes every later status write fail by putting a directory where the status file belongs.
@@ -414,7 +429,7 @@ func TestOptionsValidation(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*Options){
-		"vendor":     func(o *Options) { o.Vendor = "other" },
+		"vendor":     func(o *Options) { o.Vendor = otherName },
 		"account":    func(o *Options) { o.Account = badAccount },
 		"alias file": func(o *Options) { o.AliasFile = "approved" },
 		"root":       func(o *Options) { o.Root = "relative" },
@@ -839,7 +854,7 @@ func TestCloseTerminalKillsGroupAndWaitsForDrain(t *testing.T) {
 
 	defer writer.Close()
 
-	child := &process{cmd: cmd, done: make(chan error, 1), terminal: reader, drained: make(chan struct{})}
+	child := terminalProcess(cmd, reader)
 
 	// The drain ends well after the wait for it times out, as with a slow terminal reader.
 	go func() {
@@ -1964,6 +1979,52 @@ func TestLaunchRefusesDuplicateKeysWithValidValues(t *testing.T) {
 	}
 }
 
+// sizeBound repeats the 64 KiB read limits as a literal, so the tests don't move with the constants they check.
+const sizeBound = 65536
+
+// otherName is a vendor that the runner doesn't know.
+const otherName = "other"
+
+// The status line's padding member takes any value, so it holds the nesting under test. The top object and the
+// status line object take two of the 32 levels.
+func TestCheckSettingsNestingLimit(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+	path := filepath.Join(fixtureValue.options.directory(), settingsPath)
+	data, err := os.ReadFile(path)
+	must(t, err)
+
+	state := stateFor(t, fixtureValue)
+	command := statusCommand(fixtureValue.options.Exporter, fixtureAlias, fixtureValue.options.SpoolDir)
+
+	for levels, want := range map[int]bool{30: true, 31: false} {
+		var document map[string]any
+		must(t, json.Unmarshal(data, &document))
+
+		var nested any = 1
+		for range levels {
+			nested = []any{nested}
+		}
+
+		statusLine, ok := document["statusLine"].(map[string]any)
+		if !ok {
+			t.Fatal("rendered settings have no statusLine object")
+		}
+
+		statusLine["padding"] = nested
+
+		changed, marshalErr := json.Marshal(document)
+		must(t, marshalErr)
+		must(t, os.WriteFile(path, changed, 0o600))
+
+		got := checkSettings(state.alias, command)
+		if (got == nil) != want {
+			t.Fatal(levels, got)
+		}
+	}
+}
+
 func TestSettingsNestingLimit(t *testing.T) {
 	t.Parallel()
 
@@ -2236,6 +2297,7 @@ func TestHeldPipeResults(t *testing.T) {
 				EndClaude: test.endClaude, IgnoreTerm: false, HoldStatus: false, Grandchild: true,
 				SelfKill:   test.selfKill,
 				NewSession: false,
+				Linger:     false,
 			})
 			grandchildFile := filepath.Join(fixtureValue.options.directory(), directoryWork, "grandchild")
 			killGrandchildAfter(t, grandchildFile)
@@ -3117,6 +3179,41 @@ func TestStartPipeChildChannels(t *testing.T) {
 	must(t, <-child.done)
 }
 
+func TestTerminateSignalsNothingAfterTheReap(t *testing.T) {
+	t.Parallel()
+
+	for _, terminal := range []bool{false, true} {
+		t.Run(fmt.Sprint("terminal ", terminal), func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorCodex)
+
+			var warning atomic.Bool
+
+			child, err := start(fixtureValue.options.command(commandExec), terminal, &warning)
+			must(t, err)
+
+			must(t, <-child.done)
+
+			pid := child.cmd.Process.Pid
+			before := signalTargets.Count(-pid) + signalTargets.Count(pid)
+
+			child.terminate()
+			child.closeTerminal()
+			child.signalGroup(syscall.SIGKILL)
+			child.refresh()
+
+			if len(child.members) != 0 {
+				t.Fatal("a reaped leader's ID was listed again")
+			}
+
+			if after := signalTargets.Count(-pid) + signalTargets.Count(pid); after != before {
+				t.Fatal("signals sent to a reaped leader's ID:", after-before)
+			}
+		})
+	}
+}
+
 func TestCloseTerminalWaitsOneHundredMillisecondsForDrain(t *testing.T) {
 	t.Parallel()
 
@@ -3133,7 +3230,7 @@ func TestCloseTerminalWaitsOneHundredMillisecondsForDrain(t *testing.T) {
 
 		defer writer.Close()
 
-		child := &process{cmd: cmd, done: make(chan error, 1), terminal: reader, drained: make(chan struct{})}
+		child := terminalProcess(cmd, reader)
 		closed := make(chan struct{})
 
 		go func() {
@@ -3179,7 +3276,7 @@ func TestCloseTerminalGivesUpOnStuckReader(t *testing.T) {
 		defer writer.Close()
 
 		// The drain channel never closes, as with a reader that a closed master doesn't unblock.
-		child := &process{cmd: cmd, done: make(chan error, 1), terminal: reader, drained: make(chan struct{})}
+		child := terminalProcess(cmd, reader)
 		closed := make(chan struct{})
 
 		go func() {
@@ -3615,7 +3712,7 @@ func TestSettingsSizeBound(t *testing.T) {
 	state := stateFor(t, fixtureValue)
 	command := statusCommand(fixtureValue.options.Exporter, fixtureAlias, fixtureValue.options.SpoolDir)
 
-	for padding, want := range map[int]bool{maxSettingsBytes - len(data): true, maxSettingsBytes - len(data) + 1: false} {
+	for padding, want := range map[int]bool{sizeBound - len(data): true, sizeBound - len(data) + 1: false} {
 		padded := append(bytes.Clone(data), bytes.Repeat([]byte(" "), padding)...)
 		must(t, os.WriteFile(path, padded, 0o600)) //nolint:gosec // The path is a test fixture.
 
@@ -3673,14 +3770,14 @@ func TestApprovedSizeBoundAndDirectory(t *testing.T) {
 	options := fixtureValue.options
 	line := "claude " + options.Account + "\n"
 
-	must(t, os.WriteFile(options.AliasFile, []byte(line+strings.Repeat("#", maxAllowListBytes)), 0o600))
+	must(t, os.WriteFile(options.AliasFile, []byte(line+strings.Repeat("#", sizeBound)), 0o600))
 
 	approved, err := options.Approved()
 	if approved || !errors.Is(err, ErrArguments) {
 		t.Fatal("oversized allow list accepted")
 	}
 
-	must(t, os.WriteFile(options.AliasFile, []byte(line+strings.Repeat("#", maxAllowListBytes-len(line))), 0o600))
+	must(t, os.WriteFile(options.AliasFile, []byte(line+strings.Repeat("#", sizeBound-len(line))), 0o600))
 
 	approved, err = options.Approved()
 	if !approved || err != nil {
@@ -3725,6 +3822,117 @@ func TestTerminateKillsDescendantInAnotherSession(t *testing.T) {
 
 			fixtureValue.until(t, func() bool { return processGone(grandchildPID(t, grandchildFile)) })
 		})
+	}
+}
+
+func TestNaturalExitStopsDescendantInAnotherSession(t *testing.T) {
+	t.Parallel()
+
+	for _, terminal := range []bool{false, true} {
+		t.Run(fmt.Sprint("terminal ", terminal), func(t *testing.T) {
+			t.Parallel()
+
+			fixtureValue := setup(t, vendorClaude)
+
+			var control fakeControl
+
+			control.Grandchild, control.NewSession, control.Linger = true, true, true
+			fixtureValue.control(t, control)
+
+			grandchildFile := filepath.Join(fixtureValue.options.directory(), directoryWork, "grandchild")
+			killGrandchildAfter(t, grandchildFile)
+
+			var warning atomic.Bool
+
+			child, err := start(fixtureValue.options.command(commandExec), terminal, &warning)
+			must(t, err)
+
+			defer child.signalGroup(syscall.SIGKILL)
+
+			must(t, <-child.done)
+
+			if !processGone(grandchildPID(t, grandchildFile)) {
+				t.Fatal("a descendant in another session survived the child's own exit")
+			}
+		})
+	}
+}
+
+func TestParseProcessesSkipsLinesWithoutNumbers(t *testing.T) {
+	t.Parallel()
+
+	got := parseProcesses("10 1 Sat Nov 14 10:00:00 2026\nx 1 a\n11 y b\nshort\n")
+	if len(got) != 1 || len(got[1]) != 1 || got[1][0].pid != 10 || got[1][0].started != "Sat Nov 14 10:00:00 2026" {
+		t.Fatal(got)
+	}
+}
+
+func TestKillAllSkipsProcessWhoseStartTimeChanged(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		lookup func(int) string
+		name   string
+		killed bool
+	}{
+		{func(int) string { return "listed" }, "same start time", true},
+		{func(int) string { return "later" }, "another start time", false},
+		{func(int) string { return "" }, "process gone", false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			bystander := exec.CommandContext(context.Background(), "/bin/sleep", "30")
+			must(t, bystander.Start())
+
+			waited := make(chan struct{})
+
+			go func() {
+				_ = bystander.Wait() //nolint:errcheck // Only the end of the process matters.
+
+				close(waited)
+			}()
+
+			defer func() {
+				//nolint:errcheck // The process may have ended.
+				_ = bystander.Process.Kill()
+			}()
+
+			killAll([]member{{pid: bystander.Process.Pid, started: "listed"}}, testCase.lookup)
+
+			select {
+			case <-waited:
+				if !testCase.killed {
+					t.Fatal("killAll stopped a process that no longer matched")
+				}
+			case <-time.After(time.Second):
+				if testCase.killed {
+					t.Fatal("killAll left a matching process running")
+				}
+			}
+		})
+	}
+}
+
+func TestDescendantsListTheStartTimeThatPsReports(t *testing.T) {
+	t.Parallel()
+
+	grandchild := exec.CommandContext(context.Background(), "/bin/sleep", "30")
+	must(t, grandchild.Start())
+
+	defer func() {
+		//nolint:errcheck // The process may have ended.
+		_ = grandchild.Process.Kill()
+		_ = grandchild.Wait() //nolint:errcheck // Only the end of the process matters.
+	}()
+
+	want := startTime(grandchild.Process.Pid)
+	if want == "" {
+		t.Fatal("no start time for a live process")
+	}
+
+	if !slices.Contains(descendants(os.Getpid()), member{pid: grandchild.Process.Pid, started: want}) {
+		t.Fatal("descendants missed a child or its start time")
 	}
 }
 

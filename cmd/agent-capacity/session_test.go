@@ -120,15 +120,74 @@ func TestRenderSettingsWriteFailure(t *testing.T) {
 	}
 }
 
+const (
+	loginCommandName = "login"
+	loginRefused     = "login refused\n"
+)
+
 func TestRunCommandRoutesSessionCommands(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.DiscardHandler)
 
-	for _, args := range [][]string{{"login", unknownFlag}, {sessionRoute}} {
+	for _, args := range [][]string{{loginCommandName, unknownFlag}, {sessionRoute}} {
 		code, handled := runCommand(context.Background(), args, io.Discard, logger)
 		if !handled || code != 2 {
 			t.Fatalf("command %v returned %d, %t", args, code, handled)
+		}
+	}
+}
+
+// The test swaps the process's stdin and stderr, so it can't run in parallel with other tests.
+//
+//nolint:paralleltest // The swapped files are process-wide.
+func TestRunCommandPassesLoginArgumentsAfterTheCommandName(t *testing.T) {
+	input, err := os.CreateTemp(t.TempDir(), "input")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	diagnostic, err := os.CreateTemp(t.TempDir(), "diagnostic")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	//nolint:reassign // The command reads these files by name, so the test replaces them for its own run.
+	defer func(stdin, stderr *os.File) { os.Stdin, os.Stderr = stdin, stderr }(os.Stdin, os.Stderr)
+
+	//nolint:reassign // The command reads these files by name, so the test replaces them for its own run.
+	os.Stdin, os.Stderr = input, diagnostic
+	logger := slog.New(slog.DiscardHandler)
+
+	valid := append([]string{loginCommandName}, loginFixture(t, true)...)
+
+	for _, testCase := range []struct {
+		name string
+		want string
+		args []string
+	}{
+		{"valid arguments reach login", "login requires a terminal\n", valid},
+		{"no arguments", loginRefused, []string{loginCommandName}},
+	} {
+		err = diagnostic.Truncate(0)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = diagnostic.Seek(0, io.SeekStart)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		code, handled := runCommand(context.Background(), testCase.args, io.Discard, logger)
+
+		got, readErr := os.ReadFile(diagnostic.Name())
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+
+		if !handled || code != 2 || string(got) != testCase.want {
+			t.Errorf("%s: code %d, handled %t, diagnostic %q", testCase.name, code, handled, got)
 		}
 	}
 }
@@ -214,8 +273,8 @@ func TestLoginCommandDiagnostics(t *testing.T) {
 		args []string
 	}{
 		{"valid arguments", "login requires a terminal\n", valid},
-		{"unknown flag", "login refused\n", append(slices.Clone(valid), unknownFlag)},
-		{"positional argument", "login refused\n", append(slices.Clone(valid), extraArgument)},
+		{"unknown flag", loginRefused, append(slices.Clone(valid), unknownFlag)},
+		{"positional argument", loginRefused, append(slices.Clone(valid), extraArgument)},
 	} {
 		var out, diagnostic bytes.Buffer
 
@@ -229,7 +288,7 @@ func TestLoginCommandDiagnostics(t *testing.T) {
 func TestRunCommandPassesLoginArguments(t *testing.T) {
 	t.Parallel()
 
-	args := append([]string{"login"}, loginFixture(t, false)...)
+	args := append([]string{loginCommandName}, loginFixture(t, false)...)
 
 	code, handled := runCommand(context.Background(), args, io.Discard, slog.New(slog.DiscardHandler))
 	if !handled || code != 2 {
