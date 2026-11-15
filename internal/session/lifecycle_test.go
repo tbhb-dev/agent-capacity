@@ -4102,6 +4102,19 @@ func withListing(t *testing.T, program string) {
 }
 
 //nolint:paralleltest // The listing program is a package variable.
+func TestLaunchRefusesWithoutTheListingProgram(t *testing.T) {
+	fixtureValue := setup(t, vendorCodex)
+	state := stateFor(t, fixtureValue)
+
+	withListing(t, "/nonexistent/ps")
+
+	err := state.launch()
+	if !errors.Is(err, ErrArguments) || state.child != nil || len(fixtureValue.calls(t)) != 0 {
+		t.Fatal("launched without the listing program", err)
+	}
+}
+
+//nolint:paralleltest // The listing program is a package variable.
 func TestFailedListingKeepsMembers(t *testing.T) {
 	for _, program := range []string{"/usr/bin/false", "/usr/bin/true", "/nonexistent/ps"} {
 		withListing(t, program)

@@ -460,6 +460,12 @@ func (s *running) launch() error {
 		return ErrArguments
 	}
 
+	// A start that can't list processes would never record a descendant, and the cleanup would report success. The
+	// start fails first and the run stops.
+	if _, err := os.Stat(psPath); err != nil {
+		return ErrArguments
+	}
+
 	command := statusCommand(s.options.Exporter, s.options.Account, s.options.SpoolDir)
 	if s.options.Vendor == vendorClaude && checkSettings(s.alias, command) != nil {
 		return errSettingsRefused
