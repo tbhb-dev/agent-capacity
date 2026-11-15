@@ -61,7 +61,7 @@ func wantReading(window string, ratio float64, reset time.Time) capacity.Reading
 	timestamp := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 
 	return capacity.Reading{
-		Vendor: "openai", Window: window, Account: "work_2-a", Source: capacity.CodexRollout,
+		Bucket: "", Vendor: "openai", Window: window, Account: "work_2-a", Source: capacity.CodexRollout,
 		UsedRatio: ratio, ObservedAt: timestamp, ResetAt: reset,
 	}
 }

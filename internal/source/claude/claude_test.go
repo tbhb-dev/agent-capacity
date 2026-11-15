@@ -74,6 +74,7 @@ func TestParse(t *testing.T) {
 				t,
 				capacity.Reading{
 					Vendor:     "anthropic",
+					Bucket:     "",
 					Account:    "work",
 					Source:     capacity.ClaudeStatusline,
 					Window:     testCase.windows[index],

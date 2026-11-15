@@ -85,7 +85,7 @@ func parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
 		}
 
 		reading := capacity.Reading{
-			Vendor: "anthropic", Window: entry.name, Account: snapshot.Account,
+			Bucket: "", Vendor: "anthropic", Window: entry.name, Account: snapshot.Account,
 			Source: capacity.ClaudeStatusline, UsedRatio: *entry.value.UsedPercentage / percentageScale,
 			ResetAt: time.Unix(*entry.value.ResetsAt, 0).UTC(), ObservedAt: snapshot.ObservedAt,
 		}

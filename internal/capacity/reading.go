@@ -17,6 +17,7 @@ type Reading struct {
 	ObservedAt time.Time
 	Vendor     string
 	Window     string
+	Bucket     string
 	Account    string
 	Source     string
 	UsedRatio  float64
@@ -29,7 +30,7 @@ const (
 	CodexRollout       = "codex_rollout"
 	AGYStatusline      = "agy_statusline"
 	statuslineFreshFor = 10 * time.Minute
-	codexFreshFor      = 30 * time.Minute
+	probeFreshFor      = 30 * time.Minute
 	retainedFor        = 6 * time.Hour
 )
 
@@ -66,6 +67,12 @@ func (r Reading) Validate() error {
 		return ErrInvalidReading
 	}
 
+	switch r.Bucket {
+	case "", "gemini", "3p":
+	default:
+		return ErrInvalidReading
+	}
+
 	return nil
 }
 
@@ -78,8 +85,8 @@ func Freshness(reading Reading, now time.Time) (time.Duration, string) {
 	}
 
 	limit := statuslineFreshFor
-	if reading.Source == CodexRollout {
-		limit = codexFreshFor
+	if reading.Source == CodexRollout || reading.Source == AGYStatusline {
+		limit = probeFreshFor
 	}
 
 	if age <= limit {

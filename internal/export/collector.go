@@ -84,13 +84,18 @@ func (collector *Collector) observe(observer metric.Observer, gauges []metric.Fl
 			continue
 		}
 
-		attrs := metric.WithAttributes(
+		labels := []attribute.KeyValue{
 			attribute.String("agent.plan.vendor", reading.Vendor),
 			attribute.String("agent.plan.window", reading.Window),
 			attribute.String("agent.capacity.source", reading.Source),
 			attribute.String("agent.capacity.freshness", freshness),
 			attribute.String("agent.account", reading.Account),
-		)
+		}
+		if reading.Bucket != "" {
+			labels = append(labels, attribute.String("agent.plan.bucket", reading.Bucket))
+		}
+
+		attrs := metric.WithAttributes(labels...)
 		observer.ObserveFloat64(gauges[0], reading.UsedRatio, attrs)
 
 		if !reading.ResetAt.IsZero() {

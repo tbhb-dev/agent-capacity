@@ -28,6 +28,7 @@ cocogitto
 compgen
 complexipy
 cpus
+cquery
 cuda
 cyclop
 davecgh

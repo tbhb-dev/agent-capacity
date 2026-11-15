@@ -74,7 +74,7 @@ func TestTranscriptSelection(t *testing.T) {
 	observed := time.Unix(100000, 0).UTC()
 	source.considerTranscript([]byte(transcriptEventLine), observed, observed, latest)
 	assert.Equal(t, capacity.Reading{
-		Vendor: "anthropic", Account: transcriptAccount, Source: capacity.ClaudeTranscript, Window: "7d",
+		Bucket: "", Vendor: "anthropic", Account: transcriptAccount, Source: capacity.ClaudeTranscript, Window: "7d",
 		UsedRatio: 0.25, ResetAt: time.Unix(200000, 0).UTC(), ObservedAt: observed,
 	}, latest["7d"])
 

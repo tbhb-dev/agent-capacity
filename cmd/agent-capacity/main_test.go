@@ -442,6 +442,7 @@ func TestRun(t *testing.T) {
 		calls := 0
 		runtime := Runtime{
 			NewRegistry: nil,
+			Usage:       nil,
 			Registry: func(dir string) capacity.Registry {
 				assert.Equal(t, filepath.Join("spool", "test"), dir)
 
@@ -544,7 +545,7 @@ func TestServe(t *testing.T) {
 				}
 
 				return []capacity.Reading{{
-					Vendor: "openai", Window: "5h", Account: "work", Source: codexSource,
+					Bucket: "", Vendor: "openai", Window: "5h", Account: "work", Source: codexSource,
 					UsedRatio: float64(calls) / 10, ResetAt: time.Time{}, ObservedAt: observed,
 				}}, nil
 			}),

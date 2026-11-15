@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -22,8 +21,6 @@ import (
 	"go.tbhb.dev/agent-capacity/internal/export"
 )
 
-const agyVendorFlag = "--vendor=agy"
-
 func TestAGYMetrics(t *testing.T) {
 	t.Setenv("CODEX_HOME", "")
 
@@ -33,9 +30,11 @@ func TestAGYMetrics(t *testing.T) {
 
 	dir := t.TempDir()
 	observed := time.Unix(100000, 0).UTC()
-	payload := `{"quota":{"five_hour":{"used_percentage":25,"resets_at":200000},"seven_day":null}}`
-	require.NoError(t, capture([]string{"--spool-dir=" + dir, agyVendorFlag, "--account=work"},
-		strings.NewReader(payload), observed))
+	payload := `{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[{"buckets":[
+{"id":"gemini-5h","window":"5h","remaining_fraction":0.75,"reset_time":"1970-01-03T07:33:20Z"}]}]}}}`
+
+	require.NoError(t, probeUsage(t.Context(), []string{"--spool-dir=" + dir, "--account=work"},
+		func(context.Context) ([]byte, error) { return []byte(payload), nil }, observed))
 
 	logger := slog.New(slog.DiscardHandler)
 	runtime := newRuntime(t.Context(), logger)
@@ -58,8 +57,8 @@ func TestAGYMetrics(t *testing.T) {
 		age       time.Duration
 	}{
 		{freshLabel, 0},
-		{freshLabel, 10 * time.Minute},
-		{carriedLabel, 10*time.Minute + time.Nanosecond},
+		{freshLabel, 30 * time.Minute},
+		{carriedLabel, 30*time.Minute + time.Nanosecond},
 		{carriedLabel, 6 * time.Hour},
 		{droppedLabel, 6*time.Hour + time.Nanosecond},
 	} {
@@ -101,6 +100,7 @@ func assertAGYGauges(t *testing.T, data metricdata.ResourceMetrics, freshness st
 				attribute.String("agent.capacity.source", "agy_statusline"),
 				attribute.String("agent.capacity.freshness", freshness),
 				attribute.String("agent.account", "work"),
+				attribute.String("agent.plan.bucket", "gemini"),
 			), gauge.DataPoints[0].Attributes)
 		}
 	}

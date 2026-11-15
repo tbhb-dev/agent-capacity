@@ -1,6 +1,6 @@
 # agent-capacity
 
-`agent-capacity` reads plan usage windows for Claude Code, Codex, and Antigravity from passive local sources and exports them as OpenTelemetry metrics. At startup, the registry includes the Claude and Antigravity status-line sources and adds the Codex rollout source when `--codex-home` or `CODEX_HOME` supplies a home directory. `--claude-transcripts` or `AGENT_CAPACITY_CLAUDE_TRANSCRIPTS` adds the Claude transcript source.
+`agent-capacity` reads plan usage windows for Claude Code, Codex, and Antigravity from passive local sources and exports them as OpenTelemetry metrics. At startup, the registry includes the Claude status-line source and the Antigravity probe source and adds the Codex rollout source when `--codex-home` or `CODEX_HOME` supplies a home directory. `--claude-transcripts` or `AGENT_CAPACITY_CLAUDE_TRANSCRIPTS` adds the Claude transcript source.
 
 Supported platforms include Linux (amd64 and arm64) and macOS (arm64).
 
@@ -28,10 +28,10 @@ Set the export destination only through the standard `OTEL_EXPORTER_OTLP_*` envi
 
 - Claude Code reads captured `rate_limits` windows with vendor `anthropic` and source `claude_statusline`.
 - Claude transcripts read local `rate_limit_event` lines with vendor `anthropic` and source `claude_transcript`.
-- Antigravity reads captured `quota` windows with vendor `google` and source `agy_statusline`.
+- Antigravity reads the quota groups that `agent-capacity probe` captures, with vendor `google` and source `agy_statusline`.
 - Codex reads rollout usage events when `--codex-home` or `CODEX_HOME` supplies a home directory, with vendor `openai` and source `codex_rollout`.
 
-Both status-line sources read `five_hour` and `seven_day` windows with `used_percentage` and Unix seconds in `resets_at`. Missing or null windows contribute no metrics. The spool stores each account alias and capture timestamp in a separate file per vendor and account, such as `agy-work.json`, so an invalid snapshot doesn't block other accounts. Status-line readings remain fresh through 10 minutes, then contribute metrics with freshness `carried` through 6 hours. Older readings contribute no metrics.
+Claude status-line snapshots hold `five_hour` and `seven_day` windows with `used_percentage` and Unix seconds in `resets_at`, and missing or null windows contribute no metrics. Each Antigravity bucket gives a `window` of `5h` or `weekly` (exported as `7d`), a `remaining_fraction` and a `reset_time`, with `agent.plan.bucket` set to `gemini` or `3p`. The source skips unknown buckets, and a snapshot without any known bucket is invalid. The spool stores each account alias and capture timestamp in a separate file per vendor and account, such as `agy-work.json`, so an invalid snapshot doesn't block other accounts. Claude status-line readings remain fresh through 10 minutes, and Antigravity readings through 30 minutes. Both then contribute metrics with freshness `carried` through 6 hours. Older readings contribute no metrics.
 
 ## Capture and serve
 
@@ -39,12 +39,13 @@ Capture an Antigravity quota snapshot, then serve from the same spool:
 
 ```sh
 export AGENT_CAPACITY_SPOOL_DIR=/path/to/spool
-printf '%s\n' '{"quota":{"five_hour":{"used_percentage":25,"resets_at":1794528000}}}' |
-  agent-capacity statusline --vendor=agy --account=work
+agent-capacity probe --account=work
 agent-capacity serve
 ```
 
-The gauges `agent.capacity.window.utilization`, `agent.capacity.window.reset_time`, and `agent.capacity.snapshot.age` include the vendor, source, and account alias labels.
+The probe runs `agy -p "/usage" --output-format json --print-timeout 100s` from `PATH`, a command that neither starts an agent turn nor spends quota. Run the probe as the account's user, with that account's Antigravity home, because it inherits the environment. It stores only the command's `data` object and exits 1 when the command fails or reports a status other than `SUCCESS`. Run it on the reading interval, such as every 15 minutes.
+
+The gauges `agent.capacity.window.utilization`, `agent.capacity.window.reset_time`, and `agent.capacity.snapshot.age` include the vendor, source, and account alias labels. Antigravity readings add `agent.plan.bucket`.
 
 ## Claude transcripts
 
