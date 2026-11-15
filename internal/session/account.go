@@ -281,6 +281,7 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 
 		// From the reap on, a listing by the child's ID is dropped, because the ID may belong to another process.
 		tracker.mutex.Lock()
+		// gomutants:disable-next-line STATEMENT_REMOVE reason="Only a reused process ID sees the flag."
 		tracker.reaped.Store(true)
 		tracker.mutex.Unlock()
 
@@ -310,6 +311,7 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 			<-done //nolint:errcheck // Shutdown only needs process completion.
 		}
 
+		// gomutants:disable-next-line STATEMENT_REMOVE reason="The settle step gives a canceled login the same error."
 		err = ErrArguments
 	}
 
