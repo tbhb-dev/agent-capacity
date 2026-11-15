@@ -286,6 +286,9 @@ func (s *running) step(ctx context.Context) (int, bool) {
 func (s *running) idleStop() (int, bool) {
 	s.stopChildren()
 
+	// A stop ends the missed-reading count, so the child that follows starts with one restart still in hand.
+	s.readingRestart = false
+
 	if s.status.Reason == "operator_stop" && s.clock.Now().Before(s.nextStatus) {
 		return 0, false
 	}
@@ -422,9 +425,8 @@ func (s *running) launch() error {
 	s.started = s.clock.Now()
 
 	s.nextExec = s.started.Add(execInterval)
-	if s.readingAt.IsZero() {
-		s.readingAt = s.started
-	}
+	// A new child gets its own reading window, whatever the earlier child's last reading was.
+	s.readingAt = s.started
 
 	return s.publish(phaseRunning, reasonNone)
 }
