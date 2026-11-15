@@ -62,8 +62,9 @@ jobs:
             exit 1
           fi
 
-  # The stamped release build, as the `bazel` job in ci.yml builds it. The
-  # binary is static: `//cmd/agent-capacity` sets `pure = "on"`, so cgo is
+  # The release build, as the `bazel` job in ci.yml builds it. The stamp
+  # that `--config=release` computes is not consumed yet: the binary prints
+  # a fixed version. The binary is static: `//cmd/agent-capacity` sets `pure = "on"`, so cgo is
   # off.
   build:
     name: "build (${{ matrix.os }})"
@@ -86,8 +87,7 @@ jobs:
       run:
         shell: bash
     steps:
-      # Full history: the release build stamps the version through
-      # `git describe`.
+      # Full history, for the workspace status script's `git describe`.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -140,6 +140,25 @@ jobs:
       - name: Write the checksums
         working-directory: dist
         run: sha256sum agent-capacity-* > SHA256SUMS
+
+      # A moved tag must not publish a release for another commit. An
+      # annotated tag points at a tag object, which resolves to the commit.
+      - name: Require the tag to still point at the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          type=$(gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq .object.type)
+          object=$(gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq .object.sha)
+          if [ "${type}" = tag ]; then
+            object=$(gh api "repos/${GH_REPO}/git/tags/${object}" --jq .object.sha)
+          fi
+          if [ "${object}" != "${SHA}" ]; then
+            echo "::error::Tag ${TAG} now points at ${object}, not ${SHA}."
+            exit 1
+          fi
 
       # A draft, so nobody sees a release without its files. It goes public
       # after the binaries and SHA256SUMS are attached.
