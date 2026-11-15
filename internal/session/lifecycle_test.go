@@ -2107,6 +2107,35 @@ func TestLoginEndsWhenGrandchildHoldsOutput(t *testing.T) {
 	fixtureValue.until(t, func() bool { return processGone(grandchildPID(t, grandchildFile)) })
 }
 
+// A login child that exits cleanly while a descendant holds the output open still finished the login.
+func TestLoginSucceedsWhenGrandchildHoldsOutputAfterCleanExit(t *testing.T) {
+	t.Parallel()
+
+	fixtureValue := setup(t, vendorClaude)
+
+	var control fakeControl
+
+	control.Grandchild = true
+	fixtureValue.control(t, control)
+
+	grandchildFile := filepath.Join(fixtureValue.options.directory(), "grandchild")
+
+	killGrandchildAfter(t, grandchildFile)
+
+	master, slave, err := pty.Open()
+	must(t, err)
+
+	defer master.Close()
+	defer slave.Close()
+
+	var out, diagnostic bytes.Buffer
+
+	got := Login(context.Background(), fixtureValue.options, slave, &out, &diagnostic)
+	if got != 0 || !strings.Contains(out.String(), "login finished") {
+		t.Fatal(got, out.String(), diagnostic.String())
+	}
+}
+
 func TestExitedLeaderEndsGroupAtOnce(t *testing.T) {
 	t.Parallel()
 

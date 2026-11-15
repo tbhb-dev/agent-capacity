@@ -280,6 +280,12 @@ func waitLogin(ctx context.Context, cmd *exec.Cmd) error {
 	go func() {
 		err := cmd.Wait()
 
+		// The wait delay ends the copy of output a descendant still holds open, and reports it as an error even
+		// though the child itself exited cleanly.
+		if errors.Is(err, exec.ErrWaitDelay) {
+			err = nil
+		}
+
 		// From the reap on, a listing by the child's ID is dropped, because the ID may belong to another process.
 		tracker.mutex.Lock()
 		// gomutants:disable-next-line STATEMENT_REMOVE reason="Only a reused process ID sees the flag."
