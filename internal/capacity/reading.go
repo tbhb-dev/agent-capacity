@@ -27,6 +27,7 @@ type Reading struct {
 const (
 	ClaudeStatusline   = "claude_statusline"
 	ClaudeTranscript   = "claude_transcript"
+	CodexProbe         = "codex_probe"
 	CodexRollout       = "codex_rollout"
 	AGYStatusline      = "agy_statusline"
 	statuslineFreshFor = 10 * time.Minute
@@ -62,7 +63,7 @@ func (r Reading) Validate() error {
 	}
 
 	switch r.Source {
-	case ClaudeStatusline, ClaudeTranscript, CodexRollout, AGYStatusline:
+	case ClaudeStatusline, ClaudeTranscript, CodexRollout, CodexProbe, AGYStatusline:
 	default:
 		return ErrInvalidReading
 	}
@@ -85,7 +86,7 @@ func Freshness(reading Reading, now time.Time) (time.Duration, string) {
 	}
 
 	limit := statuslineFreshFor
-	if reading.Source == CodexRollout || reading.Source == AGYStatusline {
+	if reading.Source == CodexRollout || reading.Source == AGYStatusline || reading.Source == CodexProbe {
 		limit = probeFreshFor
 	}
 

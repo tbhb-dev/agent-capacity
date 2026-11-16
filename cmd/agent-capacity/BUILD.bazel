@@ -14,6 +14,7 @@ exports_files(
 go_library(
     name = "agent-capacity_lib",
     srcs = [
+        "codex_probe.go",
         "main.go",
         "probe.go",
         "session.go",
@@ -45,6 +46,7 @@ go_test(
     name = "agent-capacity_test",
     srcs = [
         "agy_test.go",
+        "codex_probe_test.go",
         "main_test.go",
         "probe_test.go",
         "session_test.go",

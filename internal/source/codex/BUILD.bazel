@@ -8,19 +8,29 @@ repo_files()
 
 go_library(
     name = "codex",
-    srcs = ["source.go"],
+    srcs = [
+        "source.go",
+        "spool.go",
+    ],
     importpath = "go.tbhb.dev/agent-capacity/internal/source/codex",
     visibility = ["//:__subpackages__"],
-    deps = ["//internal/capacity"],
+    deps = [
+        "//internal/capacity",
+        "//internal/spool",
+    ],
 )
 
 go_test(
     name = "codex_test",
-    srcs = ["source_test.go"],
+    srcs = [
+        "source_test.go",
+        "spool_test.go",
+    ],
     embed = [":codex"],
     visibility = ["//:__pkg__"],
     deps = [
         "//internal/capacity",
+        "//internal/spool",
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",
     ],

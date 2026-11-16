@@ -41,7 +41,7 @@ deps:
     mayDependOn: [capacity, export]
     canUse: [otel, testify]
   codex:
-    mayDependOn: [capacity, codex]
+    mayDependOn: [capacity, codex, spool]
     canUse: [testify]
   session:
     mayDependOn: [session, spool]
