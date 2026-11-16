@@ -38,7 +38,7 @@ type Snapshot struct {
 
 // ValidIdentity rejects private identifiers and unsupported vendors.
 func ValidIdentity(vendor, account string) bool {
-	return (vendor == "claude" || vendor == "agy") && ValidAlias(account)
+	return (vendor == "claude" || vendor == "agy" || vendor == "codex") && ValidAlias(account)
 }
 
 // Write replaces a snapshot using a private temporary file in the same directory.

@@ -35,7 +35,7 @@ func sample() Snapshot {
 func TestIdentity(t *testing.T) {
 	t.Parallel()
 
-	for _, vendor := range []string{claudeVendor, "agy"} {
+	for _, vendor := range []string{claudeVendor, "agy", "codex"} {
 		for _, account := range []string{"a", "0", "work_2-a", strings.Repeat("a", 32)} {
 			assert.True(t, ValidIdentity(vendor, account))
 		}
@@ -48,7 +48,7 @@ func TestIdentity(t *testing.T) {
 		assert.False(t, ValidIdentity(claudeVendor, account))
 	}
 
-	assert.False(t, ValidIdentity("codex", "work"))
+	assert.False(t, ValidIdentity("unknown", "work"))
 }
 
 func TestWriteAtomic(t *testing.T) {
