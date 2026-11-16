@@ -104,6 +104,7 @@ func probeUsage(ctx context.Context, args []string, usage func(context.Context) 
 	dir := flags.String("spool-dir", os.Getenv("AGENT_CAPACITY_SPOOL_DIR"), "snapshot directory")
 
 	vendor := flags.String("vendor", "agy", "probe vendor")
+
 	account := flags.String("account", "", "account alias")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || !spool.ValidIdentity(*vendor, *account) || *vendor == "claude" {
 		return capacity.ErrInvalidReading

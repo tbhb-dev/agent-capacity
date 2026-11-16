@@ -77,7 +77,9 @@ func TestValidate(t *testing.T) {
 		assert.Equal(t, window == "" || window == unknownLabel, errors.Is(r.Validate(), capacity.ErrInvalidReading))
 	}
 
-	for _, source := range []string{claudeSource, capacity.ClaudeTranscript, codexSource, capacity.CodexProbe, agySource, "", unknownLabel} {
+	for _, source := range []string{
+		claudeSource, capacity.ClaudeTranscript, codexSource, capacity.CodexProbe, agySource, "", unknownLabel,
+	} {
 		r := reading()
 		r.Source = source
 		assert.Equal(t, source == "" || source == unknownLabel, errors.Is(r.Validate(), capacity.ErrInvalidReading))
