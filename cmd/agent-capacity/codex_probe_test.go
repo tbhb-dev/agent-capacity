@@ -100,7 +100,7 @@ read -r held
 
 	_, err := runCodexUsage(ctx)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
-	fakeCodex(t, "exit 3\n")
+	fakeCodex(t, "read -r init\nexit 3\n")
 	require.ErrorIs(t, probeCodex(t.Context(), t.TempDir(), "work", time.Now()), io.EOF)
 
 	t.Setenv("PATH", t.TempDir())
