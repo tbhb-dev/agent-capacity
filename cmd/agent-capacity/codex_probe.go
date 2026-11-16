@@ -52,7 +52,7 @@ func runCodexCommand(command *exec.Cmd) ([]byte, error) {
 
 	err := errors.Join(inputErr, outputErr)
 	if err != nil {
-		return nil, fmt.Errorf("codex probe: %w", err)
+		return nil, err
 	}
 
 	defer input.Close()

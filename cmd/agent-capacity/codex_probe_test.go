@@ -106,6 +106,7 @@ read -r held
 	command.Stdout = io.Discard
 	_, err = runCodexCommand(command)
 	require.ErrorContains(t, err, "already set")
+	assert.Equal(t, 30*time.Second, codexProbeTimeout)
 }
 
 func TestCodexExchange(t *testing.T) {
