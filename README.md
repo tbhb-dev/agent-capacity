@@ -1,6 +1,6 @@
 # agent-capacity
 
-`agent-capacity` reads plan usage windows for Claude Code, Codex, and Antigravity from passive local sources and exports them as OpenTelemetry metrics. At startup, the registry includes the Claude status-line source and the Antigravity probe source and adds the Codex rollout source when `--codex-home` or `CODEX_HOME` supplies a home directory. `--claude-transcripts` or `AGENT_CAPACITY_CLAUDE_TRANSCRIPTS` adds the Claude transcript source.
+`agent-capacity` reads plan usage windows for Claude Code, Codex, and Antigravity from passive local sources and exports them as OpenTelemetry metrics. At startup, the registry includes the Claude status-line source and the Antigravity and Codex probe sources and adds the Codex rollout source when `--codex-home` or `CODEX_HOME` supplies a home directory. `--claude-transcripts` or `AGENT_CAPACITY_CLAUDE_TRANSCRIPTS` adds the Claude transcript source.
 
 Supported platforms include Linux (amd64 and arm64) and macOS (arm64).
 
@@ -29,13 +29,13 @@ Set the export destination only through the standard `OTEL_EXPORTER_OTLP_*` envi
 - Claude Code reads captured `rate_limits` windows with vendor `anthropic` and source `claude_statusline`.
 - Claude transcripts read local `rate_limit_event` lines with vendor `anthropic` and source `claude_transcript`.
 - Antigravity reads the quota groups that `agent-capacity probe` captures, with vendor `google` and source `agy_statusline`.
-- Codex reads rollout usage events when `--codex-home` or `CODEX_HOME` supplies a home directory, with vendor `openai` and source `codex_rollout`.
+- Codex reads probe snapshots with vendor `openai` and source `codex_probe`. It also reads rollout usage events when `--codex-home` or `CODEX_HOME` supplies a home directory, with vendor `openai` and source `codex_rollout`.
 
 Claude status-line snapshots hold `five_hour` and `seven_day` windows with `used_percentage` and Unix seconds in `resets_at`, and missing or null windows contribute no metrics. `agent-capacity statusline --vendor=claude --account=work` stores the `rate_limits` object from the JSON that Claude Code pipes to it. It needs `--spool-dir` or `AGENT_CAPACITY_SPOOL_DIR`, and without one it doesn't store a snapshot. With otherwise valid arguments it logs `spool directory is required`, and with invalid arguments it logs `statusline capture failed`. It exits 0 in every case. It skips the write when the piped JSON has no `rate_limits` key, and it stores a `"rate_limits": null` value as null.
 
 Each Antigravity bucket gives a `window` of `5h` or `weekly` (exported as `7d`), a `remaining_fraction` and a `reset_time`, with `agent.plan.bucket` set to `gemini` or `3p`. The source skips unknown buckets, and a snapshot without any known bucket is invalid.
 
-The spool stores one file per vendor and account alias, named `<vendor>-<alias>.json` with vendor `claude` or `agy`, such as `claude-work.json` or `agy-work.json`. Each file stores the vendor, the alias, the capture timestamp and a `data` object. For Antigravity, `data` is the `data` object inside the `command` object of the `agy` usage command's JSON output, which `agent-capacity probe` captures. A separate file per account means an invalid snapshot doesn't block other accounts.
+The spool stores one file per vendor and account alias, named `<vendor>-<alias>.json` with vendor `claude`, `agy` or `codex`, such as `claude-work.json` or `agy-work.json`. Each file stores the vendor, the alias, the capture timestamp and a `data` object. For Antigravity, `data` is the `data` object inside the `command` object of the `agy` usage command's JSON output, which `agent-capacity probe` captures. A separate file per account means an invalid snapshot doesn't block other accounts.
 
 Claude status-line readings remain fresh through 10 minutes, and Antigravity readings through 30 minutes. Both then contribute metrics with freshness `carried` through 6 hours. Older readings contribute no metrics.
 
@@ -50,6 +50,7 @@ agent-capacity serve
 ```
 
 The probe runs `agy -p "/usage" --output-format json --print-timeout 100s` from `PATH`, a command that neither starts an agent turn nor spends quota. Run the probe as the account's user, with that account's Antigravity home, because it inherits the environment. It stores only the `data` object inside the output's `command` object and exits 1 when the command fails or reports a status other than `SUCCESS`. Run it on the reading interval, such as every 15 minutes.
+Run `agent-capacity probe --vendor=codex --account=work --spool-dir=/path/to/spool` as the Codex account’s user. The probe runs `codex app-server` on standard input and output, reads `account/rateLimits/read` with a 30-second timeout, and stores only the rate limits in `codex-work.json`. The probe reads no authentication files and prints no server output. `serve --spool-dir` exports each snapshot with its account alias, window `7d` for 10080 minutes and `5h` otherwise. The vendor defaults to `agy` for existing calls.
 
 The gauges `agent.capacity.window.utilization`, `agent.capacity.window.reset_time`, and `agent.capacity.snapshot.age` include the vendor, source, and account alias labels. Antigravity readings add `agent.plan.bucket`.
 

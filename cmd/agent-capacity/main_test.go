@@ -141,7 +141,7 @@ func TestRuntimeSetup(t *testing.T) {
 	var logs bytes.Buffer
 
 	runtime := newRuntime(t.Context(), slog.New(slog.NewJSONHandler(&logs, nil)))
-	assert.Len(t, runtime.Registry(t.TempDir()), 2)
+	assert.Len(t, runtime.Registry(t.TempDir()), 3)
 	registry, registryErr := runtime.NewRegistry("", "primary")
 	require.NoError(t, registryErr)
 	assert.Empty(t, registry)

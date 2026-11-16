@@ -77,7 +77,9 @@ func TestValidate(t *testing.T) {
 		assert.Equal(t, window == "" || window == unknownLabel, errors.Is(r.Validate(), capacity.ErrInvalidReading))
 	}
 
-	for _, source := range []string{claudeSource, capacity.ClaudeTranscript, codexSource, agySource, "", unknownLabel} {
+	for _, source := range []string{
+		claudeSource, capacity.ClaudeTranscript, codexSource, capacity.CodexProbe, agySource, "", unknownLabel,
+	} {
 		r := reading()
 		r.Source = source
 		assert.Equal(t, source == "" || source == unknownLabel, errors.Is(r.Validate(), capacity.ErrInvalidReading))
@@ -101,6 +103,8 @@ func TestFreshness(t *testing.T) {
 	}{
 		{age: -time.Second, source: claudeSource, want: fresh},
 		{age: 0, source: claudeSource, want: fresh},
+		{age: 30 * time.Minute, source: capacity.CodexProbe, want: fresh},
+		{age: 30*time.Minute + time.Nanosecond, source: capacity.CodexProbe, want: carried},
 		{age: 10*time.Minute - time.Nanosecond, source: claudeSource, want: fresh},
 		{age: 10 * time.Minute, source: claudeSource, want: fresh},
 		{age: 10*time.Minute + time.Nanosecond, source: claudeSource, want: carried},
@@ -166,6 +170,7 @@ func TestRegistry(t *testing.T) {
 		{name: unknownLabel, batch: nil, err: nil, wantClass: invalidClass},
 		{name: claudeSource, batch: nil, err: nil, wantClass: ""},
 		{name: capacity.ClaudeTranscript, batch: nil, err: nil, wantClass: ""},
+		{name: capacity.CodexProbe, batch: nil, err: nil, wantClass: ""},
 		{name: claudeSource, batch: []capacity.Reading{reading()}, err: nil, wantClass: ""},
 	}
 	for _, testCase := range cases {

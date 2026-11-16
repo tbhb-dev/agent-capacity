@@ -93,6 +93,7 @@ func TestProbeUsageErrors(t *testing.T) {
 	}{
 		{fixed(valid, nil), capacity.ErrInvalidReading, []string{"--account=@"}},
 		{fixed(valid, nil), capacity.ErrInvalidReading, []string{unknownFlag}},
+		{fixed(valid, nil), capacity.ErrInvalidReading, []string{workFlag, "--vendor=claude"}},
 		{fixed(valid, nil), capacity.ErrInvalidReading, []string{workFlag, "extra"}},
 		{fixed(nil, os.ErrNotExist), spool.ErrDirectory, []string{workFlag, "--spool-dir="}},
 		{fixed(nil, os.ErrNotExist), os.ErrNotExist, nil},
