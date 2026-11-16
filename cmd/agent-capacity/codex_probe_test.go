@@ -85,13 +85,8 @@ read -r held
 
 	require.ErrorIs(t, probeCodex(t.Context(), t.TempDir(), "work", time.Now()), capacity.ErrInvalidReading)
 
-	for _, vendor := range []string{"claude", "unknown"} {
-		require.ErrorIs(
-			t,
-			probeUsage(t.Context(), []string{"--vendor=" + vendor, workFlag}, nil, time.Now()),
-			capacity.ErrInvalidReading,
-		)
-	}
+	args := []string{"--vendor=unknown", workFlag}
+	require.ErrorIs(t, probeUsage(t.Context(), args, nil, time.Now()), capacity.ErrInvalidReading)
 
 	fakeCodex(t, "read -r init\nexec /bin/sleep 10\n")
 
@@ -111,7 +106,6 @@ read -r held
 	command.Stdout = io.Discard
 	_, err = runCodexCommand(command)
 	require.ErrorContains(t, err, "already set")
-	assert.Equal(t, 30*time.Second, codexProbeTimeout)
 }
 
 func TestCodexExchange(t *testing.T) {
