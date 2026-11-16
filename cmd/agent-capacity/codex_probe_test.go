@@ -101,7 +101,7 @@ read -r held
 	_, err := runCodexUsage(ctx)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	fakeCodex(t, "exit 3\n")
-	require.Error(t, probeCodex(t.Context(), t.TempDir(), "work", time.Now()))
+	require.ErrorIs(t, probeCodex(t.Context(), t.TempDir(), "work", time.Now()), io.EOF)
 
 	t.Setenv("PATH", t.TempDir())
 	_, err = runCodexUsage(t.Context())
@@ -117,15 +117,26 @@ read -r held
 func TestCodexExchange(t *testing.T) {
 	t.Parallel()
 
-	for _, response := range []string{
-		`{`,
-		`{"id":1,"error":{"message":"private"}}`,
-		`{"id":1,"result":{}}` + "\n" + `{"id":2,"result":[]}`,
+	for _, fixture := range []struct {
+		want     error
+		response string
+	}{
+		{io.EOF, ""},
+		{io.ErrUnexpectedEOF, `{`},
+		{capacity.ErrInvalidReading, `{"id":1,"result":{}}` + "\n" + `{"id":2,"result":[]}`},
 	} {
-		_, err := codexExchange(io.Discard, json.NewDecoder(strings.NewReader(response)))
-		require.Error(t, err)
+		_, err := codexExchange(io.Discard, json.NewDecoder(strings.NewReader(fixture.response)))
+		require.ErrorIs(t, err, fixture.want)
 	}
 
-	_, err := codexExchange(failingWriter{}, json.NewDecoder(bytes.NewReader(nil)))
-	require.Error(t, err)
+	responses := `{"id":1,"result":{}}` + "\n" + `{"id":2,"result":{"rateLimits":` + codexAnswer + `}}`
+	_, err := codexExchange(failingWriter{}, json.NewDecoder(strings.NewReader(responses)))
+	require.ErrorIs(t, err, errWrite)
+
+	var requests bytes.Buffer
+
+	failure := `{"id":1,"error":{"message":"private"}}` + "\n" + responses
+	_, err = codexExchange(&requests, json.NewDecoder(strings.NewReader(failure)))
+	require.ErrorIs(t, err, capacity.ErrInvalidReading)
+	assert.NotContains(t, requests.String(), "account/rateLimits/read")
 }
