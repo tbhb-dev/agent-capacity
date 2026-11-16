@@ -68,7 +68,7 @@ func Parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
 			label = "7d"
 		}
 		reading := capacity.Reading{
-			Vendor: "openai", Account: snapshot.Account, Source: capacity.CodexRollout, Window: label, Bucket: "",
+			Vendor: "openai", Account: snapshot.Account, Source: capacity.CodexProbe, Window: label, Bucket: "",
 			UsedRatio: window.UsedPercent / percentScale, ResetAt: time.Unix(window.ResetsAt, 0).UTC(),
 			ObservedAt: snapshot.ObservedAt,
 		}

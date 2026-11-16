@@ -57,7 +57,11 @@ read -r held
 	require.Len(t, snapshots, 1)
 	assert.JSONEq(t, codexAnswer, string(snapshots[0].Data))
 	assert.Equal(t, now, snapshots[0].ObservedAt)
-	readings, failuresRead := newRuntime(t.Context(), slog.New(slog.DiscardHandler)).Registry(dir).Read(t.Context(), now)
+	readings, failuresRead := newRuntime(
+		t.Context(),
+		slog.New(slog.DiscardHandler),
+	).Registry(dir).
+		Read(t.Context(), now)
 	assert.Empty(t, failuresRead)
 	require.Len(t, readings, 2)
 	assert.Equal(t, "work", readings[0].Account)
@@ -67,10 +71,17 @@ read -r held
 }
 
 func TestCodexProbeErrors(t *testing.T) {
-	fakeCodex(t, "read -r init\nprintf '%s\\n' '{\"id\":1,\"result\":{}}'\nread -r ready\nread -r request\nprintf '%s\\n' '{\"id\":2,\"result\":{\"rateLimits\":{}}}'\nread -r held\n")
+	fakeCodex(
+		t,
+		"read -r init\nprintf '%s\\n' '{\"id\":1,\"result\":{}}'\nread -r ready\nread -r request\nprintf '%s\\n' '{\"id\":2,\"result\":{\"rateLimits\":{}}}'\nread -r held\n",
+	)
 	require.ErrorIs(t, probeCodex(t.Context(), t.TempDir(), "work", time.Now()), capacity.ErrInvalidReading)
 	for _, vendor := range []string{"claude", "unknown"} {
-		require.ErrorIs(t, probeUsage(t.Context(), []string{"--vendor=" + vendor, workFlag}, nil, time.Now()), capacity.ErrInvalidReading)
+		require.ErrorIs(
+			t,
+			probeUsage(t.Context(), []string{"--vendor=" + vendor, workFlag}, nil, time.Now()),
+			capacity.ErrInvalidReading,
+		)
 	}
 	fakeCodex(t, "read -r init\nexec /bin/sleep 10\n")
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)

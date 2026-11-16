@@ -66,7 +66,7 @@ func newRuntime(ctx context.Context, logger *slog.Logger) Runtime {
 			return capacity.Registry{
 				{Name: capacity.ClaudeStatusline, Source: claude.Source{Dir: dir, Logger: logger}},
 				{Name: capacity.AGYStatusline, Source: agy.Source{Dir: dir, Logger: logger}},
-				{Name: capacity.CodexRollout, Source: codex.SpoolSource{Dir: dir, Logger: logger}},
+				{Name: capacity.CodexProbe, Source: codex.SpoolSource{Dir: dir, Logger: logger}},
 			}
 		},
 		NewProvider: func(ctx context.Context) (Provider, error) { return export.NewProvider(ctx) },

@@ -23,12 +23,35 @@ const quotaData = `{"primary":{"usedPercent":25,"windowDurationMins":300,"resets
 
 func TestSpoolParse(t *testing.T) {
 	t.Parallel()
-	snapshot := spool.Snapshot{Vendor: "codex", Account: "work", ObservedAt: time.Unix(100000, 0).UTC(), Data: json.RawMessage(quotaData)}
+	snapshot := spool.Snapshot{
+		Vendor:     "codex",
+		Account:    "work",
+		ObservedAt: time.Unix(100000, 0).UTC(),
+		Data:       json.RawMessage(quotaData),
+	}
 	got, err := Parse(snapshot)
 	require.NoError(t, err)
 	assert.Equal(t, []capacity.Reading{
-		{Vendor: "openai", Account: "work", Source: capacity.CodexRollout, Window: "5h", Bucket: "", UsedRatio: 0.25, ResetAt: time.Unix(200000, 0).UTC(), ObservedAt: snapshot.ObservedAt},
-		{Vendor: "openai", Account: "work", Source: capacity.CodexRollout, Window: "7d", Bucket: "", UsedRatio: 0.5, ResetAt: time.Unix(300000, 0).UTC(), ObservedAt: snapshot.ObservedAt},
+		{
+			Vendor:     "openai",
+			Account:    "work",
+			Source:     capacity.CodexProbe,
+			Window:     "5h",
+			Bucket:     "",
+			UsedRatio:  0.25,
+			ResetAt:    time.Unix(200000, 0).UTC(),
+			ObservedAt: snapshot.ObservedAt,
+		},
+		{
+			Vendor:     "openai",
+			Account:    "work",
+			Source:     capacity.CodexProbe,
+			Window:     "7d",
+			Bucket:     "",
+			UsedRatio:  0.5,
+			ResetAt:    time.Unix(300000, 0).UTC(),
+			ObservedAt: snapshot.ObservedAt,
+		},
 	}, got)
 	for _, data := range []string{`{`, `{}`, `null`, `{"primary":{"usedPercent":101}}`} {
 		snapshot.Data = json.RawMessage(data)
@@ -52,11 +75,34 @@ func TestSpoolSource(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(source.Dir, "codex-bad.json"), []byte(`{`), 0o600))
 	_, err = source.Read(t.Context(), time.Now())
 	require.ErrorIs(t, err, capacity.ErrInvalidReading)
-	require.NoError(t, spool.Write(source.Dir, spool.Snapshot{Vendor: "codex", Account: "bad-data", ObservedAt: time.Now(), Data: json.RawMessage(`{}`)}))
+	require.NoError(
+		t,
+		spool.Write(
+			source.Dir,
+			spool.Snapshot{Vendor: "codex", Account: "bad-data", ObservedAt: time.Now(), Data: json.RawMessage(`{}`)},
+		),
+	)
 	for _, account := range []string{"work", "personal"} {
-		require.NoError(t, spool.Write(source.Dir, spool.Snapshot{Vendor: "codex", Account: account, ObservedAt: time.Unix(100000, 0).UTC(), Data: json.RawMessage(quotaData)}))
+		require.NoError(
+			t,
+			spool.Write(
+				source.Dir,
+				spool.Snapshot{
+					Vendor:     "codex",
+					Account:    account,
+					ObservedAt: time.Unix(100000, 0).UTC(),
+					Data:       json.RawMessage(quotaData),
+				},
+			),
+		)
 	}
-	require.NoError(t, spool.Write(source.Dir, spool.Snapshot{Vendor: "agy", Account: "ignored", ObservedAt: time.Now(), Data: json.RawMessage(`{}`)}))
+	require.NoError(
+		t,
+		spool.Write(
+			source.Dir,
+			spool.Snapshot{Vendor: "agy", Account: "ignored", ObservedAt: time.Now(), Data: json.RawMessage(`{}`)},
+		),
+	)
 	got, err = source.Read(t.Context(), time.Now())
 	require.NoError(t, err)
 	require.Len(t, got, 4)
