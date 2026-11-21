@@ -32,6 +32,6 @@ _.path = [".bazel_env/bin"]
 [tools]
 bazelisk = "1.30.0"
 # Runs the git hooks that `tbhbdev alpha install` installs.
-prek = "0.5.10"
+prek = "0.5.11"
 # The Python audit environment and uv.lock need the same uv release.
 uv = "0.13.7"
