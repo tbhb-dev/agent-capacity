@@ -10,6 +10,7 @@ go_library(
     name = "claude",
     srcs = [
         "claude.go",
+        "tokens.go",
         "transcript.go",
     ],
     importpath = "go.tbhb.dev/agent-capacity/internal/source/claude",
@@ -24,6 +25,7 @@ go_test(
     name = "claude_test",
     srcs = [
         "claude_test.go",
+        "tokens_test.go",
         "transcript_test.go",
     ],
     embed = [":claude"],

@@ -72,10 +72,13 @@ func (s TranscriptSource) Read(ctx context.Context, now time.Time) ([]capacity.R
 		}
 	}
 
+	remaining := int64(transcriptTokenBytes)
+
 	var readings []capacity.Reading
 
 	for _, name := range []string{"5h", "7d"} {
 		if reading, ok := latest[name]; ok {
+			reading.Tokens = s.windowTokens(now, reading, &remaining)
 			readings = append(readings, reading)
 		}
 	}
