@@ -228,3 +228,25 @@ func TestTokenLineOverCap(t *testing.T) {
 	}, &remaining)
 	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}, "model-c": {1, 6, 3, 4}}, got)
 }
+
+func TestSubagentTokens(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(100000, 0).UTC()
+	event := strings.ReplaceAll(transcriptEventLine, "seven_day", "five_hour")
+	event = strings.ReplaceAll(event, "200000", "103600")
+	file := func(data string) *fstest.MapFile {
+		return &fstest.MapFile{Data: []byte(data), ModTime: now, Mode: 0, Sys: nil}
+	}
+	files := fstest.MapFS{
+		tokenFile:                         file(event + "\n" + tokenLine("main", tokenModel, now, 2)),
+		"session/subagents/agent-a.jsonl": file(tokenLine("sub", tokenModelB, now, 5)),
+		"session/subagents/agent-a.meta":  file(tokenLine("meta", tokenModelB, now, 7)),
+		"session/other.jsonl":             file(tokenLine("other", tokenModelB, now, 9)),
+	}
+	source := TranscriptSource{files: files, paths: []string{".", tokenFile}, account: transcriptAccount}
+	got, err := source.Read(t.Context(), now)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}, tokenModelB: {1, 5, 3, 4}}, got[0].Tokens)
+}
