@@ -165,27 +165,6 @@ func TestTokenWindows(t *testing.T) {
 	assert.Equal(t, week, got[1].Tokens)
 }
 
-func TestTokenWindowEndsAtReset(t *testing.T) {
-	t.Parallel()
-
-	now := time.Unix(100000, 0).UTC()
-	reset := now.Add(-time.Hour)
-	files := fstest.MapFS{
-		tokenFile: {
-			Data: []byte(tokenLine("inside", tokenModel, reset.Add(-time.Minute), 2) +
-				tokenLine("after", tokenModelB, now, 5)),
-			ModTime: now, Mode: 0, Sys: nil,
-		},
-	}
-	source := TranscriptSource{files: files, paths: []string{tokenFile}, account: transcriptAccount}
-	remaining := int64(transcriptTokenBytes)
-	got := source.windowTokens(now, capacity.Reading{
-		ResetAt: reset, Window: "5h", ObservedAt: now, Vendor: tokenVendor,
-		Bucket: "", Account: transcriptAccount, Source: capacity.ClaudeTranscript, UsedRatio: 0,
-	}, &remaining)
-	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}}, got)
-}
-
 func TestTokenScanFailures(t *testing.T) {
 	t.Parallel()
 
@@ -212,18 +191,20 @@ func TestTokenScanFailures(t *testing.T) {
 	}, &remaining))
 }
 
-func TestTokenLineOverCap(t *testing.T) {
+// A window that already reset excludes later usage, and a line over the cap is skipped without dropping its neighbors.
+func TestTokenLineOverCapAndPastReset(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(100000, 0).UTC()
-	data := tokenLine("kept", tokenModel, now, 2) +
-		paddedTokenLine("pad", tokenLine("big", tokenModelB, now, 5), tokenLineBytes+1<<16) +
-		tokenLine("after", "model-c", now, 6)
+	reset := now.Add(-time.Hour)
+	big := paddedTokenLine("pad", tokenLine("big", tokenModelB, reset.Add(-2*time.Minute), 5), tokenLineBytes+1<<16)
+	data := tokenLine("kept", tokenModel, reset.Add(-3*time.Minute), 2) + big +
+		tokenLine("tail", "model-c", reset.Add(-time.Minute), 6) + tokenLine("after", "model-d", now, 7)
 	files := fstest.MapFS{tokenFile: {Data: []byte(data), ModTime: now, Mode: 0, Sys: nil}}
 	source := TranscriptSource{files: files, paths: []string{tokenFile}, account: transcriptAccount}
 	remaining := int64(transcriptTokenBytes)
 	got := source.windowTokens(now, capacity.Reading{
-		ResetAt: now.Add(time.Hour), Window: "5h", ObservedAt: now, Vendor: tokenVendor,
+		ResetAt: reset, Window: "5h", ObservedAt: now, Vendor: tokenVendor,
 		Bucket: "", Account: transcriptAccount, Source: capacity.ClaudeTranscript, UsedRatio: 0,
 	}, &remaining)
 	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}, "model-c": {1, 6, 3, 4}}, got)
