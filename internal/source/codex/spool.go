@@ -54,9 +54,9 @@ func (s SpoolSource) Read(ctx context.Context, _ time.Time) ([]capacity.Reading,
 // Parse reads the rateLimits object returned by the app server.
 func Parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
 	type quotaWindow struct {
-		UsedPercent        float64 `json:"usedPercent"`
-		WindowDurationMins int     `json:"windowDurationMins"`
-		ResetsAt           int64   `json:"resetsAt"`
+		UsedPercent        *float64 `json:"usedPercent"`
+		ResetsAt           *int64   `json:"resetsAt"`
+		WindowDurationMins int      `json:"windowDurationMins"`
 	}
 
 	var payload struct {
@@ -74,14 +74,24 @@ func Parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
 			continue
 		}
 
-		label := "5h"
-		if window.WindowDurationMins == weekMinutes {
+		var label string
+
+		switch window.WindowDurationMins {
+		case shortMinutes:
+			label = "5h"
+		case weekMinutes:
 			label = "7d"
+		default:
+			return nil, capacity.ErrInvalidReading
+		}
+
+		if window.UsedPercent == nil || window.ResetsAt == nil {
+			return nil, capacity.ErrInvalidReading
 		}
 
 		reading := capacity.Reading{
 			Vendor: "openai", Account: snapshot.Account, Source: capacity.CodexProbe, Window: label, Bucket: "",
-			UsedRatio: window.UsedPercent / percentScale, ResetAt: time.Unix(window.ResetsAt, 0).UTC(),
+			UsedRatio: *window.UsedPercent / percentScale, ResetAt: time.Unix(*window.ResetsAt, 0).UTC(),
 			ObservedAt: snapshot.ObservedAt,
 		}
 		if reading.Validate() != nil {

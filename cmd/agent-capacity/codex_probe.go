@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os/exec"
 	"time"
 
@@ -46,6 +47,8 @@ func runCodexUsage(ctx context.Context) ([]byte, error) {
 }
 
 func runCodexCommand(command *exec.Cmd) ([]byte, error) {
+	command.WaitDelay = usageWaitDelay
+
 	input, inputErr := command.StdinPipe()
 
 	output, outputErr := command.StdoutPipe()
@@ -59,6 +62,10 @@ func runCodexCommand(command *exec.Cmd) ([]byte, error) {
 	defer output.Close()
 
 	err = command.Start()
+	if errors.Is(err, exec.ErrNotFound) {
+		return nil, fmt.Errorf("codex probe: %w: %w", fs.ErrNotExist, err)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("codex probe: %w", err)
 	}
@@ -69,7 +76,7 @@ func runCodexCommand(command *exec.Cmd) ([]byte, error) {
 		_ = command.Wait()         //nolint:errcheck // The process is killed after its answer.
 	}()
 
-	return codexExchange(input, json.NewDecoder(output))
+	return codexExchange(input, json.NewDecoder(io.LimitReader(output, maxStatusline)))
 }
 
 func codexExchange(input io.Writer, decoder *json.Decoder) ([]byte, error) {

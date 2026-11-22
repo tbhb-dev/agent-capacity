@@ -47,13 +47,19 @@ func TestSpoolParse(t *testing.T) {
 	want.ResetAt = time.Unix(300000, 0).UTC()
 	assert.Equal(t, want, got[1])
 
-	for _, data := range []string{`{`, `{}`, `{"primary":{},"secondary":[]}`, `{"primary":{"usedPercent":101}}`} {
+	for _, data := range []string{
+		`{`, `{}`, `{"primary":{},"secondary":[]}`, `{"primary":{}}`,
+		`{"primary":{"usedPercent":25,"windowDurationMins":1,"resetsAt":200000}}`,
+		`{"primary":{"windowDurationMins":300,"resetsAt":200000}}`,
+		`{"primary":{"usedPercent":25,"windowDurationMins":300}}`,
+		`{"primary":{"usedPercent":101,"windowDurationMins":300,"resetsAt":200000}}`,
+	} {
 		snapshot.Data = json.RawMessage(data)
 		_, err = Parse(snapshot)
 		require.ErrorIs(t, err, capacity.ErrInvalidReading)
 	}
 
-	snapshot.Data = json.RawMessage(`{"secondary":{"usedPercent":0,"windowDurationMins":1}}`)
+	snapshot.Data = json.RawMessage(`{"secondary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":200000}}`)
 	got, err = Parse(snapshot)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
