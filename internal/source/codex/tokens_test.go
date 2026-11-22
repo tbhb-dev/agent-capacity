@@ -87,8 +87,15 @@ func TestWindowTokens(t *testing.T) {
 		{"no valid reading", model + first, nil},
 		{"no model", limits + first, map[string][4]int64{}},
 		{"no reset", eventLine(now.Format(time.RFC3339Nano), short) + "\n" + model + first, nil},
-		{"line cap", limits + model + first + strings.Repeat("x", chunkSize+1) + "\n", nil},
-		{"scanner cap", limits + model + first + strings.Repeat("x", chunkSize+3) + "\n", nil},
+		{
+			// The rate tail reads only the last 8 MiB, so the limits line follows the long one.
+			"long line skipped", model + first + strings.Repeat("x", tokenLineBytes+8192) + "\n" + limits + last,
+			map[string][4]int64{tokenModel: {100, 16, 60, 0}},
+		},
+		{
+			"long line kept", limits + model + first + strings.Repeat("x", 3*chunkSize) + "\n" + last,
+			map[string][4]int64{tokenModel: {100, 16, 60, 0}},
+		},
 		{
 			"future excluded", limits + model + first + usageLine(now.Add(time.Second), 160, 16, 60),
 			map[string][4]int64{tokenModel: {60, 10, 40, 0}},
@@ -195,10 +202,12 @@ func TestTokenWindowsAndBudget(t *testing.T) {
 	assert.Nil(t, source.windowTokens(t.Context(), now, reading, &remaining))
 
 	// Files with old modification times never consume the byte budget.
-	files[old].Data = []byte(strings.Repeat("x", chunkSize+3))
-	remaining = capacity.WindowTokenBytes
+	files[old].Data = []byte(strings.Repeat("x", 7*len(data)))
+	remaining = int64(6 * len(data))
 	reading.Window = "5h"
 	assert.NotNil(t, source.windowTokens(t.Context(), now, reading, &remaining))
+
+	remaining = int64(6 * len(data))
 	reading.Window = "7d"
 	assert.Nil(t, source.windowTokens(t.Context(), now, reading, &remaining))
 }

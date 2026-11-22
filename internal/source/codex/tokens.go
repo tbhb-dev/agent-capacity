@@ -5,8 +5,10 @@ package codex
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"time"
@@ -14,7 +16,7 @@ import (
 	"go.tbhb.dev/agent-capacity/internal/capacity"
 )
 
-const tokenScannerBytes = chunkSize + 2
+const tokenLineBytes = 32 * 1024 * 1024
 
 //nolint:tagliatelle // Codex rollout usage fields use snake_case.
 type tokenUsage struct {
@@ -103,23 +105,48 @@ func (s Source) scanTokens(
 	}
 
 	*remaining -= info.Size()
-	scanner := bufio.NewScanner(io.LimitReader(file, info.Size()))
-	scanner.Buffer(make([]byte, tokenScannerBytes), tokenScannerBytes)
+	reader := bufio.NewReader(io.LimitReader(file, info.Size()))
 
 	var session sessionTokens
 
-	for scanner.Scan() {
-		if ctx.Err() != nil || len(scanner.Bytes()) > chunkSize {
+	for {
+		if ctx.Err() != nil {
 			return false
 		}
 
-		var event tokenEvent
-		if json.Unmarshal(scanner.Bytes(), &event) == nil && !event.Timestamp.After(now) {
-			session.consider(event, start, totals)
+		line, long, readErr := readTokenLine(reader)
+		if !long {
+			var event tokenEvent
+			if json.Unmarshal(line, &event) == nil && !event.Timestamp.After(now) {
+				session.consider(event, start, totals)
+			}
+		}
+
+		if readErr != nil {
+			return errors.Is(readErr, io.EOF)
 		}
 	}
+}
 
-	return scanner.Err() == nil
+// readTokenLine returns one line of any length up to tokenLineBytes. Longer lines are consumed and reported as long.
+func readTokenLine(reader *bufio.Reader) ([]byte, bool, error) {
+	var line []byte
+
+	long := false
+
+	for {
+		part, err := reader.ReadSlice('\n')
+		if !long {
+			line = append(line, part...)
+			if len(line) > tokenLineBytes {
+				line, long = nil, true
+			}
+		}
+
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return bytes.TrimRight(line, "\r\n"), long, err
+		}
+	}
 }
 
 func (s *sessionTokens) consider(event tokenEvent, start time.Time, totals map[string][4]int64) {
