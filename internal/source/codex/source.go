@@ -97,7 +97,7 @@ func newest(files fs.FS) ([]candidate, error) {
 }
 
 // Read chooses one complete snapshot by its event timestamp, across five tails.
-func (s Source) Read(ctx context.Context, _ time.Time) ([]capacity.Reading, error) {
+func (s Source) Read(ctx context.Context, now time.Time) ([]capacity.Reading, error) {
 	err := ctx.Err()
 	if err != nil {
 		return nil, safeError(err)
@@ -116,7 +116,22 @@ func (s Source) Read(ctx context.Context, _ time.Time) ([]capacity.Reading, erro
 		}
 	}
 
-	return latest.readings(s.account)
+	readings, err := latest.readings(s.account)
+	if err != nil {
+		return nil, err
+	}
+
+	remaining := int64(capacity.WindowTokenBytes)
+
+	for _, label := range []string{"5h", "7d"} {
+		for i := range readings {
+			if readings[i].Window == label && !readings[i].ResetAt.IsZero() {
+				readings[i].Tokens = s.windowTokens(ctx, now, readings[i], &remaining)
+			}
+		}
+	}
+
+	return readings, nil
 }
 
 func safeError(err error) error {
