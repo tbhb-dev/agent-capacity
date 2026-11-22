@@ -11,6 +11,7 @@ go_library(
     srcs = [
         "source.go",
         "spool.go",
+        "tokens.go",
     ],
     importpath = "go.tbhb.dev/agent-capacity/internal/source/codex",
     visibility = ["//:__subpackages__"],
@@ -25,6 +26,7 @@ go_test(
     srcs = [
         "source_test.go",
         "spool_test.go",
+        "tokens_test.go",
     ],
     embed = [":codex"],
     visibility = ["//:__pkg__"],
