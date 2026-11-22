@@ -13,6 +13,8 @@ import (
 
 // Reading describes one plan window. Sources convert percentages to ratios.
 type Reading struct {
+	//exhaustruct:optional
+	Tokens     map[string][4]int64 // Per model: input, output, cache read, cache write.
 	ResetAt    time.Time
 	ObservedAt time.Time
 	Vendor     string

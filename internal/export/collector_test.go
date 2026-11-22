@@ -23,12 +23,13 @@ import (
 
 const (
 	personalAlias = "personal"
+	workAlias     = "work"
 	resetName     = "agent.capacity.window.reset_time"
 )
 
 func reading(now time.Time) capacity.Reading {
 	return capacity.Reading{
-		Bucket: "", Vendor: "openai", Window: "7d", Account: "work", Source: "codex_rollout",
+		Bucket: "", Vendor: "openai", Window: "7d", Account: workAlias, Source: "codex_rollout",
 		UsedRatio: 0.5, ResetAt: now.Add(time.Hour), ObservedAt: now,
 	}
 }
@@ -115,7 +116,7 @@ func assertMetrics(t *testing.T, metrics []metricdata.Metrics) {
 			require.True(t, found)
 
 			alias := account.AsString()
-			require.Contains(t, []string{"work", personalAlias}, alias)
+			require.Contains(t, []string{workAlias, personalAlias}, alias)
 
 			freshness := "fresh"
 			age := 0.0
@@ -217,4 +218,64 @@ func TestCollectorBucket(t *testing.T) {
 		require.True(t, found)
 		assert.Equal(t, "3p", bucket.AsString())
 	}
+}
+
+func TestCollectorTokens(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(100000, 0)
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	t.Cleanup(func() { require.NoError(t, provider.Shutdown(context.Background())) })
+
+	collector, err := export.New(provider.Meter("tokens"), func() time.Time { return now })
+	require.NoError(t, err)
+
+	quota := reading(now)
+	quota.Tokens = map[string][4]int64{"model-a": {1, 2, 3, 4}}
+	require.NoError(t, collector.Replace([]capacity.Reading{quota}))
+	quota.Tokens["model-a"] = [4]int64{}
+	metrics := collect(t, reader)
+	require.Len(t, metrics, 4)
+
+	for _, measurement := range metrics {
+		if measurement.Name != "agent.capacity.window.tokens" {
+			continue
+		}
+
+		gauge, ok := measurement.Data.(metricdata.Gauge[float64])
+		require.True(t, ok)
+		require.Len(t, gauge.DataPoints, 4)
+
+		for _, point := range gauge.DataPoints {
+			model, found := point.Attributes.Value("model")
+			require.True(t, found)
+			assert.Equal(t, "model-a", model.AsString())
+
+			tokenType, found := point.Attributes.Value("token_type")
+			require.True(t, found)
+			assert.InDelta(
+				t,
+				map[string]float64{"input": 1, "output": 2, "cache_read": 3, "cache_write": 4}[tokenType.AsString()],
+				point.Value,
+				0,
+			)
+
+			for key, value := range map[string]string{
+				"agent.account": workAlias, "agent.plan.vendor": "openai", "agent.plan.window": "7d",
+				"agent.capacity.source": "codex_rollout", "agent.capacity.freshness": "fresh",
+			} {
+				attr, exists := point.Attributes.Value(attribute.Key(key))
+				require.True(t, exists)
+				assert.Equal(t, value, attr.AsString())
+			}
+		}
+	}
+
+	now = now.Add(7 * time.Hour)
+
+	assert.Empty(t, collect(t, reader))
+	require.NoError(t, collector.Replace([]capacity.Reading{reading(now)}))
+	assert.Len(t, collect(t, reader), 3)
 }

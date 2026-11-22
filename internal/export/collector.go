@@ -7,6 +7,7 @@ package export
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -24,7 +25,7 @@ type Collector struct {
 	mu       sync.RWMutex
 }
 
-// New registers three observable gauges with the supplied meter.
+// New registers four observable gauges with the supplied meter.
 // Standard OpenTelemetry Protocol (OTLP) to Prometheus translation adds unit suffixes.
 func New(meter metric.Meter, now func() time.Time) (*Collector, error) {
 	collector := &Collector{mu: sync.RWMutex{}, readings: nil, now: now}
@@ -35,6 +36,7 @@ func New(meter metric.Meter, now func() time.Time) (*Collector, error) {
 		{"agent.capacity.window.utilization", "1"},
 		{"agent.capacity.window.reset_time", "s"},
 		{"agent.capacity.snapshot.age", "s"},
+		{"agent.capacity.window.tokens", ""},
 	} {
 		gauge, err := meter.Float64ObservableGauge(spec.name, metric.WithUnit(spec.unit))
 		if err != nil {
@@ -48,7 +50,7 @@ func New(meter metric.Meter, now func() time.Time) (*Collector, error) {
 		collector.observe(observer, gauges)
 
 		return nil
-	}, gauges[0], gauges[1], gauges[2])
+	}, gauges[0], gauges[1], gauges[2], gauges[3])
 	if err != nil {
 		return nil, fmt.Errorf("register gauges: %w", err)
 	}
@@ -69,6 +71,9 @@ func (collector *Collector) Replace(readings []capacity.Reading) error {
 	defer collector.mu.Unlock()
 
 	collector.readings = slices.Clone(readings)
+	for i := range collector.readings {
+		collector.readings[i].Tokens = maps.Clone(readings[i].Tokens)
+	}
 
 	return nil
 }
@@ -103,5 +108,16 @@ func (collector *Collector) observe(observer metric.Observer, gauges []metric.Fl
 		}
 
 		observer.ObserveFloat64(gauges[2], age.Seconds(), attrs)
+
+		for model, counts := range reading.Tokens {
+			for index, tokenType := range []string{"input", "output", "cache_read", "cache_write"} {
+				tokenLabels := append(
+					slices.Clone(labels),
+					attribute.String("model", model),
+					attribute.String("token_type", tokenType),
+				)
+				observer.ObserveFloat64(gauges[3], float64(counts[index]), metric.WithAttributes(tokenLabels...))
+			}
+		}
 	}
 }
