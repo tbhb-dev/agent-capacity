@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
+	"path/filepath"
 	"time"
 
 	"go.tbhb.dev/agent-capacity/internal/capacity"
@@ -164,11 +166,29 @@ func (s TranscriptSource) tokenPaths() []string {
 	seen := map[string]bool{}
 
 	for _, name := range s.paths {
-		for _, path := range transcriptPaths(s.files, name) {
+		for _, path := range append(transcriptPaths(s.files, name), subagentPaths(s.files, name)...) {
 			if !seen[path] {
 				paths = append(paths, path)
 				seen[path] = true
 			}
+		}
+	}
+
+	return paths
+}
+
+// subagentPaths finds the transcripts that Task and Agent runs write under <dir>/<session>/subagents.
+func subagentPaths(files fs.FS, name string) []string {
+	entries, err := fs.ReadDir(files, name)
+	if err != nil {
+		return nil
+	}
+
+	var paths []string
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			paths = append(paths, transcriptPaths(files, filepath.Join(name, entry.Name(), "subagents"))...)
 		}
 	}
 
