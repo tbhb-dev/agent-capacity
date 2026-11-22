@@ -25,6 +25,9 @@ type Reading struct {
 	UsedRatio  float64
 }
 
+// WindowTokenBytes bounds token scans across all windows in one source collection.
+const WindowTokenBytes = 64 * 1024 * 1024
+
 // Source names identify the passive input format.
 const (
 	ClaudeStatusline   = "claude_statusline"
