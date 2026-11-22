@@ -5,7 +5,9 @@ package claude
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"time"
 
@@ -14,7 +16,7 @@ import (
 
 const (
 	transcriptTokenBytes = 64 * 1024 * 1024
-	tokenScannerBytes    = transcriptLine + 2
+	tokenLineBytes       = 32 * 1024 * 1024
 	tokenFiveHours       = 5 * time.Hour
 	tokenSevenDays       = 7 * 24 * time.Hour
 )
@@ -44,10 +46,16 @@ func (s TranscriptSource) windowTokens(now time.Time, reading capacity.Reading, 
 	}
 
 	start := reading.ResetAt.Add(-length)
+	// A window that has already reset ends at its reset time, so the next window's tokens stay out.
+	end := now
+	if reading.ResetAt.Before(now) {
+		end = reading.ResetAt
+	}
+
 	messages := map[string]tokenEvent{}
 
 	for _, path := range s.tokenPaths() {
-		if !s.scanTokens(path, start, now, remaining, messages) {
+		if !s.scanTokens(path, start, end, remaining, messages) {
 			return nil
 		}
 	}
@@ -93,26 +101,51 @@ func (s TranscriptSource) scanTokens(
 	}
 
 	*remaining -= info.Size()
-	scanner := bufio.NewScanner(io.LimitReader(file, info.Size()))
-	scanner.Buffer(make([]byte, tokenScannerBytes), tokenScannerBytes)
+	reader := bufio.NewReader(io.LimitReader(file, info.Size()))
 
-	for scanner.Scan() {
-		if len(scanner.Bytes()) > transcriptLine {
-			return false
+	for {
+		line, long, readErr := readTokenLine(reader)
+		if !long {
+			considerTokens(line, start, now, messages)
 		}
 
-		event, valid := decodeTokens(scanner.Bytes(), start, now)
-		if !valid {
-			continue
-		}
-
-		previous, exists := messages[event.Message.ID]
-		if !exists || !event.Timestamp.Before(previous.Timestamp) {
-			messages[event.Message.ID] = event
+		if readErr != nil {
+			return errors.Is(readErr, io.EOF)
 		}
 	}
+}
 
-	return scanner.Err() == nil
+// readTokenLine returns one line of any length up to tokenLineBytes. Longer lines are consumed and reported as long.
+func readTokenLine(reader *bufio.Reader) ([]byte, bool, error) {
+	var line []byte
+
+	long := false
+
+	for {
+		part, err := reader.ReadSlice('\n')
+		if !long {
+			line = append(line, part...)
+			if len(line) > tokenLineBytes {
+				line, long = nil, true
+			}
+		}
+
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return bytes.TrimRight(line, "\r\n"), long, err
+		}
+	}
+}
+
+func considerTokens(line []byte, start, now time.Time, messages map[string]tokenEvent) {
+	event, valid := decodeTokens(line, start, now)
+	if !valid {
+		return
+	}
+
+	previous, exists := messages[event.Message.ID]
+	if !exists || !event.Timestamp.Before(previous.Timestamp) {
+		messages[event.Message.ID] = event
+	}
 }
 
 func decodeTokens(line []byte, start, now time.Time) (tokenEvent, bool) {

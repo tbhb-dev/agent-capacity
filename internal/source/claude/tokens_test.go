@@ -19,6 +19,8 @@ import (
 
 const (
 	tokenModel  = "model-a"
+	tokenModelB = "model-b"
+	tokenFile   = "new.jsonl"
 	tokenVendor = "anthropic"
 )
 
@@ -33,6 +35,11 @@ func tokenLine(id, model string, stamp time.Time, output int) string {
 	) + "\n"
 }
 
+// paddedTokenLine inserts size bytes of padding into a token line's message so the line is that long.
+func paddedTokenLine(key, line string, size int) string {
+	return strings.Replace(line, `"message":{`, `"message":{"`+key+`":"`+strings.Repeat("x", size)+`",`, 1)
+}
+
 //nolint:govet // Keep fixture columns in input and expected order.
 func TestWindowTokens(t *testing.T) {
 	t.Parallel()
@@ -43,7 +50,7 @@ func TestWindowTokens(t *testing.T) {
 	first := tokenLine("one", tokenModel, now.Add(-time.Hour), 2)
 	duplicate := tokenLine("one", tokenModel, now, 9)
 
-	second := tokenLine("two", "model-b", now, 5)
+	second := tokenLine("two", tokenModelB, now, 5)
 	for _, testCase := range []struct {
 		name string
 		data string
@@ -52,7 +59,7 @@ func TestWindowTokens(t *testing.T) {
 	}{
 		{
 			"two models", event + "\n" + first + second, "",
-			map[string][4]int64{tokenModel: {1, 2, 3, 4}, "model-b": {1, 5, 3, 4}},
+			map[string][4]int64{tokenModel: {1, 2, 3, 4}, tokenModelB: {1, 5, 3, 4}},
 		},
 		{"last usage", event + "\n" + first + duplicate, "", map[string][4]int64{tokenModel: {1, 9, 3, 4}}},
 		{
@@ -73,8 +80,10 @@ func TestWindowTokens(t *testing.T) {
 			"",
 			map[string][4]int64{},
 		},
-		{"scanner cap", event + "\n" + first + strings.Repeat("x", tokenScannerBytes+1), "", nil},
-		{"line cap", event + "\n" + first + strings.Repeat("x", transcriptLine+1), "", nil},
+		{
+			"long line over 1 MiB", event + "\n" + first + paddedTokenLine("pad", second, 1<<20+1), "",
+			map[string][4]int64{tokenModel: {1, 2, 3, 4}, tokenModelB: {1, 5, 3, 4}},
+		},
 		{"byte cap", event + "\n" + first, "", nil},
 		{"old mtime", event + "\n" + first, second, map[string][4]int64{tokenModel: {1, 2, 3, 4}}},
 		{"future", event + "\n" + tokenLine("future", tokenModel, now.Add(time.Second), 2), "", map[string][4]int64{}},
@@ -83,10 +92,10 @@ func TestWindowTokens(t *testing.T) {
 			t.Parallel()
 
 			files := fstest.MapFS{
-				"new.jsonl": {Data: []byte(testCase.data), ModTime: now, Mode: 0, Sys: nil},
+				tokenFile:   {Data: []byte(testCase.data), ModTime: now, Mode: 0, Sys: nil},
 				"old.jsonl": {Data: []byte(testCase.old), ModTime: now.Add(-5 * time.Hour), Mode: 0, Sys: nil},
 			}
-			source := TranscriptSource{files: files, paths: []string{".", "new.jsonl"}, account: transcriptAccount}
+			source := TranscriptSource{files: files, paths: []string{".", tokenFile}, account: transcriptAccount}
 			got, err := source.Read(t.Context(), now)
 			require.NoError(t, err)
 
@@ -124,7 +133,7 @@ func TestTokenWindows(t *testing.T) {
 			Sys:     nil,
 		},
 		"older": {
-			Data:    []byte(tokenLine("week", "model-b", now.Add(-24*time.Hour), 5)),
+			Data:    []byte(tokenLine("week", tokenModelB, now.Add(-24*time.Hour), 5)),
 			ModTime: now.Add(-24 * time.Hour), Mode: 0, Sys: nil,
 		},
 		"duplicate": {
@@ -139,19 +148,42 @@ func TestTokenWindows(t *testing.T) {
 		paths:   []string{"recent", "older", "duplicate"},
 		account: transcriptAccount,
 	}
+	shared := map[string][4]int64{tokenModel: {1, 7, 3, 4}}
+	week := map[string][4]int64{tokenModel: {1, 7, 3, 4}, tokenModelB: {1, 5, 3, 4}}
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
-	assert.Equal(t, map[string][4]int64{tokenModel: {1, 7, 3, 4}}, got[0].Tokens)
-	assert.Equal(t, map[string][4]int64{tokenModel: {1, 7, 3, 4}, "model-b": {1, 5, 3, 4}}, got[1].Tokens)
+	assert.Equal(t, shared, got[0].Tokens)
+	assert.Equal(t, week, got[1].Tokens)
 
-	// An oversized old line invalidates only the weekly sum.
-	files["older"].Data = append(files["older"].Data, []byte(strings.Repeat("x", tokenScannerBytes+1))...)
+	// A long malformed line is ignored and the sums stay the same.
+	files["older"].Data = append(files["older"].Data, []byte(strings.Repeat("x", 1<<17))...)
 	got, err = source.Read(t.Context(), now)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
-	assert.Equal(t, map[string][4]int64{tokenModel: {1, 7, 3, 4}}, got[0].Tokens)
-	assert.Nil(t, got[1].Tokens)
+	assert.Equal(t, shared, got[0].Tokens)
+	assert.Equal(t, week, got[1].Tokens)
+}
+
+func TestTokenWindowEndsAtReset(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(100000, 0).UTC()
+	reset := now.Add(-time.Hour)
+	files := fstest.MapFS{
+		tokenFile: {
+			Data: []byte(tokenLine("inside", tokenModel, reset.Add(-time.Minute), 2) +
+				tokenLine("after", tokenModelB, now, 5)),
+			ModTime: now, Mode: 0, Sys: nil,
+		},
+	}
+	source := TranscriptSource{files: files, paths: []string{tokenFile}, account: transcriptAccount}
+	remaining := int64(transcriptTokenBytes)
+	got := source.windowTokens(now, capacity.Reading{
+		ResetAt: reset, Window: "5h", ObservedAt: now, Vendor: tokenVendor,
+		Bucket: "", Account: transcriptAccount, Source: capacity.ClaudeTranscript, UsedRatio: 0,
+	}, &remaining)
+	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}}, got)
 }
 
 func TestTokenScanFailures(t *testing.T) {
@@ -178,4 +210,21 @@ func TestTokenScanFailures(t *testing.T) {
 		ResetAt: time.Time{}.Add(tokenFiveHours), Window: "5h", ObservedAt: time.Time{}, Vendor: tokenVendor,
 		Bucket: "", Account: transcriptAccount, Source: capacity.ClaudeTranscript, UsedRatio: 0,
 	}, &remaining))
+}
+
+func TestTokenLineOverCap(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(100000, 0).UTC()
+	data := tokenLine("kept", tokenModel, now, 2) +
+		paddedTokenLine("pad", tokenLine("big", tokenModelB, now, 5), tokenLineBytes+1<<16) +
+		tokenLine("after", "model-c", now, 6)
+	files := fstest.MapFS{tokenFile: {Data: []byte(data), ModTime: now, Mode: 0, Sys: nil}}
+	source := TranscriptSource{files: files, paths: []string{tokenFile}, account: transcriptAccount}
+	remaining := int64(transcriptTokenBytes)
+	got := source.windowTokens(now, capacity.Reading{
+		ResetAt: now.Add(time.Hour), Window: "5h", ObservedAt: now, Vendor: tokenVendor,
+		Bucket: "", Account: transcriptAccount, Source: capacity.ClaudeTranscript, UsedRatio: 0,
+	}, &remaining)
+	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}, "model-c": {1, 6, 3, 4}}, got)
 }
