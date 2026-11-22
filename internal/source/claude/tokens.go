@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	transcriptTokenBytes = 64 * 1024 * 1024
+	transcriptTokenBytes = capacity.WindowTokenBytes
 	tokenLineBytes       = 32 * 1024 * 1024
 	tokenFiveHours       = 5 * time.Hour
 	tokenSevenDays       = 7 * 24 * time.Hour
