@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -97,15 +98,23 @@ read -r held
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	fakeCodex(t, "read -r init\nexit 3\n")
 	require.ErrorIs(t, probeCodex(t.Context(), t.TempDir(), "work", time.Now()), io.EOF)
+	fakeCodex(t, "read -r init\nprintf '{\"id\":1,\"result\":%1048576s}\\n' ''\n")
+	_, err = runCodexUsage(t.Context())
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
 
 	t.Setenv("PATH", t.TempDir())
 	_, err = runCodexUsage(t.Context())
+	require.ErrorIs(t, err, fs.ErrNotExist)
 	require.ErrorIs(t, err, exec.ErrNotFound)
+	assert.Equal(t, "missing", capacity.ErrorClass(err))
+	_, err = runCodexCommand(exec.CommandContext(t.Context(), "/"))
+	require.Error(t, err)
 	command := exec.CommandContext(t.Context(), "unused")
 	command.Stdin = strings.NewReader("")
 	command.Stdout = io.Discard
 	_, err = runCodexCommand(command)
 	require.ErrorContains(t, err, "already set")
+	assert.Equal(t, 5*time.Second, command.WaitDelay)
 	assert.Equal(t, 30*time.Second, codexProbeTimeout)
 }
 
