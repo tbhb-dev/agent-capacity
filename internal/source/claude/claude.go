@@ -21,7 +21,10 @@ type Source struct {
 	Dir    string
 }
 
-const percentageScale = 100
+const (
+	percentageScale = 100
+	vendorAnthropic = "anthropic"
+)
 
 type window struct {
 	UsedPercentage *float64 `json:"used_percentage"` //nolint:tagliatelle // The input format uses snake_case field names.
@@ -85,7 +88,7 @@ func parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
 		}
 
 		reading := capacity.Reading{
-			Bucket: "", Vendor: "anthropic", Window: entry.name, Account: snapshot.Account,
+			Bucket: "", Vendor: vendorAnthropic, Window: entry.name, Account: snapshot.Account,
 			Source: capacity.ClaudeStatusline, UsedRatio: *entry.value.UsedPercentage / percentageScale,
 			ResetAt: time.Unix(*entry.value.ResetsAt, 0).UTC(), ObservedAt: snapshot.ObservedAt,
 		}

@@ -279,3 +279,26 @@ func TestCollectorTokens(t *testing.T) {
 	require.NoError(t, collector.Replace([]capacity.Reading{reading(now)}))
 	assert.Len(t, collect(t, reader), 3)
 }
+
+func TestCollectorTokensOnly(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(100000, 0)
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	t.Cleanup(func() { require.NoError(t, provider.Shutdown(context.Background())) })
+
+	collector, err := export.New(provider.Meter("tokens-only"), func() time.Time { return now })
+	require.NoError(t, err)
+
+	quota := reading(now)
+	quota.Tokens = map[string][4]int64{"model-a": {1, 2, 3, 4}}
+	quota.TokensOnly = true
+	require.NoError(t, collector.Replace([]capacity.Reading{quota}))
+
+	// A tokens-only reading has no plan window, so only the token gauge reports.
+	metrics := collect(t, reader)
+	require.Len(t, metrics, 1)
+	assert.Equal(t, "agent.capacity.window.tokens", metrics[0].Name)
+}

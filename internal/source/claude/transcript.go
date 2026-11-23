@@ -72,18 +72,52 @@ func (s TranscriptSource) Read(ctx context.Context, now time.Time) ([]capacity.R
 		}
 	}
 
+	return s.withTokens(now, latest), nil
+}
+
+// withTokens adds token totals to each window reading, in window order.
+func (s TranscriptSource) withTokens(now time.Time, latest map[string]capacity.Reading) []capacity.Reading {
 	remaining := int64(transcriptTokenBytes)
 
 	var readings []capacity.Reading
 
+	// Windows with a rate-limit event take the shared scan budget first, so a rolling window cannot starve them.
+	names := []string{"5h", "7d"}
+	order := make([]string, 0, len(names))
+
+	for _, wantEvent := range []bool{true, false} {
+		for _, name := range names {
+			if _, found := latest[name]; found == wantEvent {
+				order = append(order, name)
+			}
+		}
+	}
+
+	built := map[string]capacity.Reading{}
+
+	for _, name := range order {
+		reading, found := latest[name]
+		if !found {
+			// Without a rate-limit event the window is rolling: it ends now and reports tokens only.
+			reading = capacity.Reading{
+				Bucket: "", Vendor: vendorAnthropic, Source: capacity.ClaudeTranscript, Account: s.account,
+				Window: name, ObservedAt: now, ResetAt: now, UsedRatio: 0, TokensOnly: true,
+			}
+		}
+
+		reading.Tokens = s.windowTokens(now, reading, &remaining)
+		if found || len(reading.Tokens) > 0 {
+			built[name] = reading
+		}
+	}
+
 	for _, name := range []string{"5h", "7d"} {
-		if reading, ok := latest[name]; ok {
-			reading.Tokens = s.windowTokens(now, reading, &remaining)
+		if reading, found := built[name]; found {
 			readings = append(readings, reading)
 		}
 	}
 
-	return readings, nil
+	return readings
 }
 
 // mainPaths reads a project directory as is. A directory without transcripts of its own
@@ -259,7 +293,7 @@ func transcriptReading(value *transcriptWindow, name, account string, observed t
 	}
 
 	reading := capacity.Reading{
-		Bucket: "", Vendor: "anthropic", Source: capacity.ClaudeTranscript, Account: account, Window: name,
+		Bucket: "", Vendor: vendorAnthropic, Source: capacity.ClaudeTranscript, Account: account, Window: name,
 		UsedRatio: *value.Utilization, ResetAt: reset.Time, ObservedAt: observed,
 	}
 

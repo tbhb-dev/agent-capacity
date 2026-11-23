@@ -101,13 +101,15 @@ func (collector *Collector) observe(observer metric.Observer, gauges []metric.Fl
 		}
 
 		attrs := metric.WithAttributes(labels...)
-		observer.ObserveFloat64(gauges[0], reading.UsedRatio, attrs)
+		if !reading.TokensOnly {
+			observer.ObserveFloat64(gauges[0], reading.UsedRatio, attrs)
 
-		if !reading.ResetAt.IsZero() {
-			observer.ObserveFloat64(gauges[1], float64(reading.ResetAt.UnixNano())/float64(time.Second), attrs)
+			if !reading.ResetAt.IsZero() {
+				observer.ObserveFloat64(gauges[1], float64(reading.ResetAt.UnixNano())/float64(time.Second), attrs)
+			}
+
+			observer.ObserveFloat64(gauges[2], age.Seconds(), attrs)
 		}
-
-		observer.ObserveFloat64(gauges[2], age.Seconds(), attrs)
 
 		for model, counts := range reading.Tokens {
 			for index, tokenType := range []string{"input", "output", "cache_read", "cache_write"} {

@@ -11,7 +11,7 @@ generated:
     effort: medium
     surface: cli
     session: sha-256-64:1e5db78070fe05b4
-    at: "2026-11-23T11:08:02Z"
+    at: "2026-11-23T13:54:55Z"
 ---
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
@@ -45,7 +45,7 @@ Run these steps from the `agent-capacity` checkout on the exporter host using th
    sudo ./deploy/macos/install.sh apply --binary "$binary"
    ```
 
-4. In Mimir, query `agent_capacity_window_tokens{agent_account=~"codex-primary|claude-primary|claude-secondary"}` after an export interval. Check the account labels for fresh samples. Claude token metrics also need fresh window events in transcript files the exporter can find. The reader walks each project directory under `config/projects` and its session `subagents` folders.
+4. In Mimir, query `agent_capacity_window_tokens{agent_account=~"codex-primary|claude-primary|claude-secondary"}` after an export interval. Check the account labels for fresh samples. Claude token metrics come from the transcript files the exporter can find, with or without window events. The reader walks each project directory under `config/projects` and its session `subagents` folders.
 
 ## Undo
 
