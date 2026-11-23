@@ -82,7 +82,7 @@ func TestWindowTokens(t *testing.T) {
 		{"missing id", event + "\n" + strings.ReplaceAll(first, `"id":"one"`, `"id":""`), "", map[string][4]int64{}},
 		{"missing model", event + "\n" + strings.ReplaceAll(first, tokenModel, ""), "", map[string][4]int64{}},
 		{
-			"missing usage", event + "\n" + `{"type":"assistant","message":{"id":"one","model":"test"}}`,
+			"missing usage", event + "\n" + `{"type":"assistant","message":{"id":"one","model":"test"}}` + "\n",
 			"",
 			map[string][4]int64{},
 		},
@@ -90,7 +90,6 @@ func TestWindowTokens(t *testing.T) {
 			"long line over 1 MiB", event + "\n" + first + paddedTokenLine("pad", second, 1<<20+1), "",
 			map[string][4]int64{tokenModel: {1, 2, 3, 4}, tokenModelB: {1, 5, 3, 4}},
 		},
-		{"byte cap", event + "\n" + first, "", nil},
 		{"old mtime", event + "\n" + first, second, map[string][4]int64{tokenModel: {1, 2, 3, 4}}},
 		{"future", event + "\n" + tokenLine("future", tokenModel, now.Add(time.Second), 2), "", map[string][4]int64{}},
 	} {
@@ -99,7 +98,7 @@ func TestWindowTokens(t *testing.T) {
 
 			files := fstest.MapFS{
 				tokenFile:   {Data: []byte(testCase.data), ModTime: now, Mode: 0, Sys: nil},
-				"old.jsonl": {Data: []byte(testCase.old), ModTime: now.Add(-5 * time.Hour), Mode: 0, Sys: nil},
+				"old.jsonl": {Data: []byte(testCase.old), ModTime: now.Add(-8 * 24 * time.Hour), Mode: 0, Sys: nil},
 			}
 			source := TranscriptSource{files: files, paths: []string{".", tokenFile}, account: transcriptAccount}
 			got, err := source.Read(t.Context(), now)
@@ -118,11 +117,6 @@ func TestWindowTokens(t *testing.T) {
 
 			got = planReadings(got)
 			require.Len(t, got, 1)
-
-			if testCase.name == "byte cap" {
-				remaining := int64(1)
-				got[0].Tokens = source.windowTokens(now, got[0], &remaining)
-			}
 
 			assert.Equal(t, testCase.want, got[0].Tokens)
 		})
@@ -188,19 +182,11 @@ func TestTokenScanFailures(t *testing.T) {
 		{files, "missing"},
 		{files, "."},
 		{transcriptFaultFS{FS: files, openErr: false, statErr: true, readErr: false, noReader: false}, transcriptInput},
+		{transcriptFaultFS{FS: files, openErr: false, statErr: false, readErr: false, noReader: true}, transcriptInput},
 	} {
-		source := TranscriptSource{files: fixture.files, account: transcriptAccount, paths: nil}
-		remaining := int64(transcriptTokenBytes)
-		assert.False(t, source.scanTokens(fixture.path, time.Time{}, time.Time{}, &remaining, map[string]tokenEvent{}))
+		budget := int64(tokenPassBytes)
+		assert.False(t, newTokenIndex().scan(fixture.files, fixture.path, time.Time{}, time.Time{}, &budget))
 	}
-	// The second eligible file exceeds the shared budget, discarding the first sum.
-	source := TranscriptSource{files: files, account: transcriptAccount, paths: []string{transcriptInput, "second"}}
-	files["second"] = &fstest.MapFile{Data: []byte("{}"), Mode: 0, ModTime: time.Time{}, Sys: nil}
-	remaining := int64(3)
-	assert.Nil(t, source.windowTokens(time.Time{}, capacity.Reading{
-		ResetAt: time.Time{}.Add(tokenFiveHours), Window: "5h", ObservedAt: time.Time{}, Vendor: tokenVendor,
-		Bucket: "", Account: transcriptAccount, Source: capacity.ClaudeTranscript, UsedRatio: 0,
-	}, &remaining))
 }
 
 // A window that already reset excludes later usage, and a line over the cap is skipped without dropping its neighbors.
@@ -213,12 +199,10 @@ func TestTokenLineOverCapAndPastReset(t *testing.T) {
 	data := tokenLine("kept", tokenModel, reset.Add(-3*time.Minute), 2) + big +
 		tokenLine("tail", "model-c", reset.Add(-time.Minute), 6) + tokenLine("after", "model-d", now, 7)
 	files := fstest.MapFS{tokenFile: {Data: []byte(data), ModTime: now, Mode: 0, Sys: nil}}
-	source := TranscriptSource{files: files, paths: []string{tokenFile}, account: transcriptAccount}
-	remaining := int64(transcriptTokenBytes)
-	got := source.windowTokens(now, capacity.Reading{
-		ResetAt: reset, Window: "5h", ObservedAt: now, Vendor: tokenVendor,
-		Bucket: "", Account: transcriptAccount, Source: capacity.ClaudeTranscript, UsedRatio: 0,
-	}, &remaining)
+	index := newTokenIndex()
+	require.True(t, index.refresh(files, []string{tokenFile}, now))
+
+	got := windowTokens(index, now, fiveHours(reset, now))
 	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}, "model-c": {1, 6, 3, 4}}, got)
 }
 
@@ -324,27 +308,91 @@ func TestTokensOnlyWindows(t *testing.T) {
 	require.NoError(t, got[0].Validate())
 }
 
-func TestRollingWindowKeepsBudgetForEvents(t *testing.T) {
+// Later passes read only appended bytes, keep a half-written line for its newline, and reread a replaced file.
+func TestTokenIndexIncremental(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(1000000, 0).UTC()
-	event := `{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{` +
-		`"seven_day":{"utilization":0.3,"resetsAt":1003600,"status":"allowed"}}}}`
-	// The reader finds events in the last 8 MiB of a file, so the event sits at the end.
-	// Two files near 30 MiB fit the scan budget once, not twice.
-	padding := strings.Repeat("\n", 30<<20)
-	usage := now.Add(-6 * time.Hour)
-	fileA := tokenLine("a", tokenModel, usage, 2) + padding + event + "\n"
-	fileB := tokenLine("b", tokenModelB, usage, 5) + padding
+	first := tokenLine("a", tokenModel, now, 2)
+	second := tokenLine("b", tokenModel, now, 5)
+	files := fstest.MapFS{tokenFile: {Data: []byte(first + second[:10]), ModTime: now, Mode: 0, Sys: nil}}
+	index := newTokenIndex()
+	window := fiveHours(now, now)
+
+	require.True(t, index.refresh(files, []string{tokenFile}, now))
+	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}}, windowTokens(index, now, window))
+	assert.Equal(t, int64(len(first)), index.offsets[tokenFile])
+
+	files[tokenFile] = &fstest.MapFile{Data: []byte(first + second), ModTime: now, Mode: 0, Sys: nil}
+	require.True(t, index.refresh(files, []string{tokenFile}, now))
+	assert.Equal(t, map[string][4]int64{tokenModel: {2, 7, 6, 8}}, windowTokens(index, now, window))
+
+	// A shorter file is a new file: the offset restarts and the message ids merge.
+	files[tokenFile] = &fstest.MapFile{Data: []byte(first), ModTime: now, Mode: 0, Sys: nil}
+	require.True(t, index.refresh(files, []string{tokenFile}, now))
+	assert.Equal(t, int64(len(first)), index.offsets[tokenFile])
+
+	// A file that left the window is forgotten, and usage older than seven days is evicted.
+	files[tokenFile] = &fstest.MapFile{Data: []byte(first), ModTime: now.Add(-8 * 24 * time.Hour), Mode: 0, Sys: nil}
+	require.True(t, index.refresh(files, []string{tokenFile}, now.Add(8*24*time.Hour)))
+	assert.Empty(t, index.offsets)
+	assert.Empty(t, index.events)
+}
+
+// A pass that hits its byte budget reports it is behind, and the next pass continues from the saved offsets.
+func TestTokenIndexCatchesUp(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000000, 0).UTC()
+	// A line older than the longest window is read and rejected.
+	stale := tokenLine("stale", tokenModel, now.Add(-8*24*time.Hour), 9)
+	line := tokenLine("a", tokenModel, now, 2)
+	data := stale + line + tokenLine("b", tokenModel, now, 5)
+	files := fstest.MapFS{tokenFile: {Data: []byte(data), ModTime: now, Mode: 0, Sys: nil}}
+	index := newTokenIndex()
+	budget := int64(len(stale) + len(line))
+
+	require.False(t, index.scan(files, tokenFile, now.Add(-time.Hour), now, &budget))
+	assert.Zero(t, budget)
+	assert.Len(t, index.events, 1)
+
+	budget = int64(tokenPassBytes)
+	require.True(t, index.scan(files, tokenFile, now.Add(-time.Hour), now, &budget))
+	assert.Len(t, index.events, 2)
+}
+
+// While the index is behind, Read exports the plan readings without tokens instead of partial totals.
+func TestReadWithholdsTokensUntilCaughtUp(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000000, 0).UTC()
+	line := tokenLine("a", tokenModel, now, 2)
+	big := tokenLine("b", tokenModel, now, 5) + strings.Repeat("\n", 4096)
 	files := fstest.MapFS{
-		"a": {Data: []byte(fileA), ModTime: now, Mode: 0, Sys: nil},
-		"b": {Data: []byte(fileB), ModTime: now, Mode: 0, Sys: nil},
+		tokenFile: {Data: []byte(line), ModTime: now, Mode: 0, Sys: nil},
+		"big":     {Data: []byte(big), ModTime: now, Mode: 0, Sys: nil},
 	}
-	source := TranscriptSource{files: files, paths: []string{"a", "b"}, account: transcriptAccount}
+	index := newTokenIndex()
+	index.passBytes = int64(len(line)) + 100
+	source := TranscriptSource{
+		files: files, paths: []string{tokenFile, "big"}, account: transcriptAccount, index: index,
+	}
+
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
-	require.Len(t, got, 1)
-	assert.Equal(t, "7d", got[0].Window)
-	assert.False(t, got[0].TokensOnly)
-	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}, tokenModelB: {1, 5, 3, 4}}, got[0].Tokens)
+	assert.Empty(t, got)
+
+	index.passBytes = tokenPassBytes
+
+	got, err = source.Read(t.Context(), now)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, map[string][4]int64{tokenModel: {2, 7, 6, 8}}, got[0].Tokens)
+}
+
+func fiveHours(reset, now time.Time) capacity.Reading {
+	return capacity.Reading{
+		ResetAt: reset, Window: "5h", ObservedAt: now, Vendor: tokenVendor,
+		Bucket: "", Account: transcriptAccount, Source: capacity.ClaudeTranscript, UsedRatio: 0,
+	}
 }

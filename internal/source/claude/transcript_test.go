@@ -428,6 +428,10 @@ func TestTranscriptReadBudget(t *testing.T) {
 			transcriptInput: {Data: make([]byte, readBudget+2), Mode: 0, ModTime: time.Time{}, Sys: nil},
 		},
 		readAt: func(data []byte, offset int64) (int, error) {
+			if offset == 0 { // The token index reads from the start; only the event tail read is under test.
+				return 0, io.EOF
+			}
+
 			calls++
 
 			assert.Len(t, data, 8388608)
@@ -522,7 +526,7 @@ func TestTranscriptDirectoryAgeBudget(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, now.Add(-6*time.Hour+time.Nanosecond), got[0].ObservedAt)
-	assert.Equal(t, 2, calls)
+	assert.Equal(t, 5, calls) // Two event reads and three token reads.
 }
 
 func TestTranscriptFutureBoundary(t *testing.T) {
