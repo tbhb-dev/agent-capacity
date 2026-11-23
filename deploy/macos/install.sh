@@ -52,23 +52,25 @@ unload() {
   fi
 }
 
-# Return nonzero instead of exiting so a restore can keep going after one failure.
-reload() {
-  local label=$1 attempt
+# Register a job, retrying while launchd finishes removing the old copy. Return nonzero instead of
+# exiting so a restore can keep going after one failure.
+bootstrap_retry() {
+  local label=$1
   unload "$label" || return 1
-
-  for attempt in 1 2 3 4 5; do
+  for _ in 1 2 3 4 5; do
     if launchctl bootstrap system "$live_dir/$label.plist"; then
-      break
-    fi
-    if ((attempt == 5)); then
-      printf 'Bootstrap failed for %s.\n' "$label" >&2
-      return 1
+      return 0
     fi
     sleep 1
   done
+  printf 'Bootstrap failed for %s.\n' "$label" >&2
+  return 1
+}
 
-  for attempt in 1 2 3 4 5; do
+reload() {
+  local label=$1
+  bootstrap_retry "$label" || return 1
+  for _ in 1 2 3 4 5; do
     if running "$label"; then
       printf 'Running %s\n' "$label"
       return 0
@@ -77,12 +79,6 @@ reload() {
   done
   printf '%s did not reach the running state.\n' "$label" >&2
   return 1
-}
-
-# Register a job that was loaded but idle, without waiting for it to run.
-bootstrap_only() {
-  unload "$1" || return 1
-  launchctl bootstrap system "$live_dir/$1.plist"
 }
 
 # Put the saved binary and plists back, and leave each daemon as it was. Return 1 if any step failed.
@@ -105,7 +101,7 @@ restore() {
     install -o root -g wheel -m 600 "$saved" "$live" || status=1
     case $(<"$backup/$label.state") in
     running) reload "$label" || status=1 ;;
-    loaded) bootstrap_only "$label" || status=1 ;;
+    loaded) bootstrap_retry "$label" || status=1 ;;
     *) unload "$label" || status=1 ;;
     esac
   done
@@ -132,7 +128,7 @@ while IFS= read -r key; do
   live_keys+=("$key")
 done <<<"$key_lines"
 endpoint=$(plutil -extract EnvironmentVariables.OTEL_EXPORTER_OTLP_ENDPOINT raw -o - "$live_dir/$serve.plist" 2>/dev/null) || endpoint=
-[[ -n $endpoint ]] || fail 'The live collector endpoint is missing or empty.'
+[[ $endpoint == *[![:space:]]* ]] || fail 'The live collector endpoint is missing or empty.'
 
 # The main job keeps every live key. A Claude job takes only the OTEL_ keys, so it never gains the Codex source.
 render() {
