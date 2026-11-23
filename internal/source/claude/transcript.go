@@ -28,6 +28,8 @@ const (
 
 // TranscriptSource keeps only window readings from explicitly named files.
 type TranscriptSource struct {
+	//exhaustruct:optional
+	index   *tokenIndex // Keeps parsed token usage between collections; a source without one reports no tokens.
 	files   fs.FS
 	account string
 	paths   []string
@@ -52,8 +54,10 @@ func RegisterTranscripts(paths, account string) (capacity.Registry, error) {
 	}
 
 	return capacity.Registry{{
-		Name:   capacity.ClaudeTranscript,
-		Source: TranscriptSource{files: transcriptFiles{}, paths: strings.Split(paths, ","), account: account},
+		Name: capacity.ClaudeTranscript,
+		Source: TranscriptSource{
+			files: transcriptFiles{}, paths: strings.Split(paths, ","), account: account, index: newTokenIndex(),
+		},
 	}}, nil
 }
 
@@ -75,27 +79,19 @@ func (s TranscriptSource) Read(ctx context.Context, now time.Time) ([]capacity.R
 	return s.withTokens(now, latest), nil
 }
 
-// withTokens adds token totals to each window reading, in window order.
+// withTokens adds token totals to each window reading, in window order. A reading only gets tokens once the
+// index has read every transcript to its end, so a host still catching up exports no partial totals.
 func (s TranscriptSource) withTokens(now time.Time, latest map[string]capacity.Reading) []capacity.Reading {
-	remaining := int64(transcriptTokenBytes)
+	caughtUp := false
+
+	if s.index != nil {
+		paths, listed := s.tokenPaths()
+		caughtUp = s.index.refresh(s.files, paths, listed, now)
+	}
 
 	var readings []capacity.Reading
 
-	// Windows with a rate-limit event take the shared scan budget first, so a rolling window cannot starve them.
-	names := []string{"5h", "7d"}
-	order := make([]string, 0, len(names))
-
-	for _, wantEvent := range []bool{true, false} {
-		for _, name := range names {
-			if _, found := latest[name]; found == wantEvent {
-				order = append(order, name)
-			}
-		}
-	}
-
-	built := map[string]capacity.Reading{}
-
-	for _, name := range order {
+	for _, name := range []string{"5h", "7d"} {
 		reading, found := latest[name]
 		if !found {
 			// Without a rate-limit event the window is rolling: it ends now and reports tokens only.
@@ -105,14 +101,11 @@ func (s TranscriptSource) withTokens(now time.Time, latest map[string]capacity.R
 			}
 		}
 
-		reading.Tokens = s.windowTokens(now, reading, &remaining)
-		if found || len(reading.Tokens) > 0 {
-			built[name] = reading
+		if caughtUp {
+			reading.Tokens, _ = windowTokens(s.index, now, reading)
 		}
-	}
 
-	for _, name := range []string{"5h", "7d"} {
-		if reading, found := built[name]; found {
+		if found || len(reading.Tokens) > 0 {
 			readings = append(readings, reading)
 		}
 	}
