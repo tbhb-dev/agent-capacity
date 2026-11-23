@@ -101,6 +101,15 @@ func TestWindowTokens(t *testing.T) {
 			map[string][4]int64{tokenModel: {60, 10, 40, 0}},
 		},
 		{
+			"context window overflow", limits + model + first + fmt.Sprintf(
+				`{"type":"event_msg","timestamp":%q,"payload":{"type":"token_count","info":{`+
+					`"total_token_usage":{"total_tokens":128000,"input_tokens":0,"output_tokens":0,`+
+					`"cached_input_tokens":0,"cache_write_input_tokens":0},"model_context_window":128000}}}`+"\n",
+				now.Format(time.RFC3339Nano),
+			),
+			map[string][4]int64{tokenModel: {60, 10, 40, 0}},
+		},
+		{
 			"turn context", limits + modelLine("session_meta", "", start) +
 				`{"type":"turn_context","payload":{"model":"model-a"}}` + "\nmalformed\n{}\n" +
 				`{"type":"event_msg","payload":{"type":"other"}}` + "\n" + first,
@@ -129,6 +138,39 @@ func TestWindowTokens(t *testing.T) {
 	}
 }
 
+func TestWindowTokensAtReset(t *testing.T) {
+	t.Parallel()
+
+	reset := time.Unix(1000000, 0).UTC()
+	now := reset.Add(time.Minute)
+	data := modelLine("session_meta", tokenModel, reset) + usageLine(reset, 100, 10, 40) +
+		usageLine(now, 160, 16, 60)
+	files := fstest.MapFS{rollout: {Data: []byte(data), ModTime: now, Mode: 0, Sys: nil}}
+	source := Source{files: files, account: primaryAccount}
+	remaining := int64(capacity.WindowTokenBytes)
+
+	assert.Equal(t, map[string][4]int64{tokenModel: {60, 10, 40, 0}},
+		source.windowTokens(t.Context(), now, wantReading("5h", 0.2, reset), &remaining))
+}
+
+func TestWindowTokensWithFork(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000000, 0).UTC()
+	forkedAt := now.Add(-time.Minute)
+	parent := modelLine("session_meta", tokenModel, forkedAt) + usageLine(forkedAt, 100, 10, 40)
+	fork := parent + usageLine(now, 160, 16, 60)
+	files := fstest.MapFS{
+		"sessions/2026/01/02/rollout-1.jsonl": {Data: []byte(parent), ModTime: forkedAt, Mode: 0, Sys: nil},
+		"sessions/2026/01/02/rollout-2.jsonl": {Data: []byte(fork), ModTime: now, Mode: 0, Sys: nil},
+	}
+	source := Source{files: files, account: primaryAccount}
+	remaining := int64(capacity.WindowTokenBytes)
+
+	assert.Equal(t, map[string][4]int64{tokenModel: {100, 16, 60, 0}},
+		source.windowTokens(t.Context(), now, wantReading("5h", 0.2, now.Add(time.Hour)), &remaining))
+}
+
 func TestTokenFailures(t *testing.T) {
 	t.Parallel()
 
@@ -145,13 +187,15 @@ func TestTokenFailures(t *testing.T) {
 		assert.Nil(t, source.windowTokens(t.Context(), now, reading, &remaining))
 	}
 
+	var totals windowTokenTotals
+
 	for _, broken := range []fs.FS{
 		faultFS{FS: nil, err: fs.ErrPermission},
 		oneFileFS{FS: nil, file: faultFile{File: nil, err: fs.ErrPermission}},
 	} {
 		remaining := int64(capacity.WindowTokenBytes)
 		source := Source{files: broken, account: primaryAccount}
-		assert.False(t, source.scanTokens(t.Context(), rollout, now, now, &remaining, map[string][4]int64{}))
+		assert.False(t, source.scanTokens(t.Context(), rollout, now, now, &remaining, totals))
 	}
 
 	source := Source{files: files, account: primaryAccount}
@@ -159,7 +203,7 @@ func TestTokenFailures(t *testing.T) {
 	cancel()
 
 	remaining := int64(capacity.WindowTokenBytes)
-	assert.False(t, source.scanTokens(ctx, rollout, now, now, &remaining, map[string][4]int64{}))
+	assert.False(t, source.scanTokens(ctx, rollout, now, now, &remaining, totals))
 
 	files[rollout].Mode = fs.ModeSymlink
 
@@ -175,7 +219,9 @@ func TestTokenWindowsAndBudget(t *testing.T) {
 
 	for index := range 6 {
 		path := fmt.Sprintf("sessions/2026/01/02/rollout-%d.jsonl", index)
-		files[path] = &fstest.MapFile{Data: []byte(data), ModTime: now, Mode: 0, Sys: nil}
+		stamp := now.Add(-time.Duration(index) * time.Second)
+		distinct := modelLine("session_meta", tokenModel, stamp) + usageLine(stamp, 100, 10, 40)
+		files[path] = &fstest.MapFile{Data: []byte(distinct), ModTime: now, Mode: 0, Sys: nil}
 	}
 
 	old := "sessions/2026/01/01/rollout-old.jsonl"

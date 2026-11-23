@@ -48,6 +48,17 @@ type sessionTokens struct {
 	baseline bool
 }
 
+type tokenSample struct {
+	timestamp time.Time
+	model     string
+	counts    [4]int64
+}
+
+type windowTokenTotals struct {
+	counts map[string][4]int64
+	seen   map[tokenSample]struct{}
+}
+
 func (s Source) windowTokens(
 	ctx context.Context, now time.Time, reading capacity.Reading, remaining *int64,
 ) map[string][4]int64 {
@@ -61,7 +72,12 @@ func (s Source) windowTokens(
 		return nil
 	}
 
-	totals := map[string][4]int64{}
+	end := now
+	if reading.ResetAt.Before(now) {
+		end = reading.ResetAt
+	}
+
+	totals := windowTokenTotals{counts: map[string][4]int64{}, seen: map[tokenSample]struct{}{}}
 
 	err := fs.WalkDir(s.files, "sessions", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -77,7 +93,7 @@ func (s Source) windowTokens(
 			return errRead
 		}
 
-		if !info.ModTime().Before(start) && !s.scanTokens(ctx, path, start, now, remaining, totals) {
+		if !info.ModTime().Before(start) && !s.scanTokens(ctx, path, start, end, remaining, totals) {
 			return errRead
 		}
 
@@ -87,11 +103,11 @@ func (s Source) windowTokens(
 		return nil
 	}
 
-	return totals
+	return totals.counts
 }
 
 func (s Source) scanTokens(
-	ctx context.Context, path string, start, now time.Time, remaining *int64, totals map[string][4]int64,
+	ctx context.Context, path string, start, end time.Time, remaining *int64, totals windowTokenTotals,
 ) bool {
 	file, err := s.files.Open(path)
 	if err != nil {
@@ -117,7 +133,7 @@ func (s Source) scanTokens(
 		line, long, readErr := readTokenLine(reader)
 		if !long {
 			var event tokenEvent
-			if json.Unmarshal(line, &event) == nil && !event.Timestamp.After(now) {
+			if json.Unmarshal(line, &event) == nil && !event.Timestamp.After(end) {
 				session.consider(event, start, totals)
 			}
 		}
@@ -149,7 +165,7 @@ func readTokenLine(reader *bufio.Reader) ([]byte, bool, error) {
 	}
 }
 
-func (s *sessionTokens) consider(event tokenEvent, start time.Time, totals map[string][4]int64) {
+func (s *sessionTokens) consider(event tokenEvent, start time.Time, totals windowTokenTotals) {
 	if event.Type == "turn_context" || event.Type == "session_meta" {
 		s.setContext(event, start)
 
@@ -160,13 +176,19 @@ func (s *sessionTokens) consider(event tokenEvent, start time.Time, totals map[s
 		return
 	}
 
+	var zeroUsage tokenUsage
+
+	usage := event.Payload.Info.Total
+	if usage == zeroUsage {
+		return
+	}
+
 	if event.Timestamp.Before(start) {
 		s.baseline = true
 
 		return
 	}
 
-	usage := event.Payload.Info.Total
 	current := [4]int64{
 		usage.Input - usage.CacheRead - usage.CacheWrite,
 		usage.Output,
@@ -174,16 +196,21 @@ func (s *sessionTokens) consider(event tokenEvent, start time.Time, totals map[s
 		usage.CacheWrite,
 	}
 
-	if !s.baseline && s.model != "" {
-		counts := totals[s.model]
+	sample := tokenSample{timestamp: event.Timestamp.UTC(), model: s.model, counts: current}
+	_, counted := totals.seen[sample]
+
+	if !s.baseline && s.model != "" && !counted {
+		counts := totals.counts[s.model]
 		for i, count := range current {
 			counts[i] += count - s.previous[i]
 		}
 
-		totals[s.model] = counts
+		totals.counts[s.model] = counts
+		totals.seen[sample] = struct{}{}
 	}
 
 	// For a session crossing the start, omit the first in-window sample.
+	// A copied sample still sets the previous counts for the fork.
 	s.previous = current
 	s.baseline = false
 }
