@@ -86,7 +86,8 @@ func (s TranscriptSource) Read(ctx context.Context, now time.Time) ([]capacity.R
 	return readings, nil
 }
 
-// mainPaths reads a project directory as is; a directory without transcripts of its own is a projects root, so it reads one level down.
+// mainPaths reads a project directory as is. A directory without transcripts of its own
+// is a projects root, so it reads one level down.
 func mainPaths(files fs.FS, name string) []string {
 	paths := transcriptPaths(files, name)
 	if len(paths) > 0 {
@@ -113,8 +114,8 @@ func projectDirs(files fs.FS, name string) []string {
 		dir := filepath.Join(name, entry.Name())
 
 		// A session directory holds subagents, so it is not a project directory.
-		_, err := fs.Stat(files, filepath.Join(dir, "subagents"))
-		if entry.IsDir() && err != nil {
+		_, statErr := fs.Stat(files, filepath.Join(dir, "subagents"))
+		if entry.IsDir() && statErr != nil {
 			dirs = append(dirs, dir)
 		}
 	}

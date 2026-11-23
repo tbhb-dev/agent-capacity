@@ -213,12 +213,7 @@ func TestTokenLineOverCapAndPastReset(t *testing.T) {
 func TestSubagentTokens(t *testing.T) {
 	t.Parallel()
 
-	now := time.Unix(100000, 0).UTC()
-	event := strings.ReplaceAll(transcriptEventLine, "seven_day", "five_hour")
-	event = strings.ReplaceAll(event, "200000", "103600")
-	file := func(data string) *fstest.MapFile {
-		return &fstest.MapFile{Data: []byte(data), ModTime: now, Mode: 0, Sys: nil}
-	}
+	now, event, file := subagentFixture()
 	files := fstest.MapFS{
 		tokenFile:                         file(event + "\n" + tokenLine("main", tokenModel, now, 2)),
 		"session/subagents/agent-a.jsonl": file(tokenLine("sub", tokenModelB, now, 5)),
@@ -229,18 +224,13 @@ func TestSubagentTokens(t *testing.T) {
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}, tokenModelB: {1, 5, 3, 4}}, got[0].Tokens)
+	assert.Equal(t, subagentWant(), got[0].Tokens)
 }
 
 func TestProjectsRoot(t *testing.T) {
 	t.Parallel()
 
-	now := time.Unix(100000, 0).UTC()
-	event := strings.ReplaceAll(transcriptEventLine, "seven_day", "five_hour")
-	event = strings.ReplaceAll(event, "200000", "103600")
-	file := func(data string) *fstest.MapFile {
-		return &fstest.MapFile{Data: []byte(data), ModTime: now, Mode: 0, Sys: nil}
-	}
+	now, event, file := subagentFixture()
 	files := fstest.MapFS{
 		"projects/notes.txt":                            file(tokenLine("notes", tokenModel, now, 9)),
 		"projects/project-a/s1.jsonl":                   file(event + "\n" + tokenLine("main", tokenModel, now, 2)),
@@ -252,7 +242,11 @@ func TestProjectsRoot(t *testing.T) {
 	want := map[string][4]int64{tokenModel: {2, 5, 6, 8}, tokenModelB: {2, 9, 6, 8}}
 
 	// The projects root, listed twice, reaches each file once.
-	source := TranscriptSource{files: files, paths: []string{"projects", "projects/project-a"}, account: transcriptAccount}
+	source := TranscriptSource{
+		files:   files,
+		paths:   []string{"projects", "projects/project-a"},
+		account: transcriptAccount,
+	}
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
@@ -263,5 +257,20 @@ func TestProjectsRoot(t *testing.T) {
 	got, err = source.Read(t.Context(), now)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}, tokenModelB: {1, 5, 3, 4}}, got[0].Tokens)
+	assert.Equal(t, subagentWant(), got[0].Tokens)
+}
+
+// subagentFixture returns the shared clock, a five hour window event and a transcript file builder.
+func subagentFixture() (time.Time, string, func(string) *fstest.MapFile) {
+	now := time.Unix(100000, 0).UTC()
+	event := strings.ReplaceAll(transcriptEventLine, "seven_day", "five_hour")
+	event = strings.ReplaceAll(event, "200000", "103600")
+
+	return now, event, func(data string) *fstest.MapFile {
+		return &fstest.MapFile{Data: []byte(data), ModTime: now, Mode: 0, Sys: nil}
+	}
+}
+
+func subagentWant() map[string][4]int64 {
+	return map[string][4]int64{tokenModel: {1, 2, 3, 4}, tokenModelB: {1, 5, 3, 4}}
 }
