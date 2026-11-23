@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Tony Burns
+[Unit]
+Description=agent-capacity exporter for Claude transcript tokens, account %i
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+User=agent
+ExecStart=/usr/local/bin/agent-capacity serve --claude-account=%i
+# The root-owned file for this account, mode 600, sets AGENT_CAPACITY_CLAUDE_TRANSCRIPTS to that account's projects
+# directory (its CLAUDE_CONFIG_DIR plus /projects) and the OTEL_ collector variables.
+EnvironmentFile=/etc/agent-capacity/%i.env
+Environment=AGENT_CAPACITY_SPOOL_DIR=/var/lib/agent-capacity/%i/spool
+StateDirectory=agent-capacity/%i
+Restart=on-failure
+# The start limit above makes systemd stop retrying a startup error that never clears.
+RestartSec=10
+ProtectSystem=strict
+NoNewPrivileges=true
+PrivateDevices=yes
+
+[Install]
+WantedBy=multi-user.target
