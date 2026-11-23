@@ -6,6 +6,7 @@ package claude //nolint:testpackage // Exercise token scan limits with synthetic
 import (
 	"fmt"
 	"io/fs"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -33,6 +34,11 @@ func tokenLine(id, model string, stamp time.Time, output int) string {
 		model,
 		output,
 	) + "\n"
+}
+
+// planReadings drops the tokens-only readings that windows without a rate-limit event produce.
+func planReadings(readings []capacity.Reading) []capacity.Reading {
+	return slices.DeleteFunc(slices.Clone(readings), func(reading capacity.Reading) bool { return reading.TokensOnly })
 }
 
 // paddedTokenLine inserts size bytes of padding into a token line's message so the line is that long.
@@ -100,11 +106,15 @@ func TestWindowTokens(t *testing.T) {
 			require.NoError(t, err)
 
 			if testCase.name == "no reset" {
-				assert.Empty(t, got)
+				// Without a rate-limit event both windows carry tokens only.
+				require.Len(t, got, 2)
+				assert.True(t, got[0].TokensOnly)
+				assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}}, got[0].Tokens)
 
 				return
 			}
 
+			got = planReadings(got)
 			require.Len(t, got, 1)
 
 			if testCase.name == "byte cap" {
@@ -223,6 +233,8 @@ func TestSubagentTokens(t *testing.T) {
 	source := TranscriptSource{files: files, paths: []string{".", tokenFile}, account: transcriptAccount}
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
+
+	got = planReadings(got)
 	require.Len(t, got, 1)
 	assert.Equal(t, subagentWant(), got[0].Tokens)
 }
@@ -249,6 +261,8 @@ func TestProjectsRoot(t *testing.T) {
 	}
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
+
+	got = planReadings(got)
 	require.Len(t, got, 1)
 	assert.Equal(t, want, got[0].Tokens)
 
@@ -256,6 +270,8 @@ func TestProjectsRoot(t *testing.T) {
 	source.paths = []string{"projects/project-a"}
 	got, err = source.Read(t.Context(), now)
 	require.NoError(t, err)
+
+	got = planReadings(got)
 	require.Len(t, got, 1)
 	assert.Equal(t, subagentWant(), got[0].Tokens)
 }
@@ -273,4 +289,35 @@ func subagentFixture() (time.Time, string, func(string) *fstest.MapFile) {
 
 func subagentWant() map[string][4]int64 {
 	return map[string][4]int64{tokenModel: {1, 2, 3, 4}, tokenModelB: {1, 5, 3, 4}}
+}
+
+func TestTokensOnlyWithoutUsage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(100000, 0).UTC()
+	files := fstest.MapFS{tokenFile: {Data: nil, ModTime: now, Mode: 0, Sys: nil}}
+	source := TranscriptSource{files: files, paths: []string{tokenFile}, account: transcriptAccount}
+	got, err := source.Read(t.Context(), now)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestTokensOnlyWindows(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000000, 0).UTC()
+	// Usage 6 hours old lies outside the 5h window and inside the 7d window.
+	files := fstest.MapFS{tokenFile: {
+		Data:    []byte(tokenLine("old", tokenModel, now.Add(-6*time.Hour), 2)),
+		ModTime: now, Mode: 0, Sys: nil,
+	}}
+	source := TranscriptSource{files: files, paths: []string{tokenFile}, account: transcriptAccount}
+	got, err := source.Read(t.Context(), now)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "7d", got[0].Window)
+	assert.True(t, got[0].TokensOnly)
+	assert.Equal(t, now, got[0].ObservedAt)
+	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}}, got[0].Tokens)
+	require.NoError(t, got[0].Validate())
 }

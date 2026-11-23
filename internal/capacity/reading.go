@@ -15,6 +15,8 @@ import (
 type Reading struct {
 	//exhaustruct:optional
 	Tokens     map[string][4]int64 // Per model: input, output, cache read, cache write.
+	//exhaustruct:optional
+	TokensOnly bool // Tokens over a rolling window ending at ObservedAt: no utilization or reset time.
 	ResetAt    time.Time
 	ObservedAt time.Time
 	Vendor     string
