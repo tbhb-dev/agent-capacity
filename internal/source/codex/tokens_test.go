@@ -162,15 +162,20 @@ func TestWindowTokensWithFork(t *testing.T) {
 	parent := modelLine("session_meta", tokenModel, parentAt) + usageLine(parentAt, 100, 10, 40)
 	fork := modelLine("session_meta", tokenModel, forkedAt) + usageLine(forkedAt, 100, 10, 40) +
 		usageLine(now, 160, 16, 60)
-	files := fstest.MapFS{
-		"sessions/2026/01/02/rollout-1.jsonl": {Data: []byte(parent), ModTime: parentAt, Mode: 0, Sys: nil},
-		"sessions/2026/01/02/rollout-2.jsonl": {Data: []byte(fork), ModTime: now, Mode: 0, Sys: nil},
-	}
-	source := Source{files: files, account: primaryAccount}
+
+	assert.Equal(t, map[string][4]int64{tokenModel: {100, 16, 60, 0}}, twoRolloutTokens(t, parent, fork, parentAt, now))
+}
+
+func twoRolloutTokens(t *testing.T, first, second string, firstAt, now time.Time) map[string][4]int64 {
+	t.Helper()
+
+	source := Source{account: primaryAccount, files: fstest.MapFS{
+		"sessions/2026/01/02/rollout-1.jsonl": {Data: []byte(first), ModTime: firstAt, Mode: 0, Sys: nil},
+		"sessions/2026/01/02/rollout-2.jsonl": {Data: []byte(second), ModTime: now, Mode: 0, Sys: nil},
+	}}
 	remaining := int64(capacity.WindowTokenBytes)
 
-	assert.Equal(t, map[string][4]int64{tokenModel: {100, 16, 60, 0}},
-		source.windowTokens(t.Context(), now, wantReading("5h", 0.2, now.Add(time.Hour)), &remaining))
+	return source.windowTokens(t.Context(), now, wantReading("5h", 0.2, now.Add(time.Hour)), &remaining)
 }
 
 func TestWindowTokensWithDistinctSessions(t *testing.T) {
@@ -180,15 +185,8 @@ func TestWindowTokensWithDistinctSessions(t *testing.T) {
 	model := modelLine("session_meta", tokenModel, now)
 	first := model + usageLine(now, 100, 10, 40)
 	second := model + usageLine(now, 160, 16, 60)
-	files := fstest.MapFS{
-		"sessions/2026/01/02/rollout-1.jsonl": {Data: []byte(first), ModTime: now, Mode: 0, Sys: nil},
-		"sessions/2026/01/02/rollout-2.jsonl": {Data: []byte(second), ModTime: now, Mode: 0, Sys: nil},
-	}
-	source := Source{files: files, account: primaryAccount}
-	remaining := int64(capacity.WindowTokenBytes)
 
-	assert.Equal(t, map[string][4]int64{tokenModel: {160, 26, 100, 0}},
-		source.windowTokens(t.Context(), now, wantReading("5h", 0.2, now.Add(time.Hour)), &remaining))
+	assert.Equal(t, map[string][4]int64{tokenModel: {160, 26, 100, 0}}, twoRolloutTokens(t, first, second, now, now))
 }
 
 func TestTokenFailures(t *testing.T) {
