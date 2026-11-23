@@ -38,6 +38,9 @@ backup_root=/var/backups
 serve=dev.tbhb.agent-capacity.serve
 labels=("$serve" "$serve.claude-claude-primary" "$serve.claude-claude-secondary")
 spool_dirs=(/Users/capacity/spool-claude-{primary,secondary})
+log_dir=/var/log
+# The service account opens these files, so they must exist and belong to it before launchd starts a job.
+log_files=("$log_dir"/agent-capacity-serve-claude-{primary,secondary}.log)
 pb=/usr/libexec/PlistBuddy # cspell:disable-line
 
 running() {
@@ -67,9 +70,21 @@ bootstrap_retry() {
   return 1
 }
 
+# Show why a job did not start: its launchd record and the end of its log.
+diagnose() {
+  local log
+  launchctl print "system/$1" 2>&1 | head -20 >&2
+  if log=$(plutil -extract StandardOutPath raw -o - "$live_dir/$1.plist" 2>/dev/null) && [[ -f $log ]]; then
+    tail -5 "$log" >&2
+  fi
+}
+
 reload() {
   local label=$1
-  bootstrap_retry "$label" || return 1
+  bootstrap_retry "$label" || {
+    diagnose "$label"
+    return 1
+  }
   for _ in 1 2 3 4 5; do
     if running "$label"; then
       printf 'Running %s\n' "$label"
@@ -78,6 +93,7 @@ reload() {
     sleep 1
   done
   printf '%s did not reach the running state.\n' "$label" >&2
+  diagnose "$label"
   return 1
 }
 
@@ -184,12 +200,19 @@ for label in "${labels[@]}"; do
   fi
 done
 
-spools_changed=0
+setup_changed=0
 for spool in "${spool_dirs[@]}"; do
   if [[ ! -d $spool ]] || ! metadata=$(stat -f '%Su:%Sg %Lp' "$spool") ||
     [[ $metadata != 'capacity:capacity 700' ]]; then
-    spools_changed=1
+    setup_changed=1
     printf 'Set up %s (capacity:capacity, mode 700)\n' "$spool"
+  fi
+done
+for log in "${log_files[@]}"; do
+  if [[ ! -f $log ]] || ! metadata=$(stat -f '%Su:%Sg %Lp' "$log") ||
+    [[ $metadata != 'capacity:capacity 640' ]]; then
+    setup_changed=1
+    printf 'Set up %s (capacity:capacity, mode 640)\n' "$log"
   fi
 done
 for label in "${restart_labels[@]+"${restart_labels[@]}"}"; do
@@ -197,7 +220,7 @@ for label in "${restart_labels[@]+"${restart_labels[@]}"}"; do
 done
 
 [[ $action == apply ]] || exit 0
-if ((! binary_changed && ! spools_changed)) && [[ -z ${restart_labels[0]:-} ]]; then
+if ((! binary_changed && ! setup_changed)) && [[ -z ${restart_labels[0]:-} ]]; then
   printf 'No changes to apply.\n'
   exit 0
 fi
@@ -240,11 +263,20 @@ trap rollback_on_failure EXIT
 if ((binary_changed)); then
   install -o root -g wheel -m 755 "$candidate" "$binary"
 fi
-if ((spools_changed)); then
+if ((setup_changed)); then
   install -d -o capacity -g capacity -m 700 "${spool_dirs[@]}"
   for spool in "${spool_dirs[@]}"; do
     metadata=$(stat -f '%Su:%Sg %Lp' "$spool")
     [[ $metadata == 'capacity:capacity 700' ]] || fail "Spool $spool is $metadata, not capacity:capacity 700."
+  done
+fi
+if ((setup_changed)); then
+  for log in "${log_files[@]}"; do
+    touch "$log"
+    chown capacity:capacity "$log"
+    chmod 640 "$log"
+    metadata=$(stat -f '%Su:%Sg %Lp' "$log")
+    [[ $metadata == 'capacity:capacity 640' ]] || fail "Log $log is $metadata, not capacity:capacity 640."
   done
 fi
 for label in "${changed_plists[@]+"${changed_plists[@]}"}"; do
