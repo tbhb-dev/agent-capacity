@@ -166,12 +166,26 @@ func (s TranscriptSource) tokenPaths() []string {
 	seen := map[string]bool{}
 
 	for _, name := range s.paths {
-		for _, path := range append(transcriptPaths(s.files, name), subagentPaths(s.files, name)...) {
+		for _, path := range append(mainPaths(s.files, name), subagentTree(s.files, name)...) {
 			if !seen[path] {
 				paths = append(paths, path)
 				seen[path] = true
 			}
 		}
+	}
+
+	return paths
+}
+
+// subagentTree reads subagents of the directory itself and of each project directory below it.
+func subagentTree(files fs.FS, name string) []string {
+	paths := subagentPaths(files, name)
+	if len(transcriptPaths(files, name)) > 0 {
+		return paths
+	}
+
+	for _, project := range projectDirs(files, name) {
+		paths = append(paths, subagentPaths(files, project)...)
 	}
 
 	return paths
