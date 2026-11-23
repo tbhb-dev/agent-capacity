@@ -28,9 +28,9 @@ concurrency:
 jobs:
   # Bazel 9.x only, the version .bazelversion pins, on Linux (x86_64 and
   # arm64) and macOS (arm64). The macOS leg runs on pull requests too, so a
-  # change gets its first macOS test before it merges. The checks that need
-  # the network or GitHub's API run on Linux only; they do not depend on
-  # the OS.
+  # change gets its first macOS test before it merges, not after. The checks
+  # that need the network or GitHub's API run on Linux only; they do not
+  # depend on the OS.
   bazel:
     name: "bazel (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
