@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -22,12 +23,15 @@ const (
 	tokenLineBytes = 32 * 1024 * 1024
 	tokenFiveHours = 5 * time.Hour
 	tokenSevenDays = 7 * 24 * time.Hour
+	// The index keeps a day more than the longest window, so a window that reset a few hours ago is still whole.
+	tokenRetention  = 8 * 24 * time.Hour
+	tokenPrintBytes = 128
 )
 
 // Only usage metadata is decoded; message content is discarded by the decoder.
 //
 //nolint:tagliatelle // Claude usage field names use snake_case.
-type tokenEvent struct {
+type tokenRecord struct {
 	Message struct {
 		Usage *struct {
 			Input      int64 `json:"input_tokens"`
@@ -42,7 +46,25 @@ type tokenEvent struct {
 	Type      string    `json:"type"`
 }
 
-func windowTokens(index *tokenIndex, now time.Time, reading capacity.Reading) map[string][4]int64 {
+// tokenEvent is one assistant line with usage, kept in file order so later lines win ties like a full scan.
+type tokenEvent struct {
+	Timestamp time.Time
+	ID        string
+	Model     string
+	Counts    [4]int64
+}
+
+// transcriptTokens is what the index knows about one transcript: how far it read, the first and last bytes it read
+// (to notice a replaced file), and every usage line read so far.
+type transcriptTokens struct {
+	modTime time.Time
+	sample  []byte
+	events  []tokenEvent
+	offset  int64
+}
+
+// windowTokens totals one window, or reports false when the index no longer holds that far back.
+func windowTokens(index *tokenIndex, now time.Time, reading capacity.Reading) (map[string][4]int64, bool) {
 	length := tokenFiveHours
 	if reading.Window == "7d" {
 		length = tokenSevenDays
@@ -59,48 +81,73 @@ func windowTokens(index *tokenIndex, now time.Time, reading capacity.Reading) ma
 
 // tokenIndex keeps parsed usage between collections, so each pass reads only the bytes appended since the last one.
 type tokenIndex struct {
-	offsets   map[string]int64
-	events    map[string]tokenEvent
+	files     map[string]*transcriptTokens
+	cutoff    time.Time
+	order     []string
 	passBytes int64
 	lock      sync.Mutex
 }
 
 func newTokenIndex() *tokenIndex {
 	return &tokenIndex{
-		offsets: map[string]int64{}, events: map[string]tokenEvent{}, passBytes: tokenPassBytes, lock: sync.Mutex{},
+		files: map[string]*transcriptTokens{}, cutoff: time.Time{}, order: nil,
+		passBytes: tokenPassBytes, lock: sync.Mutex{},
 	}
 }
 
-// refresh reads new transcript bytes up to the pass budget and drops usage older than the longest window.
-// It reports whether every file is read to its end; totals from an index that is still catching up are partial.
-func (x *tokenIndex) refresh(files fs.FS, paths []string, now time.Time) bool {
+// refresh reads new transcript bytes up to the pass budget. It reports whether the index now holds every
+// transcript in full: paths must be a complete listing, and each file must be read to its end. Totals from
+// an index that reports false would be partial, so the caller withholds them.
+func (x *tokenIndex) refresh(files fs.FS, paths []string, listed bool, now time.Time) bool {
 	x.lock.Lock()
 	defer x.lock.Unlock()
 
+	x.cutoff = now.Add(-tokenRetention)
+	x.order = paths
+
+	if listed {
+		wanted := map[string]bool{}
+		for _, path := range paths {
+			wanted[path] = true
+		}
+
+		for path := range x.files {
+			if !wanted[path] {
+				delete(x.files, path) // The transcript is gone, so its usage goes with it.
+			}
+		}
+	}
+
 	budget := x.passBytes
-	start := now.Add(-tokenSevenDays)
-	caughtUp := true
+	caughtUp := listed
 
 	for _, path := range paths {
-		if !x.scan(files, path, start, now, &budget) {
+		if !x.scan(files, path, &budget) {
 			caughtUp = false
 		}
 	}
 
-	for id, event := range x.events {
-		if event.Timestamp.Before(start) {
-			delete(x.events, id)
-		}
+	for _, state := range x.files {
+		state.events = slices.DeleteFunc(state.events, func(event tokenEvent) bool {
+			return event.Timestamp.Before(x.cutoff)
+		})
 	}
 
 	return caughtUp
 }
 
-func (x *tokenIndex) scan(files fs.FS, path string, start, now time.Time, budget *int64) bool {
+func (x *tokenIndex) scan(files fs.FS, path string, budget *int64) bool {
 	file, err := files.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		delete(x.files, path)
+
+		return true
+	}
+
 	if err != nil {
 		return false
 	}
+
 	defer file.Close()
 
 	info, err := file.Stat()
@@ -110,62 +157,146 @@ func (x *tokenIndex) scan(files fs.FS, path string, start, now time.Time, budget
 		return false
 	}
 
-	if info.ModTime().Before(start) {
-		delete(x.offsets, path)
+	if info.ModTime().Before(x.cutoff) {
+		delete(x.files, path)
 
 		return true
 	}
 
-	offset := x.offsets[path]
-	if offset > info.Size() {
-		offset = 0 // The file shrank, so it was replaced.
+	state := x.files[path]
+	if state == nil || !state.intact(source, info) {
+		state = &transcriptTokens{modTime: time.Time{}, sample: nil, events: nil, offset: 0}
+		x.files[path] = state // Shrunk or replaced, so start over.
 	}
 
-	limit := min(info.Size()-offset, *budget)
-	caught := limit == info.Size()-offset
-	reader := bufio.NewReader(io.NewSectionReader(source, offset, limit))
+	return state.read(source, info, x.cutoff, budget)
+}
+
+// intact reports whether the file still holds what the index read: not shorter, the same first and last bytes,
+// and not rewritten in place without growing.
+func (f *transcriptTokens) intact(source io.ReaderAt, info fs.FileInfo) bool {
+	if f.offset > info.Size() || (f.offset == info.Size() && !f.modTime.Equal(info.ModTime())) {
+		return false
+	}
+
+	current := fingerprint(source, f.offset)
+
+	return current != nil && bytes.Equal(current, f.sample)
+}
+
+// fingerprint is the first and last bytes before offset, or nil when they cannot be read.
+func fingerprint(source io.ReaderAt, offset int64) []byte {
+	count := min(offset, tokenPrintBytes)
+	data := make([]byte, count+count)
+	headErr := readFullAt(source, data[:count], 0)
+	tailErr := readFullAt(source, data[count:], offset-count)
+
+	if errors.Join(headErr, tailErr) != nil {
+		return nil
+	}
+
+	return data
+}
+
+// readFullAt fills data from offset, failing on a short read.
+func readFullAt(source io.ReaderAt, data []byte, offset int64) error {
+	_, err := io.ReadFull(io.NewSectionReader(source, offset, int64(len(data))), data)
+
+	return err //nolint:wrapcheck // The caller only tests it.
+}
+
+// read takes in the bytes from the stored offset toward the file size, within the pass budget, and reports
+// whether it reached the end with every byte read.
+func (f *transcriptTokens) read(source io.ReaderAt, info fs.FileInfo, cutoff time.Time, budget *int64) bool {
+	want := info.Size() - f.offset
+	limit := min(want, *budget)
+	reader := bufio.NewReader(io.NewSectionReader(source, f.offset, limit))
+	consumed := int64(0)
 
 	for {
-		line, long, size, readErr := readTokenLine(reader)
-		if readErr != nil { // A partial last line stays unread until its newline arrives.
+		line, long, count, err := readTokenLine(reader)
+		consumed += count
+		*budget -= count
+
+		// A last line without its newline counts only when it is whole JSON; otherwise it waits for more bytes.
+		if err != nil && !json.Valid(line) {
 			break
 		}
 
-		offset += size
-		*budget -= size
+		f.offset += count
 
 		if !long {
-			considerTokens(line, start, now, x.events)
+			f.add(line, cutoff)
+		}
+
+		if err != nil {
+			break
 		}
 	}
 
-	x.offsets[path] = offset
+	f.sample, f.modTime = fingerprint(source, f.offset), info.ModTime()
 
-	return caught
+	return limit == want && consumed == limit
 }
 
-func (x *tokenIndex) totals(start, end time.Time) map[string][4]int64 {
+func (f *transcriptTokens) add(line []byte, cutoff time.Time) {
+	var decoded tokenRecord
+
+	message := &decoded.Message
+
+	if json.Unmarshal(line, &decoded) != nil || decoded.Type != "assistant" || message.ID == "" ||
+		message.Model == "" || message.Usage == nil || decoded.Timestamp.Before(cutoff) {
+		return
+	}
+
+	usage := message.Usage
+	f.events = append(f.events, tokenEvent{
+		Timestamp: decoded.Timestamp, ID: message.ID, Model: message.Model,
+		Counts: [4]int64{usage.Input, usage.Output, usage.CacheRead, usage.CacheWrite},
+	})
+}
+
+// totals sums the window the way a full scan of every file would: events inside the window, files in listing
+// order, and for a repeated message ID the usage with the latest timestamp, the later line on a tie.
+func (x *tokenIndex) totals(start, end time.Time) (map[string][4]int64, bool) {
 	x.lock.Lock()
 	defer x.lock.Unlock()
 
-	totals := map[string][4]int64{}
+	if start.Before(x.cutoff) {
+		return nil, false
+	}
 
-	for _, event := range x.events {
-		if event.Timestamp.Before(start) || event.Timestamp.After(end) {
+	latest := map[string]tokenEvent{}
+
+	for _, path := range x.order {
+		state, known := x.files[path]
+		if !known {
 			continue
 		}
 
-		counts := totals[event.Message.Model]
+		for _, event := range state.events {
+			previous, repeated := latest[event.ID]
+			if event.Timestamp.Before(start) || event.Timestamp.After(end) ||
+				(repeated && event.Timestamp.Before(previous.Timestamp)) {
+				continue
+			}
 
-		usage := event.Message.Usage
-		for i, count := range [4]int64{usage.Input, usage.Output, usage.CacheRead, usage.CacheWrite} {
+			latest[event.ID] = event
+		}
+	}
+
+	totals := map[string][4]int64{}
+
+	for _, event := range latest {
+		counts := totals[event.Model]
+		for i, count := range event.Counts {
 			counts[i] += count
 		}
 
-		totals[event.Message.Model] = counts
+		totals[event.Model] = counts
 	}
 
-	return totals
+	return totals, true
 }
 
 // readTokenLine returns one line of any length up to tokenLineBytes and the bytes it consumed.
@@ -193,35 +324,17 @@ func readTokenLine(reader *bufio.Reader) ([]byte, bool, int64, error) {
 	}
 }
 
-func considerTokens(line []byte, start, now time.Time, messages map[string]tokenEvent) {
-	event, valid := decodeTokens(line, start, now)
-	if !valid {
-		return
-	}
-
-	previous, exists := messages[event.Message.ID]
-	if !exists || !event.Timestamp.Before(previous.Timestamp) {
-		messages[event.Message.ID] = event
-	}
-}
-
-func decodeTokens(line []byte, start, now time.Time) (tokenEvent, bool) {
-	var event tokenEvent
-
-	valid := json.Unmarshal(line, &event) == nil && event.Type == "assistant" &&
-		event.Message.ID != "" && event.Message.Model != "" && event.Message.Usage != nil &&
-		!event.Timestamp.Before(start) && !event.Timestamp.After(now)
-
-	return event, valid
-}
-
-func (s TranscriptSource) tokenPaths() []string {
+// tokenPaths lists the transcripts to index and whether the listing is complete. A directory that exists
+// but cannot be listed makes it incomplete, so its usage is not silently left out of a total.
+func (s TranscriptSource) tokenPaths() ([]string, bool) {
 	var paths []string
+
+	listing := &listingFS{FS: s.files, failed: false}
 
 	seen := map[string]bool{}
 
 	for _, name := range s.paths {
-		for _, path := range append(mainPaths(s.files, name), subagentTree(s.files, name)...) {
+		for _, path := range append(mainPaths(listing, name), subagentTree(listing, name)...) {
 			if !seen[path] {
 				paths = append(paths, path)
 				seen[path] = true
@@ -229,7 +342,43 @@ func (s TranscriptSource) tokenPaths() []string {
 		}
 	}
 
-	return paths
+	return paths, !listing.failed
+}
+
+// listingFS records the first listing failure other than a missing path.
+type listingFS struct {
+	fs.FS
+
+	failed bool
+}
+
+func (l *listingFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	info, err := fs.Stat(l.FS, name)
+	if err != nil {
+		return nil, l.note(err)
+	}
+
+	if !info.IsDir() {
+		return nil, fs.ErrInvalid // A file has no entries to list; that is not a listing failure.
+	}
+
+	entries, err := fs.ReadDir(l.FS, name)
+
+	return entries, l.note(err)
+}
+
+func (l *listingFS) Stat(name string) (fs.FileInfo, error) {
+	info, err := fs.Stat(l.FS, name)
+
+	return info, l.note(err)
+}
+
+func (l *listingFS) note(err error) error {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		l.failed = true
+	}
+
+	return err
 }
 
 // subagentTree reads subagents of the directory itself and of each project directory below it.

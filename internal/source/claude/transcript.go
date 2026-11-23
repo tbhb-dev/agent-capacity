@@ -29,7 +29,7 @@ const (
 // TranscriptSource keeps only window readings from explicitly named files.
 type TranscriptSource struct {
 	//exhaustruct:optional
-	index   *tokenIndex // Keeps parsed token usage between collections; a missing index reads from scratch each time.
+	index   *tokenIndex // Keeps parsed token usage between collections; a source without one reports no tokens.
 	files   fs.FS
 	account string
 	paths   []string
@@ -82,12 +82,12 @@ func (s TranscriptSource) Read(ctx context.Context, now time.Time) ([]capacity.R
 // withTokens adds token totals to each window reading, in window order. A reading only gets tokens once the
 // index has read every transcript to its end, so a host still catching up exports no partial totals.
 func (s TranscriptSource) withTokens(now time.Time, latest map[string]capacity.Reading) []capacity.Reading {
-	index := s.index
-	if index == nil {
-		index = newTokenIndex()
-	}
+	caughtUp := false
 
-	caughtUp := index.refresh(s.files, s.tokenPaths(), now)
+	if s.index != nil {
+		paths, listed := s.tokenPaths()
+		caughtUp = s.index.refresh(s.files, paths, listed, now)
+	}
 
 	var readings []capacity.Reading
 
@@ -102,7 +102,7 @@ func (s TranscriptSource) withTokens(now time.Time, latest map[string]capacity.R
 		}
 
 		if caughtUp {
-			reading.Tokens = windowTokens(index, now, reading)
+			reading.Tokens, _ = windowTokens(s.index, now, reading)
 		}
 
 		if found || len(reading.Tokens) > 0 {

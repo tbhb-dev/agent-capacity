@@ -4,7 +4,9 @@
 package claude //nolint:testpackage // Exercise token scan limits with synthetic files.
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"slices"
 	"strings"
@@ -21,7 +23,7 @@ import (
 const (
 	tokenModel  = "model-a"
 	tokenModelB = "model-b"
-	tokenFile   = "new.jsonl"
+	tokenPath   = "new.jsonl"
 	tokenVendor = "anthropic"
 )
 
@@ -97,10 +99,12 @@ func TestWindowTokens(t *testing.T) {
 			t.Parallel()
 
 			files := fstest.MapFS{
-				tokenFile:   {Data: []byte(testCase.data), ModTime: now, Mode: 0, Sys: nil},
-				"old.jsonl": {Data: []byte(testCase.old), ModTime: now.Add(-8 * 24 * time.Hour), Mode: 0, Sys: nil},
+				tokenPath:   {Data: []byte(testCase.data), ModTime: now, Mode: 0, Sys: nil},
+				"old.jsonl": {Data: []byte(testCase.old), ModTime: now.Add(-9 * 24 * time.Hour), Mode: 0, Sys: nil},
 			}
-			source := TranscriptSource{files: files, paths: []string{".", tokenFile}, account: transcriptAccount}
+			source := TranscriptSource{
+				files: files, paths: []string{".", tokenPath}, account: transcriptAccount, index: newTokenIndex(),
+			}
 			got, err := source.Read(t.Context(), now)
 			require.NoError(t, err)
 
@@ -153,6 +157,7 @@ func TestTokenWindows(t *testing.T) {
 		files:   files,
 		paths:   []string{"recent", "older", "duplicate"},
 		account: transcriptAccount,
+		index:   newTokenIndex(),
 	}
 	shared := map[string][4]int64{tokenModel: {1, 7, 3, 4}}
 	week := map[string][4]int64{tokenModel: {1, 7, 3, 4}, tokenModelB: {1, 5, 3, 4}}
@@ -178,14 +183,16 @@ func TestTokenScanFailures(t *testing.T) {
 	for _, fixture := range []struct {
 		files fs.FS
 		path  string
+		want  bool
 	}{
-		{files, "missing"},
-		{files, "."},
-		{transcriptFaultFS{FS: files, openErr: false, statErr: true, readErr: false, noReader: false}, transcriptInput},
-		{transcriptFaultFS{FS: files, openErr: false, statErr: false, readErr: false, noReader: true}, transcriptInput},
+		{files, "gone", true}, // A transcript that vanished is not a failure; its usage is dropped.
+		{files, ".", false},
+		{fault(files, "openErr"), transcriptInput, false},
+		{fault(files, "statErr"), transcriptInput, false},
+		{fault(files, "noReader"), transcriptInput, false},
 	} {
 		budget := int64(tokenPassBytes)
-		assert.False(t, newTokenIndex().scan(fixture.files, fixture.path, time.Time{}, time.Time{}, &budget))
+		assert.Equal(t, fixture.want, newTokenIndex().scan(fixture.files, fixture.path, &budget))
 	}
 }
 
@@ -198,11 +205,12 @@ func TestTokenLineOverCapAndPastReset(t *testing.T) {
 	big := paddedTokenLine("pad", tokenLine("big", tokenModelB, reset.Add(-2*time.Minute), 5), tokenLineBytes+1<<16)
 	data := tokenLine("kept", tokenModel, reset.Add(-3*time.Minute), 2) + big +
 		tokenLine("tail", "model-c", reset.Add(-time.Minute), 6) + tokenLine("after", "model-d", now, 7)
-	files := fstest.MapFS{tokenFile: {Data: []byte(data), ModTime: now, Mode: 0, Sys: nil}}
+	files := fstest.MapFS{tokenPath: {Data: []byte(data), ModTime: now, Mode: 0, Sys: nil}}
 	index := newTokenIndex()
-	require.True(t, index.refresh(files, []string{tokenFile}, now))
+	require.True(t, index.refresh(files, []string{tokenPath}, true, now))
 
-	got := windowTokens(index, now, fiveHours(reset, now))
+	got, ok := windowTokens(index, now, fiveHours(reset, now))
+	require.True(t, ok)
 	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}, "model-c": {1, 6, 3, 4}}, got)
 }
 
@@ -211,12 +219,14 @@ func TestSubagentTokens(t *testing.T) {
 
 	now, event, file := subagentFixture()
 	files := fstest.MapFS{
-		tokenFile:                         file(event + "\n" + tokenLine("main", tokenModel, now, 2)),
+		tokenPath:                         file(event + "\n" + tokenLine("main", tokenModel, now, 2)),
 		"session/subagents/agent-a.jsonl": file(tokenLine("sub", tokenModelB, now, 5)),
 		"session/subagents/agent-a.meta":  file(tokenLine("meta", tokenModelB, now, 7)),
 		"session/other.jsonl":             file(tokenLine("other", tokenModelB, now, 9)),
 	}
-	source := TranscriptSource{files: files, paths: []string{".", tokenFile}, account: transcriptAccount}
+	source := TranscriptSource{
+		files: files, paths: []string{".", tokenPath}, account: transcriptAccount, index: newTokenIndex(),
+	}
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
 
@@ -244,6 +254,7 @@ func TestProjectsRoot(t *testing.T) {
 		files:   files,
 		paths:   []string{"projects", "projects/project-a"},
 		account: transcriptAccount,
+		index:   newTokenIndex(),
 	}
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
@@ -281,8 +292,10 @@ func TestTokensOnlyWithoutUsage(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(100000, 0).UTC()
-	files := fstest.MapFS{tokenFile: {Data: nil, ModTime: now, Mode: 0, Sys: nil}}
-	source := TranscriptSource{files: files, paths: []string{tokenFile}, account: transcriptAccount}
+	files := fstest.MapFS{tokenPath: {Data: nil, ModTime: now, Mode: 0, Sys: nil}}
+	source := TranscriptSource{
+		files: files, paths: []string{tokenPath}, account: transcriptAccount, index: newTokenIndex(),
+	}
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
 	assert.Empty(t, got)
@@ -293,11 +306,13 @@ func TestTokensOnlyWindows(t *testing.T) {
 
 	now := time.Unix(1000000, 0).UTC()
 	// Usage 6 hours old lies outside the 5h window and inside the 7d window.
-	files := fstest.MapFS{tokenFile: {
+	files := fstest.MapFS{tokenPath: {
 		Data:    []byte(tokenLine("old", tokenModel, now.Add(-6*time.Hour), 2)),
 		ModTime: now, Mode: 0, Sys: nil,
 	}}
-	source := TranscriptSource{files: files, paths: []string{tokenFile}, account: transcriptAccount}
+	source := TranscriptSource{
+		files: files, paths: []string{tokenPath}, account: transcriptAccount, index: newTokenIndex(),
+	}
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
@@ -308,35 +323,149 @@ func TestTokensOnlyWindows(t *testing.T) {
 	require.NoError(t, got[0].Validate())
 }
 
-// Later passes read only appended bytes, keep a half-written line for its newline, and reread a replaced file.
+// fault wraps files so that the one named operation fails.
+func fault(files fs.FS, which string) transcriptFaultFS {
+	return transcriptFaultFS{
+		FS: files, openErr: which == "openErr", statErr: which == "statErr",
+		readErr: which == "readErr", noReader: which == "noReader",
+	}
+}
+
+func mapFile(data string, modTime time.Time) *fstest.MapFile {
+	return &fstest.MapFile{Data: []byte(data), ModTime: modTime, Mode: 0, Sys: nil}
+}
+
+// tokensOf refreshes the index over the paths and returns the five hour totals ending now.
+func tokensOf(t *testing.T, index *tokenIndex, files fs.FS, now time.Time, paths ...string) map[string][4]int64 {
+	t.Helper()
+
+	require.True(t, index.refresh(files, paths, true, now))
+
+	got, ok := windowTokens(index, now, fiveHours(now, now))
+	require.True(t, ok)
+
+	return got
+}
+
+// Later passes read only appended bytes and keep a half-written line for its newline.
 func TestTokenIndexIncremental(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(1000000, 0).UTC()
 	first := tokenLine("a", tokenModel, now, 2)
 	second := tokenLine("b", tokenModel, now, 5)
-	files := fstest.MapFS{tokenFile: {Data: []byte(first + second[:10]), ModTime: now, Mode: 0, Sys: nil}}
+	files := fstest.MapFS{tokenPath: mapFile(first+second[:10], now)}
 	index := newTokenIndex()
-	window := fiveHours(now, now)
 
-	require.True(t, index.refresh(files, []string{tokenFile}, now))
-	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}}, windowTokens(index, now, window))
-	assert.Equal(t, int64(len(first)), index.offsets[tokenFile])
+	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}}, tokensOf(t, index, files, now, tokenPath))
+	assert.Equal(t, int64(len(first)), index.files[tokenPath].offset)
 
-	files[tokenFile] = &fstest.MapFile{Data: []byte(first + second), ModTime: now, Mode: 0, Sys: nil}
-	require.True(t, index.refresh(files, []string{tokenFile}, now))
-	assert.Equal(t, map[string][4]int64{tokenModel: {2, 7, 6, 8}}, windowTokens(index, now, window))
+	files[tokenPath] = mapFile(first+second, now)
+	assert.Equal(t, map[string][4]int64{tokenModel: {2, 7, 6, 8}}, tokensOf(t, index, files, now, tokenPath))
 
-	// A shorter file is a new file: the offset restarts and the message ids merge.
-	files[tokenFile] = &fstest.MapFile{Data: []byte(first), ModTime: now, Mode: 0, Sys: nil}
-	require.True(t, index.refresh(files, []string{tokenFile}, now))
-	assert.Equal(t, int64(len(first)), index.offsets[tokenFile])
+	// A last line that is whole JSON counts before its newline arrives, and only once.
+	files[tokenPath] = mapFile(first+second+strings.TrimSuffix(tokenLine("c", tokenModel, now, 1), "\n"), now)
+	want := map[string][4]int64{tokenModel: {3, 8, 9, 12}}
+	assert.Equal(t, want, tokensOf(t, index, files, now, tokenPath))
+	files[tokenPath] = mapFile(first+second+tokenLine("c", tokenModel, now, 1), now)
+	assert.Equal(t, want, tokensOf(t, index, files, now, tokenPath))
+}
 
-	// A file that left the window is forgotten, and usage older than seven days is evicted.
-	files[tokenFile] = &fstest.MapFile{Data: []byte(first), ModTime: now.Add(-8 * 24 * time.Hour), Mode: 0, Sys: nil}
-	require.True(t, index.refresh(files, []string{tokenFile}, now.Add(8*24*time.Hour)))
-	assert.Empty(t, index.offsets)
-	assert.Empty(t, index.events)
+// A shrunk or replaced transcript gives up what the old one contributed, whatever its new size.
+func TestTokenIndexReplacedFile(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000000, 0).UTC()
+	first := tokenLine("a", tokenModel, now, 2)
+	second := tokenLine("b", tokenModel, now, 6)
+	index := newTokenIndex()
+	files := fstest.MapFS{tokenPath: mapFile(first+second, now)}
+	assert.Equal(t, map[string][4]int64{tokenModel: {2, 8, 6, 8}}, tokensOf(t, index, files, now, tokenPath))
+
+	// Truncated to one line.
+	files[tokenPath] = mapFile(first, now)
+	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}}, tokensOf(t, index, files, now, tokenPath))
+
+	// Replaced by a file of the same size, then by a larger one.
+	other := tokenLine("a", tokenModelB, now, 2)
+	files[tokenPath] = mapFile(other, now.Add(time.Second))
+	assert.Equal(t, map[string][4]int64{tokenModelB: {1, 2, 3, 4}}, tokensOf(t, index, files, now, tokenPath))
+
+	larger := tokenLine("c", tokenModel, now, 3) + tokenLine("d", tokenModel, now, 4)
+	files[tokenPath] = mapFile(larger, now.Add(2*time.Second))
+	assert.Equal(t, map[string][4]int64{tokenModel: {2, 7, 6, 8}}, tokensOf(t, index, files, now, tokenPath))
+}
+
+// A transcript that left the listing, or fell out of the retention window, stops counting and stops being tracked.
+func TestTokenIndexForgetsFiles(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000000, 0).UTC()
+	line := tokenLine("a", tokenModel, now, 2)
+	files := fstest.MapFS{tokenPath: mapFile(line, now), "b.jsonl": mapFile(tokenLine("b", tokenModelB, now, 3), now)}
+	index := newTokenIndex()
+	assert.Len(t, tokensOf(t, index, files, now, tokenPath, "b.jsonl"), 2)
+
+	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}}, tokensOf(t, index, files, now, tokenPath))
+	assert.Len(t, index.files, 1)
+
+	// A path in the listing that disappeared before it was opened is dropped too.
+	assert.Empty(t, tokensOf(t, index, files, now, "gone.jsonl"))
+	assert.Empty(t, index.files)
+
+	// A file last written before the retention window is forgotten, and old usage in a recent file ages out.
+	later := now.Add(tokenRetention + time.Hour)
+	files[tokenPath] = mapFile(line, now)
+	assert.Empty(t, tokensOf(t, index, files, later, tokenPath))
+	assert.Empty(t, index.files)
+
+	files[tokenPath] = mapFile(line, later)
+	assert.Empty(t, tokensOf(t, index, files, later, tokenPath))
+	assert.Empty(t, index.files[tokenPath].events)
+}
+
+// Windows total the way a full scan does: past resets, updates after the reset, future stamps and ties.
+func TestTokenIndexMatchesFullScan(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000000, 0).UTC()
+	reset := now.Add(-time.Hour)
+	sevenDays := fiveHours(reset, now)
+	sevenDays.Window = "7d"
+
+	// Usage 7 days before a reset that is an hour old is older than 7 days from now, yet inside the window.
+	old := tokenLine("old", tokenModel, reset.Add(-7*24*time.Hour+time.Minute), 2)
+	// An update after the reset must not displace the usage the window already holds for that id.
+	before := tokenLine("u", tokenModel, reset.Add(-time.Minute), 3)
+	after := tokenLine("u", tokenModel, reset.Add(time.Minute), 9)
+	files := fstest.MapFS{tokenPath: mapFile(old+before+after, now)}
+	index := newTokenIndex()
+	require.True(t, index.refresh(files, []string{tokenPath}, true, now))
+
+	got, found := windowTokens(index, now, sevenDays)
+	require.True(t, found)
+	assert.Equal(t, map[string][4]int64{tokenModel: {2, 5, 6, 8}}, got)
+
+	// A record stamped just ahead of the clock counts once the clock catches up.
+	ahead := fstest.MapFS{tokenPath: mapFile(tokenLine("ahead", tokenModelB, now.Add(time.Second), 4), now)}
+	rolling := newTokenIndex()
+	assert.Empty(t, tokensOf(t, rolling, ahead, now, tokenPath))
+	caught := tokensOf(t, rolling, ahead, now.Add(2*time.Second), tokenPath)
+	assert.Equal(t, map[string][4]int64{tokenModelB: {1, 4, 3, 4}}, caught)
+
+	// Equal stamps: the later line in listing order wins, as in a fresh index over the same files.
+	files = fstest.MapFS{
+		"a.jsonl": mapFile(tokenLine("t", tokenModel, now, 2), now),
+		"b.jsonl": mapFile(tokenLine("t", tokenModel, now, 5)+tokenLine("t", tokenModel, now, 4), now),
+	}
+	want := map[string][4]int64{tokenModel: {1, 4, 3, 4}}
+	assert.Equal(t, want, tokensOf(t, newTokenIndex(), files, now, "a.jsonl", "b.jsonl"))
+
+	// A window that reaches back past what the index keeps reports no totals instead of partial ones.
+	far := fiveHours(now.Add(-5*24*time.Hour), now)
+	far.Window = "7d"
+	_, found = windowTokens(index, now, far)
+	assert.False(t, found)
 }
 
 // A pass that hits its byte budget reports it is behind, and the next pass continues from the saved offsets.
@@ -344,21 +473,131 @@ func TestTokenIndexCatchesUp(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(1000000, 0).UTC()
-	// A line older than the longest window is read and rejected.
-	stale := tokenLine("stale", tokenModel, now.Add(-8*24*time.Hour), 9)
 	line := tokenLine("a", tokenModel, now, 2)
-	data := stale + line + tokenLine("b", tokenModel, now, 5)
-	files := fstest.MapFS{tokenFile: {Data: []byte(data), ModTime: now, Mode: 0, Sys: nil}}
+	files := fstest.MapFS{tokenPath: mapFile(line+tokenLine("b", tokenModel, now, 5), now)}
 	index := newTokenIndex()
-	budget := int64(len(stale) + len(line))
+	index.passBytes = int64(len(line))
 
-	require.False(t, index.scan(files, tokenFile, now.Add(-time.Hour), now, &budget))
-	assert.Zero(t, budget)
-	assert.Len(t, index.events, 1)
+	require.False(t, index.refresh(files, []string{tokenPath}, true, now))
+	assert.Len(t, index.files[tokenPath].events, 1)
 
-	budget = int64(tokenPassBytes)
-	require.True(t, index.scan(files, tokenFile, now.Add(-time.Hour), now, &budget))
-	assert.Len(t, index.events, 2)
+	index.passBytes = tokenPassBytes
+	assert.Equal(t, map[string][4]int64{tokenModel: {2, 7, 6, 8}}, tokensOf(t, index, files, now, tokenPath))
+}
+
+// shortFS serves each file as if it ended after limit bytes, the way a read cut short by an error does.
+type shortFS struct {
+	fs.FS
+
+	limit int
+}
+
+type shortFile struct {
+	fs.File
+
+	limit int
+}
+
+func (files shortFS) Open(name string) (fs.File, error) {
+	file, err := files.FS.Open(name)
+	if err != nil {
+		return nil, errors.Join(err)
+	}
+
+	return shortFile{File: file, limit: files.limit}, nil
+}
+
+func (file shortFile) ReadAt(data []byte, offset int64) (int, error) {
+	reader, ok := file.File.(io.ReaderAt)
+	if !ok || offset >= int64(file.limit) {
+		return 0, io.EOF
+	}
+
+	count, err := reader.ReadAt(data[:min(len(data), file.limit-int(offset))], offset)
+	if err == nil && count < len(data) {
+		err = io.EOF
+	}
+
+	return count, errors.Join(err)
+}
+
+// A read that stops early, or a tail check that fails, leaves the index behind instead of reporting a total.
+func TestTokenIndexShortRead(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000000, 0).UTC()
+	first := tokenLine("a", tokenModel, now, 2)
+	second := tokenLine("b", tokenModel, now, 5)
+	whole := fstest.MapFS{tokenPath: mapFile(first+second, now)}
+	index := newTokenIndex()
+
+	short := shortFS{FS: whole, limit: len(first) + 10}
+	assert.False(t, index.refresh(short, []string{tokenPath}, true, now))
+	assert.Equal(t, int64(len(first)), index.files[tokenPath].offset)
+	assert.Equal(t, map[string][4]int64{tokenModel: {2, 7, 6, 8}}, tokensOf(t, index, whole, now, tokenPath))
+
+	// A file that can no longer be read back where the index left off is read again from the start.
+	assert.False(t, index.refresh(shortFS{FS: whole, limit: len(first)}, []string{tokenPath}, true, now))
+	assert.Equal(t, int64(len(first)), index.files[tokenPath].offset)
+	assert.Equal(t, map[string][4]int64{tokenModel: {2, 7, 6, 8}}, tokensOf(t, index, whole, now, tokenPath))
+
+	// A tail that cannot be read back resets the file, and a read that errors keeps the pass behind.
+	broken := fault(whole, "readErr")
+	assert.False(t, index.refresh(broken, []string{tokenPath}, true, now))
+	assert.Empty(t, index.files[tokenPath].events)
+	assert.False(t, newTokenIndex().refresh(broken, []string{tokenPath}, true, now))
+}
+
+// A listing that is not complete keeps tokens out, and keeps what the index already holds.
+func TestTokenListingFailure(t *testing.T) {
+	t.Parallel()
+
+	now, event, file := subagentFixture()
+	files := fstest.MapFS{
+		"projects/p1/s.jsonl": file(event + "\n" + tokenLine("a", tokenModel, now, 2)),
+		"projects/p2/s.jsonl": file(tokenLine("b", tokenModelB, now, 5)),
+	}
+	index := newTokenIndex()
+	source := TranscriptSource{
+		files: files, paths: []string{"projects", "gone"}, account: transcriptAccount, index: index,
+	}
+	got, err := source.Read(t.Context(), now)
+	require.NoError(t, err)
+
+	got = planReadings(got)
+	require.Len(t, got, 1)
+	assert.Len(t, got[0].Tokens, 2)
+
+	// A project directory that cannot be listed leaves its usage out of the totals, so no totals are published.
+	source.files = listFaultFS{FS: files, bad: "projects/p2"}
+	got, err = source.Read(t.Context(), now)
+	require.NoError(t, err)
+
+	got = planReadings(got)
+	require.Len(t, got, 1)
+	assert.Empty(t, got[0].Tokens)
+	assert.Len(t, index.files, 2)
+
+	paths, listed := source.tokenPaths()
+	assert.False(t, listed)
+	assert.Equal(t, []string{"projects/p1/s.jsonl"}, paths)
+}
+
+// listFaultFS fails to list one path with a permission error.
+type listFaultFS struct {
+	fs.FS
+
+	bad string
+}
+
+func (files listFaultFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	if name == files.bad {
+		return nil, fs.ErrPermission
+	}
+
+	entries, err := fs.ReadDir(files.FS, name)
+
+	return entries, errors.Join(err)
 }
 
 // While the index is behind, Read exports the plan readings without tokens instead of partial totals.
@@ -369,13 +608,13 @@ func TestReadWithholdsTokensUntilCaughtUp(t *testing.T) {
 	line := tokenLine("a", tokenModel, now, 2)
 	big := tokenLine("b", tokenModel, now, 5) + strings.Repeat("\n", 4096)
 	files := fstest.MapFS{
-		tokenFile: {Data: []byte(line), ModTime: now, Mode: 0, Sys: nil},
-		"big":     {Data: []byte(big), ModTime: now, Mode: 0, Sys: nil},
+		tokenPath: mapFile(line, now),
+		"big":     mapFile(big, now),
 	}
 	index := newTokenIndex()
 	index.passBytes = int64(len(line)) + 100
 	source := TranscriptSource{
-		files: files, paths: []string{tokenFile, "big"}, account: transcriptAccount, index: index,
+		files: files, paths: []string{tokenPath, "big"}, account: transcriptAccount, index: index,
 	}
 
 	got, err := source.Read(t.Context(), now)
