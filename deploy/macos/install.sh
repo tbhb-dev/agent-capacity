@@ -35,6 +35,7 @@ backup_root=/var/backups
 serve=dev.tbhb.agent-capacity.serve
 labels=("$serve" "$serve.claude-claude-primary" "$serve.claude-claude-secondary")
 spool_dirs=(/Users/capacity/spool-claude-{primary,secondary})
+pb=/usr/libexec/PlistBuddy # cspell:disable-line
 
 running() {
   launchctl print "system/$1" 2>/dev/null |
@@ -44,51 +45,64 @@ running() {
 unload() {
   local service="system/$1"
   if launchctl print "$service" >/dev/null 2>&1; then
-    launchctl bootout "$service"
+    launchctl bootout "$service" || return 1
   fi
 }
 
+# Return nonzero instead of exiting so a restore can keep going after one failure.
 reload() {
   local label=$1 attempt
-  unload "$label"
+  unload "$label" || return 1
 
   for attempt in 1 2 3 4 5; do
     if launchctl bootstrap system "$live_dir/$label.plist"; then
       break
     fi
-    ((attempt < 5)) || fail "Bootstrap failed for $label."
+    if ((attempt == 5)); then
+      printf 'Bootstrap failed for %s.\n' "$label" >&2
+      return 1
+    fi
     sleep 1
   done
 
   for attempt in 1 2 3 4 5; do
     if running "$label"; then
       printf 'Running %s\n' "$label"
-      return
+      return 0
     fi
-    ((attempt < 5)) || fail "$label did not reach the running state."
     sleep 1
   done
+  printf '%s did not reach the running state.\n' "$label" >&2
+  return 1
 }
 
+# Put the saved binary and plists back, and leave each daemon as it was. Return 1 if any step failed.
 restore() {
-  local backup=$1 label saved live
+  local backup=$1 label saved live status=0
   printf 'Restoring %s\n' "$backup"
   if ! cmp -s "$backup/agent-capacity" "$binary"; then
-    install -o root -g wheel -m 755 "$backup/agent-capacity" "$binary"
+    install -o root -g wheel -m 755 "$backup/agent-capacity" "$binary" || status=1
   fi
+  for label in "${labels[@]}"; do
+    if [[ ! -f $backup/$label.plist ]]; then
+      unload "$label" || status=1
+      rm -f "$live_dir/$label.plist" || status=1
+    fi
+  done
   for label in "${labels[@]}"; do
     saved=$backup/$label.plist
     live=$live_dir/$label.plist
-    if [[ ! -f $saved ]]; then
-      unload "$label"
-      rm -f "$live"
+    [[ -f $saved ]] || continue
+    if ! cmp -s "$saved" "$live"; then
+      install -o root -g wheel -m 600 "$saved" "$live" || status=1
+    fi
+    if [[ $(<"$backup/$label.state") == running ]]; then
+      reload "$label" || status=1
     else
-      if ! cmp -s "$saved" "$live"; then
-        install -o root -g wheel -m 644 "$saved" "$live"
-      fi
-      reload "$label"
+      unload "$label" || status=1
     fi
   done
+  return "$status"
 }
 
 if [[ $action == rollback ]]; then
@@ -99,18 +113,16 @@ if [[ $action == rollback ]]; then
     fi
   done
   [[ -n $backup ]] || fail 'No backup found.'
-  [[ -f $backup/complete ]] || fail "The newest backup $backup is incomplete, so the last apply changed nothing."
-  restore "$backup"
+  if [[ ! -f $backup/applied && ! -f $backup/pending ]] || [[ -f $backup/restored ]]; then
+    fail "Nothing to roll back: $backup is not a pending or finished apply, or it was already restored."
+  fi
+  restore "$backup" || fail 'Rollback failed. Read the messages above.'
+  touch "$backup/restored"
   exit 0
 fi
 
-# Keep the private collector address and host label on the host. Reuse the main serve's values.
-endpoint=$(plutil -extract EnvironmentVariables.OTEL_EXPORTER_OTLP_ENDPOINT raw -expect string "$live_dir/$serve.plist" 2>/dev/null) || fail 'Cannot read the live collector endpoint.'
-[[ -n $endpoint ]] || fail 'The live collector endpoint is empty.'
-resource=$(plutil -extract EnvironmentVariables.OTEL_RESOURCE_ATTRIBUTES raw -expect string "$live_dir/$serve.plist" 2>/dev/null) || fail 'Cannot read the live resource attributes.'
-[[ -n $resource ]] || fail 'The live resource attributes are empty.'
-
-pb=/usr/libexec/PlistBuddy # cspell:disable-line
+# Keep the private collector address and every other live setting on the host.
+# The main serve file is the source for the keys the repository files do not define.
 live_env=$("$pb" -c 'Print :EnvironmentVariables' "$live_dir/$serve.plist") || fail 'Cannot read the live environment.'
 key_lines=$(sed -n 's/^    \([^ ][^ ]*\) = .*/\1/p' <<<"$live_env")
 live_keys=()
@@ -118,12 +130,14 @@ while IFS= read -r key; do
   [[ $key =~ ^[A-Za-z0-9_]+$ ]] || fail "Unsupported live environment key: $key"
   live_keys+=("$key")
 done <<<"$key_lines"
+printf '%s\n' "${live_keys[@]}" | grep -qx OTEL_EXPORTER_OTLP_ENDPOINT || fail 'The live collector endpoint is missing.'
 
-# Start from the repository file and add each live environment key it does not define.
+# The main job keeps every live key. A Claude job takes only the OTEL_ keys, so it never gains the Codex source.
 render() {
   local xml key value
   xml=$(plutil -convert xml1 -o - "$repo_dir/$1.plist") || return 1
   for key in "${live_keys[@]}"; do
+    [[ $1 == "$serve" || $key == OTEL_* ]] || continue
     if ! plutil -extract "EnvironmentVariables.$key" raw -o - "$repo_dir/$1.plist" >/dev/null 2>&1; then
       value=$(plutil -extract "EnvironmentVariables.$key" raw -expect string -o - "$live_dir/$serve.plist") || return 1
       xml=$(printf '%s' "$xml" | plutil -insert "EnvironmentVariables.$key" -string "$value" -o - -) || return 1
@@ -185,6 +199,8 @@ if ((! binary_changed && ! spools_changed)) && [[ -z ${restart_labels[0]:-} ]]; 
   printf 'No changes to apply.\n'
   exit 0
 fi
+
+# Every check above ran before this point, so a failed check leaves no backup behind.
 backup=$backup_root/agent-capacity-$(date -u +%Y%m%dT%H%M%SZ)
 mkdir "$backup"
 cp -p "$binary" "$backup/agent-capacity"
@@ -192,9 +208,14 @@ for label in "${labels[@]}"; do
   live=$live_dir/$label.plist
   if [[ -f $live ]]; then
     cp -p "$live" "$backup/"
+    if running "$label"; then
+      printf 'running\n' >"$backup/$label.state"
+    else
+      printf 'stopped\n' >"$backup/$label.state"
+    fi
   fi
 done
-touch "$backup/complete"
+touch "$backup/pending"
 printf 'Saved backup to %s\n' "$backup"
 
 rollback_on_failure() {
@@ -202,7 +223,11 @@ rollback_on_failure() {
   trap - EXIT
   if ((status != 0)); then
     printf 'Apply failed. Restoring %s\n' "$backup" >&2
-    (restore "$backup") || printf 'The automatic restore failed. Run rollback.\n' >&2
+    if restore "$backup"; then
+      touch "$backup/restored"
+    else
+      printf 'The automatic restore failed. Fix the cause and run rollback.\n' >&2
+    fi
   fi
   exit "$status"
 }
@@ -212,13 +237,20 @@ if ((binary_changed)); then
   install -o root -g wheel -m 755 "$candidate" "$binary"
 fi
 if ((spools_changed)); then
-  sudo -u capacity -g capacity /usr/bin/install -d -m 700 "${spool_dirs[@]}"
+  install -d -o capacity -g capacity -m 700 "${spool_dirs[@]}"
+  for spool in "${spool_dirs[@]}"; do
+    metadata=$(stat -f '%Su:%Sg %Lp' "$spool")
+    [[ $metadata == 'capacity:capacity 700' ]] || fail "Spool $spool is $metadata, not capacity:capacity 700."
+  done
 fi
 for label in "${changed_plists[@]+"${changed_plists[@]}"}"; do
   render "$label" >"$backup/$label.new"
-  install -o root -g wheel -m 644 "$backup/$label.new" "$live_dir/$label.plist"
+  install -o root -g wheel -m 600 "$backup/$label.new" "$live_dir/$label.plist"
   rm "$backup/$label.new"
 done
 for label in "${restart_labels[@]+"${restart_labels[@]}"}"; do
-  reload "$label"
+  reload "$label" || fail "Reload failed for $label."
 done
+trap - EXIT
+rm "$backup/pending"
+touch "$backup/applied"

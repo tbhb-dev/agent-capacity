@@ -20,10 +20,6 @@
 	<dict>
 		<key>AGENT_CAPACITY_SPOOL_DIR</key>
 		<string>/Users/capacity/spool</string>
-		<key>OTEL_EXPORTER_OTLP_PROTOCOL</key>
-		<string>http/protobuf</string>
-		<key>OTEL_METRIC_EXPORT_INTERVAL</key>
-		<string>15000</string>
 	</dict>
 	<key>RunAtLoad</key>
 	<true/>
