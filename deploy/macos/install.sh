@@ -10,7 +10,7 @@ fail() {
 }
 
 usage() {
-  fail 'Usage: install.sh check [--binary FILE] | apply --binary FILE | rollback'
+  fail 'Usage: install.sh check [--binary FILE] | apply --binary FILE | rollback BACKUP_DIR'
 }
 
 action=${1:-}
@@ -19,8 +19,11 @@ check | apply | rollback) shift ;;
 *) usage ;;
 esac
 candidate=
-if (($# > 0)); then
-  [[ $action != rollback && $# == 2 && $1 == --binary && -n $2 ]] || usage
+if [[ $action == rollback ]]; then
+  (($# == 1)) || usage
+  backup=$1
+elif (($# > 0)); then
+  [[ $# == 2 && $1 == --binary && -n $2 ]] || usage
   candidate=$2
 fi
 [[ $action != apply || -n $candidate ]] || usage
@@ -76,6 +79,12 @@ reload() {
   return 1
 }
 
+# Register a job that was loaded but idle, without waiting for it to run.
+bootstrap_only() {
+  unload "$1" || return 1
+  launchctl bootstrap system "$live_dir/$1.plist"
+}
+
 # Put the saved binary and plists back, and leave each daemon as it was. Return 1 if any step failed.
 restore() {
   local backup=$1 label saved live status=0
@@ -93,26 +102,18 @@ restore() {
     saved=$backup/$label.plist
     live=$live_dir/$label.plist
     [[ -f $saved ]] || continue
-    if ! cmp -s "$saved" "$live"; then
-      install -o root -g wheel -m 600 "$saved" "$live" || status=1
-    fi
-    if [[ $(<"$backup/$label.state") == running ]]; then
-      reload "$label" || status=1
-    else
-      unload "$label" || status=1
-    fi
+    install -o root -g wheel -m 600 "$saved" "$live" || status=1
+    case $(<"$backup/$label.state") in
+    running) reload "$label" || status=1 ;;
+    loaded) bootstrap_only "$label" || status=1 ;;
+    *) unload "$label" || status=1 ;;
+    esac
   done
   return "$status"
 }
 
 if [[ $action == rollback ]]; then
-  backup=
-  for directory in "$backup_root"/agent-capacity-*; do
-    if [[ -d $directory ]]; then
-      backup=$directory
-    fi
-  done
-  [[ -n $backup ]] || fail 'No backup found.'
+  [[ $backup == "$backup_root"/agent-capacity-* && -d $backup ]] || fail "Not a backup directory: $backup"
   if [[ ! -f $backup/applied && ! -f $backup/pending ]] || [[ -f $backup/restored ]]; then
     fail "Nothing to roll back: $backup is not a pending or finished apply, or it was already restored."
   fi
@@ -130,7 +131,8 @@ while IFS= read -r key; do
   [[ $key =~ ^[A-Za-z0-9_]+$ ]] || fail "Unsupported live environment key: $key"
   live_keys+=("$key")
 done <<<"$key_lines"
-printf '%s\n' "${live_keys[@]}" | grep -qx OTEL_EXPORTER_OTLP_ENDPOINT || fail 'The live collector endpoint is missing.'
+endpoint=$(plutil -extract EnvironmentVariables.OTEL_EXPORTER_OTLP_ENDPOINT raw -o - "$live_dir/$serve.plist" 2>/dev/null) || endpoint=
+[[ -n $endpoint ]] || fail 'The live collector endpoint is missing or empty.'
 
 # The main job keeps every live key. A Claude job takes only the OTEL_ keys, so it never gains the Codex source.
 render() {
@@ -173,7 +175,11 @@ for label in "${labels[@]}"; do
   if [[ -f $live ]]; then
     live_hash=$(plutil -convert xml1 -o - "$live" | shasum -a 256)
   fi
-  if [[ $repo_hash != "$live_hash" ]]; then
+  mode=missing
+  if [[ -f $live ]]; then
+    mode=$(stat -f '%Su:%Sg %Lp' "$live")
+  fi
+  if [[ $repo_hash != "$live_hash" || $mode != 'root:wheel 600' ]]; then
     changed_plists+=("$label")
     restart_labels+=("$label")
     printf 'Install %s\n' "$live"
@@ -210,13 +216,15 @@ for label in "${labels[@]}"; do
     cp -p "$live" "$backup/"
     if running "$label"; then
       printf 'running\n' >"$backup/$label.state"
+    elif launchctl print "system/$label" >/dev/null 2>&1; then
+      printf 'loaded\n' >"$backup/$label.state"
     else
-      printf 'stopped\n' >"$backup/$label.state"
+      printf 'absent\n' >"$backup/$label.state"
     fi
   fi
 done
 touch "$backup/pending"
-printf 'Saved backup to %s\n' "$backup"
+printf 'Saved backup to %s. Undo with: install.sh rollback %s\n' "$backup" "$backup"
 
 rollback_on_failure() {
   local status=$?
@@ -226,7 +234,7 @@ rollback_on_failure() {
     if restore "$backup"; then
       touch "$backup/restored"
     else
-      printf 'The automatic restore failed. Fix the cause and run rollback.\n' >&2
+      printf 'The automatic restore failed. Fix the cause and run: install.sh rollback %s\n' "$backup" >&2
     fi
   fi
   exit "$status"

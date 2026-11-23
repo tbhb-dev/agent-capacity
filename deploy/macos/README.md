@@ -11,7 +11,7 @@ generated:
     effort: medium
     surface: cli
     session: sha-256-64:1e5db78070fe05b4
-    at: "2026-11-23T09:43:43Z"
+    at: "2026-11-23T10:10:21Z"
 ---
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
@@ -49,8 +49,8 @@ Run these steps from the `agent-capacity` checkout on the exporter host using th
 
 ## Undo
 
-A failed apply restores its own backup on exit. Run rollback to undo a finished apply, or if the automatic restore reports a failure. Rollback uses the newest backup under `/var/backups`. It restores the binary and the previous plists, removes plists that the apply added, and leaves each daemon running or stopped as it was before the apply. It refuses a newest backup that is not a pending or finished apply, or that was already restored, so a preflight failure or a second rollback never reinstates an older snapshot. The installed plists are mode 600 because they can hold collector credentials. The Claude spool directories are retained.
+A failed apply restores its own backup on exit. Apply prints the backup path. Run rollback with that path to undo a finished apply, or if the automatic restore reports a failure. Rollback restores the binary and the previous plists, removes plists that the apply added, and returns each daemon to running, loaded or unloaded as it was. It refuses a directory that is not a pending or finished apply, or that was already restored, so a second rollback never undoes anything twice. Every apply and rollback sets the plists to mode 600 owned by root, because they can hold collector credentials. The Claude spool directories are retained.
 
 ```bash
-sudo ./deploy/macos/install.sh rollback
+sudo ./deploy/macos/install.sh rollback /var/backups/agent-capacity-<stamp>
 ```
