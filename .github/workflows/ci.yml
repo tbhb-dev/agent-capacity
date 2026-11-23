@@ -27,10 +27,10 @@ concurrency:
 
 jobs:
   # Bazel 9.x only, the version .bazelversion pins, on Linux (x86_64 and
-  # arm64) and macOS (arm64). The hosted macOS leg runs on main pushes and
-  # nightly, not on pull requests, so a queued macOS runner cannot hold
-  # `conclusion`. The checks that need the network or GitHub's API run on
-  # Linux only; they do not depend on the OS.
+  # arm64) and macOS (arm64). The macOS leg runs on pull requests too, so a
+  # change gets its first macOS test before it merges. The checks that need
+  # the network or GitHub's API run on Linux only; they do not depend on
+  # the OS.
   bazel:
     name: "bazel (${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
@@ -44,9 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'pull_request'
-          && '["ubuntu-26.04","ubuntu-26.04-arm"]'
-          || '["ubuntu-26.04","ubuntu-26.04-arm","macos-26"]') }}
+        os: [ubuntu-26.04, ubuntu-26.04-arm, macos-26]
     defaults:
       run:
         shell: bash
