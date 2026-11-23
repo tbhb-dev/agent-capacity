@@ -109,6 +109,8 @@ func TestWindowTokens(t *testing.T) {
 				// Without a rate-limit event both windows carry tokens only.
 				require.Len(t, got, 2)
 				assert.True(t, got[0].TokensOnly)
+				assert.True(t, got[1].TokensOnly)
+				assert.Equal(t, "7d", got[1].Window)
 				assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}}, got[0].Tokens)
 
 				return
@@ -320,4 +322,29 @@ func TestTokensOnlyWindows(t *testing.T) {
 	assert.Equal(t, now, got[0].ObservedAt)
 	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}}, got[0].Tokens)
 	require.NoError(t, got[0].Validate())
+}
+
+func TestRollingWindowKeepsBudgetForEvents(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000000, 0).UTC()
+	event := `{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{` +
+		`"seven_day":{"utilization":0.3,"resetsAt":1003600,"status":"allowed"}}}}`
+	// The reader finds events in the last 8 MiB of a file, so the event sits at the end.
+	// Two files near 30 MiB fit the scan budget once, not twice.
+	padding := strings.Repeat("\n", 30<<20)
+	usage := now.Add(-6 * time.Hour)
+	fileA := tokenLine("a", tokenModel, usage, 2) + padding + event + "\n"
+	fileB := tokenLine("b", tokenModelB, usage, 5) + padding
+	files := fstest.MapFS{
+		"a": {Data: []byte(fileA), ModTime: now, Mode: 0, Sys: nil},
+		"b": {Data: []byte(fileB), ModTime: now, Mode: 0, Sys: nil},
+	}
+	source := TranscriptSource{files: files, paths: []string{"a", "b"}, account: transcriptAccount}
+	got, err := source.Read(t.Context(), now)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "7d", got[0].Window)
+	assert.False(t, got[0].TokensOnly)
+	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}, tokenModelB: {1, 5, 3, 4}}, got[0].Tokens)
 }
