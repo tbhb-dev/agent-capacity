@@ -15,8 +15,6 @@ import (
 type Reading struct {
 	//exhaustruct:optional
 	Tokens     map[string][4]int64 // Per model: input, output, cache read, cache write.
-	//exhaustruct:optional
-	TokensOnly bool // Tokens over a rolling window ending at ObservedAt: no utilization or reset time.
 	ResetAt    time.Time
 	ObservedAt time.Time
 	Vendor     string
@@ -25,6 +23,8 @@ type Reading struct {
 	Account    string
 	Source     string
 	UsedRatio  float64
+	//exhaustruct:optional
+	TokensOnly bool // Tokens over a rolling window ending at ObservedAt: no utilization or reset time.
 }
 
 // WindowTokenBytes bounds token scans across all windows in one source collection.

@@ -77,17 +77,17 @@ func (s TranscriptSource) Read(ctx context.Context, now time.Time) ([]capacity.R
 	var readings []capacity.Reading
 
 	for _, name := range []string{"5h", "7d"} {
-		reading, ok := latest[name]
-		if !ok {
+		reading, found := latest[name]
+		if !found {
 			// Without a rate-limit event the window is rolling: it ends now and carries tokens only.
 			reading = capacity.Reading{
-				Vendor: "anthropic", Source: capacity.ClaudeTranscript, Account: s.account, Window: name,
-				ObservedAt: now, ResetAt: now, TokensOnly: true,
+				Bucket: "", Vendor: vendorAnthropic, Source: capacity.ClaudeTranscript, Account: s.account,
+				Window: name, ObservedAt: now, ResetAt: now, UsedRatio: 0, TokensOnly: true,
 			}
 		}
 
 		reading.Tokens = s.windowTokens(now, reading, &remaining)
-		if ok || len(reading.Tokens) > 0 {
+		if found || len(reading.Tokens) > 0 {
 			readings = append(readings, reading)
 		}
 	}
@@ -268,7 +268,7 @@ func transcriptReading(value *transcriptWindow, name, account string, observed t
 	}
 
 	reading := capacity.Reading{
-		Bucket: "", Vendor: "anthropic", Source: capacity.ClaudeTranscript, Account: account, Window: name,
+		Bucket: "", Vendor: vendorAnthropic, Source: capacity.ClaudeTranscript, Account: account, Window: name,
 		UsedRatio: *value.Utilization, ResetAt: reset.Time, ObservedAt: observed,
 	}
 
