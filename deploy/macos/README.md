@@ -11,7 +11,7 @@ generated:
     effort: medium
     surface: cli
     session: sha-256-64:1e5db78070fe05b4
-    at: "2026-11-23T10:10:21Z"
+    at: "2026-11-23T11:08:02Z"
 ---
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
@@ -33,7 +33,7 @@ Run these steps from the `agent-capacity` checkout on the exporter host using th
    binary="$exec_root/$relative"
    ```
 
-2. Preview the binary replacement, plist installs, spool setup, and daemon restarts. The version string can match across builds, so the installer also compares the binary files.
+2. Preview the binary replacement, plist installs, spool and log file setup, and daemon restarts. The service account must own each log file before launchd starts a job, so the installer creates the two Claude log files in `/var/log`. The version string can match across builds, so the installer also compares the binary files.
 
    ```bash
    sudo ./deploy/macos/install.sh check --binary "$binary"
@@ -45,7 +45,7 @@ Run these steps from the `agent-capacity` checkout on the exporter host using th
    sudo ./deploy/macos/install.sh apply --binary "$binary"
    ```
 
-4. In Mimir, query `agent_capacity_window_tokens{agent_account=~"codex-primary|claude-primary|claude-secondary"}` after an export interval. Check the account labels for fresh samples. Claude token metrics also need fresh window events in transcript files the exporter can find. The current reader scans immediate files in each configured directory, so a `config/projects` tree that stores transcripts only under project subdirectories needs a reader change before those accounts can produce metrics.
+4. In Mimir, query `agent_capacity_window_tokens{agent_account=~"codex-primary|claude-primary|claude-secondary"}` after an export interval. Check the account labels for fresh samples. Claude token metrics also need fresh window events in transcript files the exporter can find. The reader walks each project directory under `config/projects` and its session `subagents` folders.
 
 ## Undo
 
