@@ -67,7 +67,7 @@ func (s TranscriptSource) Read(ctx context.Context, now time.Time) ([]capacity.R
 			return nil, errors.Join(err)
 		}
 
-		for _, path := range transcriptPaths(s.files, name) {
+		for _, path := range mainPaths(s.files, name) {
 			s.readTranscript(path, now, latest)
 		}
 	}
@@ -84,6 +84,42 @@ func (s TranscriptSource) Read(ctx context.Context, now time.Time) ([]capacity.R
 	}
 
 	return readings, nil
+}
+
+// mainPaths reads a project directory as is; a directory without transcripts of its own is a projects root, so it reads one level down.
+func mainPaths(files fs.FS, name string) []string {
+	paths := transcriptPaths(files, name)
+	if len(paths) > 0 {
+		// Transcripts directly inside mean this is already a project directory.
+		return paths
+	}
+
+	for _, project := range projectDirs(files, name) {
+		paths = append(paths, transcriptPaths(files, project)...)
+	}
+
+	return paths
+}
+
+func projectDirs(files fs.FS, name string) []string {
+	entries, err := fs.ReadDir(files, name)
+	if err != nil {
+		return nil
+	}
+
+	var dirs []string
+
+	for _, entry := range entries {
+		dir := filepath.Join(name, entry.Name())
+
+		// A session directory holds subagents, so it is not a project directory.
+		_, err := fs.Stat(files, filepath.Join(dir, "subagents"))
+		if entry.IsDir() && err != nil {
+			dirs = append(dirs, dir)
+		}
+	}
+
+	return dirs
 }
 
 func transcriptPaths(files fs.FS, name string) []string {
