@@ -139,9 +139,7 @@ func (x *tokenIndex) refresh(files fs.FS, paths []string, listed bool, now time.
 func (x *tokenIndex) scan(files fs.FS, path string, budget *int64) bool {
 	file, err := files.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		delete(x.files, path)
-
-		return true
+		return true // The listing pass drops its usage.
 	}
 
 	if err != nil {

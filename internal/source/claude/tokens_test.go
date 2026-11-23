@@ -397,7 +397,6 @@ func TestTokenIndexForgetsFiles(t *testing.T) {
 
 	// A path in the listing that disappeared before it was opened is dropped too.
 	assert.Empty(t, tokensOf(t, index, files, now, "gone.jsonl"))
-	assert.Empty(t, index.files)
 
 	// A file last written before the retention window is forgotten, and old usage in a recent file ages out.
 	later := now.Add(tokenRetention + time.Hour)
