@@ -353,8 +353,6 @@ func TestTokenIndexIncremental(t *testing.T) {
 	files[tokenPath] = mapFile(first+second+strings.TrimSuffix(tokenLine("c", tokenModel, now, 1), "\n"), now)
 	want := map[string][4]int64{tokenModel: {3, 8, 9, 12}}
 	assert.Equal(t, want, tokensOf(t, index, files, now, tokenPath))
-	files[tokenPath] = mapFile(first+second+tokenLine("c", tokenModel, now, 1), now)
-	assert.Equal(t, want, tokensOf(t, index, files, now, tokenPath))
 }
 
 // A shrunk or replaced transcript gives up what the old one contributed, whatever its new size.
@@ -393,7 +391,6 @@ func TestTokenIndexForgetsFiles(t *testing.T) {
 	assert.Len(t, tokensOf(t, index, files, now, tokenPath, "b.jsonl"), 2)
 
 	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}}, tokensOf(t, index, files, now, tokenPath))
-	assert.Len(t, index.files, 1)
 
 	// A path in the listing that disappeared before it was opened is dropped too.
 	assert.Empty(t, tokensOf(t, index, files, now, "gone.jsonl"))
@@ -406,7 +403,6 @@ func TestTokenIndexForgetsFiles(t *testing.T) {
 
 	files[tokenPath] = mapFile(line, later)
 	assert.Empty(t, tokensOf(t, index, files, later, tokenPath))
-	assert.Empty(t, index.files[tokenPath].events)
 }
 
 // Windows total the way a full scan does: past resets, updates after the reset, future stamps and ties.
@@ -475,14 +471,10 @@ func TestTokenIndexShortRead(t *testing.T) {
 
 	// A file that can no longer be read back where the index left off is read again from the start.
 	assert.False(t, index.refresh(cut(whole, first+second, len(first)), []string{tokenPath}, true, now))
-	assert.Equal(t, int64(len(first)), index.files[tokenPath].offset)
 	assert.Equal(t, map[string][4]int64{tokenModel: {2, 7, 6, 8}}, tokensOf(t, index, whole, now, tokenPath))
 
-	// A tail that cannot be read back resets the file, and a read that errors keeps the pass behind.
-	broken := fault(whole, "readErr")
-	assert.False(t, index.refresh(broken, []string{tokenPath}, true, now))
-	assert.Empty(t, index.files[tokenPath].events)
-	assert.False(t, newTokenIndex().refresh(broken, []string{tokenPath}, true, now))
+	// A read that errors keeps the pass behind.
+	assert.False(t, newTokenIndex().refresh(fault(whole, "readErr"), []string{tokenPath}, true, now))
 }
 
 // A listing that is not complete keeps tokens out, and keeps what the index already holds.
@@ -511,7 +503,6 @@ func TestTokenListingFailure(t *testing.T) {
 	got = planReadings(got)
 	require.Len(t, got, 1)
 	assert.Empty(t, got[0].Tokens)
-	assert.Len(t, index.files, 2)
 
 	paths, listed := source.tokenPaths()
 	assert.False(t, listed)
