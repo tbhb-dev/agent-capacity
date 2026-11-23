@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright Tony Burns
+[Unit]
+Description=agent-capacity exporter for Claude transcript tokens
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=agent
+ExecStart=/usr/local/bin/agent-capacity serve --claude-transcripts=/home/agent/.claude/projects --claude-account=claude-agent
+# The collector endpoint and credentials come from the standard OTEL_ variables in this root-owned file, mode 600.
+EnvironmentFile=-/etc/agent-capacity/serve.env
+Environment=AGENT_CAPACITY_SPOOL_DIR=/var/lib/agent-capacity/spool
+StateDirectory=agent-capacity
+Restart=always
+RestartSec=10
+ProtectSystem=strict
+ReadOnlyPaths=/home/agent/.claude
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
