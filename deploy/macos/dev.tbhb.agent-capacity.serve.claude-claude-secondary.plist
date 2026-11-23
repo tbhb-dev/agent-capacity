@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright Tony Burns -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.tbhb.agent-capacity.serve.claude-claude-secondary</string>
+	<key>UserName</key>
+	<string>capacity</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/agent-capacity</string>
+		<string>serve</string>
+		<string>--spool-dir=/Users/capacity/spool-claude-secondary</string>
+		<string>--claude-transcripts=/Users/capacity/accounts/claude-claude-secondary/config/projects</string>
+		<string>--claude-account=claude-secondary</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>AGENT_CAPACITY_SPOOL_DIR</key>
+		<string>/Users/capacity/spool</string>
+		<key>OTEL_EXPORTER_OTLP_PROTOCOL</key>
+		<string>http/protobuf</string>
+		<key>OTEL_METRIC_EXPORT_INTERVAL</key>
+		<string>15000</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/var/log/agent-capacity-serve-claude-secondary.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/agent-capacity-serve-claude-secondary.log</string>
+</dict>
+</plist>

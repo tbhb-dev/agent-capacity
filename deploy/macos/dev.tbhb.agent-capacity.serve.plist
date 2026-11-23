@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright Tony Burns -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.tbhb.agent-capacity.serve</string>
+	<key>UserName</key>
+	<string>capacity</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/agent-capacity</string>
+		<string>serve</string>
+		<string>--codex-home=/Users/capacity/accounts/codex-codex-primary/codex</string>
+		<string>--codex-account=codex-primary</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>AGENT_CAPACITY_SPOOL_DIR</key>
+		<string>/Users/capacity/spool</string>
+		<key>OTEL_EXPORTER_OTLP_PROTOCOL</key>
+		<string>http/protobuf</string>
+		<key>OTEL_METRIC_EXPORT_INTERVAL</key>
+		<string>15000</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/var/log/agent-capacity-serve.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/log/agent-capacity-serve.log</string>
+</dict>
+</plist>

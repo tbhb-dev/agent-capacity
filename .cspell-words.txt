@@ -13,6 +13,7 @@ bazelrc
 bazelversion
 BINDIR
 bodyclose
+bootout
 buildcop
 buildifier
 buildmeta
@@ -137,6 +138,8 @@ paralleltest
 perfsprint
 pflag
 pipefail
+plists
+plutil
 pmezard
 posttooluse
 ppid
