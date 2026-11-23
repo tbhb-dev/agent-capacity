@@ -56,7 +56,7 @@ The gauges `agent.capacity.window.utilization`, `agent.capacity.window.reset_tim
 
 ## Claude transcripts
 
-Pass a comma separated list of files or directories to `serve --claude-transcripts=/path/to/events.jsonl,/path/to/transcripts --claude-account=work`. `AGENT_CAPACITY_CLAUDE_TRANSCRIPTS` supplies the same list when the flag is absent. The alias defaults to `primary`. Directory paths select immediate regular `*.jsonl` and `*.ndjson` files, which the source opens for reading without network access or credentials.
+Pass a comma separated list of files or directories to `serve --claude-transcripts=/path/to/events.jsonl,/path/to/transcripts --claude-account=work`. `AGENT_CAPACITY_CLAUDE_TRANSCRIPTS` supplies the same list when the flag is absent. The alias defaults to `primary`. Directory paths select immediate regular `*.jsonl` and `*.ndjson` files. A directory with none of its own is read as a Claude `projects` root, one level down (`<project>/*.jsonl`, plus `<project>/<session>/subagents`). The source opens for reading without network access or credentials.
 
 Tests verify synthetic JSON lines with `type: rate_limit_event` and `rate_limit_info.unifiedWindows.five_hour` or `seven_day`. Windows contain a `utilization` ratio from 0 to 1, a status and `resetsAt` or `reset_time` as Unix seconds or a timestamp such as `2026-01-02T03:04:05Z`. Window keys supply the window type. Missing or null fields contribute no window. Parsing discards all other payload fields and never logs line content. It skips malformed lines and unreadable files independently.
 
