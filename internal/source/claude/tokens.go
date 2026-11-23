@@ -106,13 +106,8 @@ func (x *tokenIndex) refresh(files fs.FS, paths []string, listed bool, now time.
 	x.order = paths
 
 	if listed {
-		wanted := map[string]bool{}
-		for _, path := range paths {
-			wanted[path] = true
-		}
-
 		for path := range x.files {
-			if !wanted[path] {
+			if !slices.Contains(paths, path) {
 				delete(x.files, path) // The transcript is gone, so its usage goes with it.
 			}
 		}
