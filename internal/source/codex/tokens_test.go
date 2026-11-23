@@ -158,16 +158,36 @@ func TestWindowTokensWithFork(t *testing.T) {
 
 	now := time.Unix(1000000, 0).UTC()
 	forkedAt := now.Add(-time.Minute)
-	parent := modelLine("session_meta", tokenModel, forkedAt) + usageLine(forkedAt, 100, 10, 40)
-	fork := parent + usageLine(now, 160, 16, 60)
+	parentAt := forkedAt.Add(-time.Minute)
+	parent := modelLine("session_meta", tokenModel, parentAt) + usageLine(parentAt, 100, 10, 40)
+	fork := modelLine("session_meta", tokenModel, forkedAt) + usageLine(forkedAt, 100, 10, 40) +
+		usageLine(now, 160, 16, 60)
 	files := fstest.MapFS{
-		"sessions/2026/01/02/rollout-1.jsonl": {Data: []byte(parent), ModTime: forkedAt, Mode: 0, Sys: nil},
+		"sessions/2026/01/02/rollout-1.jsonl": {Data: []byte(parent), ModTime: parentAt, Mode: 0, Sys: nil},
 		"sessions/2026/01/02/rollout-2.jsonl": {Data: []byte(fork), ModTime: now, Mode: 0, Sys: nil},
 	}
 	source := Source{files: files, account: primaryAccount}
 	remaining := int64(capacity.WindowTokenBytes)
 
 	assert.Equal(t, map[string][4]int64{tokenModel: {100, 16, 60, 0}},
+		source.windowTokens(t.Context(), now, wantReading("5h", 0.2, now.Add(time.Hour)), &remaining))
+}
+
+func TestWindowTokensWithDistinctSessions(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000000, 0).UTC()
+	model := modelLine("session_meta", tokenModel, now)
+	first := model + usageLine(now, 100, 10, 40)
+	second := model + usageLine(now, 160, 16, 60)
+	files := fstest.MapFS{
+		"sessions/2026/01/02/rollout-1.jsonl": {Data: []byte(first), ModTime: now, Mode: 0, Sys: nil},
+		"sessions/2026/01/02/rollout-2.jsonl": {Data: []byte(second), ModTime: now, Mode: 0, Sys: nil},
+	}
+	source := Source{files: files, account: primaryAccount}
+	remaining := int64(capacity.WindowTokenBytes)
+
+	assert.Equal(t, map[string][4]int64{tokenModel: {160, 26, 100, 0}},
 		source.windowTokens(t.Context(), now, wantReading("5h", 0.2, now.Add(time.Hour)), &remaining))
 }
 
@@ -220,7 +240,7 @@ func TestTokenWindowsAndBudget(t *testing.T) {
 	for index := range 6 {
 		path := fmt.Sprintf("sessions/2026/01/02/rollout-%d.jsonl", index)
 		stamp := now.Add(-time.Duration(index) * time.Second)
-		distinct := modelLine("session_meta", tokenModel, stamp) + usageLine(stamp, 100, 10, 40)
+		distinct := modelLine("session_meta", tokenModel, stamp) + usageLine(stamp, 100+index, 10, 40)
 		files[path] = &fstest.MapFile{Data: []byte(distinct), ModTime: now, Mode: 0, Sys: nil}
 	}
 
@@ -233,14 +253,14 @@ func TestTokenWindowsAndBudget(t *testing.T) {
 	source := Source{files: files, account: primaryAccount}
 	reading := wantReading("5h", 0.2, now.Add(time.Hour))
 	remaining := int64(6 * len(data))
-	assert.Equal(t, map[string][4]int64{tokenModel: {360, 60, 240, 0}},
+	assert.Equal(t, map[string][4]int64{tokenModel: {375, 60, 240, 0}},
 		source.windowTokens(t.Context(), now, reading, &remaining))
 	assert.Zero(t, remaining)
 
 	reading.Window = "7d"
 	assert.Nil(t, source.windowTokens(t.Context(), now, reading, &remaining))
 	remaining = capacity.WindowTokenBytes
-	assert.Equal(t, map[string][4]int64{tokenModel: {360, 60, 240, 0}, "model-b": {30, 5, 20, 0}},
+	assert.Equal(t, map[string][4]int64{tokenModel: {375, 60, 240, 0}, "model-b": {30, 5, 20, 0}},
 		source.windowTokens(t.Context(), now, reading, &remaining))
 
 	// A later eligible file exceeds the budget and discards the earlier sums.

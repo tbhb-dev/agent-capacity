@@ -49,9 +49,8 @@ type sessionTokens struct {
 }
 
 type tokenSample struct {
-	timestamp time.Time
-	model     string
-	counts    [4]int64
+	model  string
+	counts [4]int64
 }
 
 type windowTokenTotals struct {
@@ -196,7 +195,7 @@ func (s *sessionTokens) consider(event tokenEvent, start time.Time, totals windo
 		usage.CacheWrite,
 	}
 
-	sample := tokenSample{timestamp: event.Timestamp.UTC(), model: s.model, counts: current}
+	sample := tokenSample{model: s.model, counts: current}
 	_, counted := totals.seen[sample]
 
 	if !s.baseline && s.model != "" && !counted {
