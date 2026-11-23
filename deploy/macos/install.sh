@@ -70,19 +70,11 @@ reload() {
   done
 }
 
-if [[ $action == rollback ]]; then
-  backup=
-  for directory in "$backup_root"/agent-capacity-*; do
-    if [[ -f $directory/complete ]]; then
-      backup=$directory
-    fi
-  done
-  [[ -n $backup ]] || fail 'No complete backup found.'
+restore() {
+  local backup=$1 label saved live
   printf 'Restoring %s\n' "$backup"
-  binary_changed=0
   if ! cmp -s "$backup/agent-capacity" "$binary"; then
     install -o root -g wheel -m 755 "$backup/agent-capacity" "$binary"
-    binary_changed=1
   fi
   for label in "${labels[@]}"; do
     saved=$backup/$label.plist
@@ -90,13 +82,25 @@ if [[ $action == rollback ]]; then
     if [[ ! -f $saved ]]; then
       unload "$label"
       rm -f "$live"
-    elif ! cmp -s "$saved" "$live"; then
-      install -o root -g wheel -m 644 "$saved" "$live"
-      reload "$label"
-    elif ((binary_changed)) || ! running "$label"; then
+    else
+      if ! cmp -s "$saved" "$live"; then
+        install -o root -g wheel -m 644 "$saved" "$live"
+      fi
       reload "$label"
     fi
   done
+}
+
+if [[ $action == rollback ]]; then
+  backup=
+  for directory in "$backup_root"/agent-capacity-*; do
+    if [[ -d $directory ]]; then
+      backup=$directory
+    fi
+  done
+  [[ -n $backup ]] || fail 'No backup found.'
+  [[ -f $backup/complete ]] || fail "The newest backup $backup is incomplete, so the last apply changed nothing."
+  restore "$backup"
   exit 0
 fi
 
@@ -106,9 +110,26 @@ endpoint=$(plutil -extract EnvironmentVariables.OTEL_EXPORTER_OTLP_ENDPOINT raw 
 resource=$(plutil -extract EnvironmentVariables.OTEL_RESOURCE_ATTRIBUTES raw -expect string "$live_dir/$serve.plist" 2>/dev/null) || fail 'Cannot read the live resource attributes.'
 [[ -n $resource ]] || fail 'The live resource attributes are empty.'
 
+pb=/usr/libexec/PlistBuddy # cspell:disable-line
+live_env=$("$pb" -c 'Print :EnvironmentVariables' "$live_dir/$serve.plist") || fail 'Cannot read the live environment.'
+key_lines=$(sed -n 's/^    \([^ ][^ ]*\) = .*/\1/p' <<<"$live_env")
+live_keys=()
+while IFS= read -r key; do
+  [[ $key =~ ^[A-Za-z0-9_]+$ ]] || fail "Unsupported live environment key: $key"
+  live_keys+=("$key")
+done <<<"$key_lines"
+
+# Start from the repository file and add each live environment key it does not define.
 render() {
-  plutil -insert EnvironmentVariables.OTEL_EXPORTER_OTLP_ENDPOINT -string "$endpoint" -o - "$repo_dir/$1.plist" 2>/dev/null |
-    plutil -insert EnvironmentVariables.OTEL_RESOURCE_ATTRIBUTES -string "$resource" -o - - 2>/dev/null
+  local xml key value
+  xml=$(plutil -convert xml1 -o - "$repo_dir/$1.plist") || return 1
+  for key in "${live_keys[@]}"; do
+    if ! plutil -extract "EnvironmentVariables.$key" raw -o - "$repo_dir/$1.plist" >/dev/null 2>&1; then
+      value=$(plutil -extract "EnvironmentVariables.$key" raw -expect string -o - "$live_dir/$serve.plist") || return 1
+      xml=$(printf '%s' "$xml" | plutil -insert "EnvironmentVariables.$key" -string "$value" -o - -) || return 1
+    fi
+  done
+  printf '%s\n' "$xml"
 }
 
 version=$("$binary" version)
@@ -175,6 +196,17 @@ for label in "${labels[@]}"; do
 done
 touch "$backup/complete"
 printf 'Saved backup to %s\n' "$backup"
+
+rollback_on_failure() {
+  local status=$?
+  trap - EXIT
+  if ((status != 0)); then
+    printf 'Apply failed. Restoring %s\n' "$backup" >&2
+    (restore "$backup") || printf 'The automatic restore failed. Run rollback.\n' >&2
+  fi
+  exit "$status"
+}
+trap rollback_on_failure EXIT
 
 if ((binary_changed)); then
   install -o root -g wheel -m 755 "$candidate" "$binary"

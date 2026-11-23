@@ -11,7 +11,7 @@ generated:
     effort: medium
     surface: cli
     session: sha-256-64:1e5db78070fe05b4
-    at: "2026-11-23T08:23:35Z"
+    at: "2026-11-23T08:52:19Z"
 ---
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
@@ -49,7 +49,7 @@ Run these steps from the `agent-capacity` checkout on the exporter host using th
 
 ## Undo
 
-Run rollback before retrying a failed apply. It uses the latest complete backup under `/var/backups`, restores the binary and the previous serve plists, and unloads and removes plists that the apply added. The Claude spool directories are retained.
+A failed apply restores its own backup on exit. Run rollback to undo a finished apply, or if the automatic restore reports a failure. Rollback uses the newest backup under `/var/backups`, restores the binary and the previous serve plists, reloads every daemon, and unloads and removes plists that the apply added. It refuses a newest backup that has no `complete` marker, because that apply changed nothing. The Claude spool directories are retained.
 
 ```bash
 sudo ./deploy/macos/install.sh rollback
