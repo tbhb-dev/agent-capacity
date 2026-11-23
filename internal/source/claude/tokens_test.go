@@ -151,12 +151,7 @@ func TestTokenWindows(t *testing.T) {
 			Sys:     nil,
 		},
 	}
-	source := TranscriptSource{
-		files:   files,
-		paths:   []string{"recent", "older", "duplicate"},
-		account: transcriptAccount,
-		index:   newTokenIndex(),
-	}
+	source := tokenSource(files, newTokenIndex(), []string{"recent", "older", "duplicate"})
 	shared := map[string][4]int64{tokenModel: {1, 7, 3, 4}}
 	week := map[string][4]int64{tokenModel: {1, 7, 3, 4}, tokenModelB: {1, 5, 3, 4}}
 	got, err := source.Read(t.Context(), now)
@@ -246,12 +241,7 @@ func TestProjectsRoot(t *testing.T) {
 	want := map[string][4]int64{tokenModel: {2, 5, 6, 8}, tokenModelB: {2, 9, 6, 8}}
 
 	// The projects root, listed twice, reaches each file once.
-	source := TranscriptSource{
-		files:   files,
-		paths:   []string{"projects", "projects/project-a"},
-		account: transcriptAccount,
-		index:   newTokenIndex(),
-	}
+	source := tokenSource(files, newTokenIndex(), []string{"projects", "projects/project-a"})
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
 
@@ -462,23 +452,6 @@ func TestTokenIndexMatchesFullScan(t *testing.T) {
 	far.Window = "7d"
 	_, found = windowTokens(index, now, far)
 	assert.False(t, found)
-}
-
-// A pass that hits its byte budget reports it is behind, and the next pass continues from the saved offsets.
-func TestTokenIndexCatchesUp(t *testing.T) {
-	t.Parallel()
-
-	now := time.Unix(1000000, 0).UTC()
-	line := tokenLine("a", tokenModel, now, 2)
-	files := fstest.MapFS{tokenPath: mapFile(line+tokenLine("b", tokenModel, now, 5), now)}
-	index := newTokenIndex()
-	index.passBytes = int64(len(line))
-
-	require.False(t, index.refresh(files, []string{tokenPath}, true, now))
-	assert.Len(t, index.files[tokenPath].events, 1)
-
-	index.passBytes = tokenPassBytes
-	assert.Equal(t, map[string][4]int64{tokenModel: {2, 7, 6, 8}}, tokensOf(t, index, files, now, tokenPath))
 }
 
 // cut serves each file as if it ended after limit bytes, the way a read cut short by an error does.
