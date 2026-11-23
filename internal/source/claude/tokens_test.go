@@ -4,9 +4,9 @@
 package claude //nolint:testpackage // Exercise token scan limits with synthetic files.
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"slices"
 	"strings"
@@ -102,9 +102,7 @@ func TestWindowTokens(t *testing.T) {
 				tokenPath:   {Data: []byte(testCase.data), ModTime: now, Mode: 0, Sys: nil},
 				"old.jsonl": {Data: []byte(testCase.old), ModTime: now.Add(-9 * 24 * time.Hour), Mode: 0, Sys: nil},
 			}
-			source := TranscriptSource{
-				files: files, paths: []string{".", tokenPath}, account: transcriptAccount, index: newTokenIndex(),
-			}
+			source := tokenSource(files, newTokenIndex(), []string{".", tokenPath})
 			got, err := source.Read(t.Context(), now)
 			require.NoError(t, err)
 
@@ -224,9 +222,7 @@ func TestSubagentTokens(t *testing.T) {
 		"session/subagents/agent-a.meta":  file(tokenLine("meta", tokenModelB, now, 7)),
 		"session/other.jsonl":             file(tokenLine("other", tokenModelB, now, 9)),
 	}
-	source := TranscriptSource{
-		files: files, paths: []string{".", tokenPath}, account: transcriptAccount, index: newTokenIndex(),
-	}
+	source := tokenSource(files, newTokenIndex(), []string{".", tokenPath})
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
 
@@ -293,9 +289,7 @@ func TestTokensOnlyWithoutUsage(t *testing.T) {
 
 	now := time.Unix(100000, 0).UTC()
 	files := fstest.MapFS{tokenPath: {Data: nil, ModTime: now, Mode: 0, Sys: nil}}
-	source := TranscriptSource{
-		files: files, paths: []string{tokenPath}, account: transcriptAccount, index: newTokenIndex(),
-	}
+	source := tokenSource(files, newTokenIndex(), []string{tokenPath})
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
 	assert.Empty(t, got)
@@ -310,9 +304,7 @@ func TestTokensOnlyWindows(t *testing.T) {
 		Data:    []byte(tokenLine("old", tokenModel, now.Add(-6*time.Hour), 2)),
 		ModTime: now, Mode: 0, Sys: nil,
 	}}
-	source := TranscriptSource{
-		files: files, paths: []string{tokenPath}, account: transcriptAccount, index: newTokenIndex(),
-	}
+	source := tokenSource(files, newTokenIndex(), []string{tokenPath})
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
@@ -329,6 +321,10 @@ func fault(files fs.FS, which string) transcriptFaultFS {
 		FS: files, openErr: which == "openErr", statErr: which == "statErr",
 		readErr: which == "readErr", noReader: which == "noReader",
 	}
+}
+
+func tokenSource(files fs.FS, index *tokenIndex, paths []string) TranscriptSource {
+	return TranscriptSource{files: files, paths: paths, account: transcriptAccount, index: index}
 }
 
 func mapFile(data string, modTime time.Time) *fstest.MapFile {
@@ -485,40 +481,9 @@ func TestTokenIndexCatchesUp(t *testing.T) {
 	assert.Equal(t, map[string][4]int64{tokenModel: {2, 7, 6, 8}}, tokensOf(t, index, files, now, tokenPath))
 }
 
-// shortFS serves each file as if it ended after limit bytes, the way a read cut short by an error does.
-type shortFS struct {
-	fs.FS
-
-	limit int
-}
-
-type shortFile struct {
-	fs.File
-
-	limit int
-}
-
-func (files shortFS) Open(name string) (fs.File, error) {
-	file, err := files.FS.Open(name)
-	if err != nil {
-		return nil, errors.Join(err)
-	}
-
-	return shortFile{File: file, limit: files.limit}, nil
-}
-
-func (file shortFile) ReadAt(data []byte, offset int64) (int, error) {
-	reader, ok := file.File.(io.ReaderAt)
-	if !ok || offset >= int64(file.limit) {
-		return 0, io.EOF
-	}
-
-	count, err := reader.ReadAt(data[:min(len(data), file.limit-int(offset))], offset)
-	if err == nil && count < len(data) {
-		err = io.EOF
-	}
-
-	return count, errors.Join(err)
+// cut serves each file as if it ended after limit bytes, the way a read cut short by an error does.
+func cut(files fs.FS, data string, limit int) transcriptProbeFS {
+	return transcriptProbeFS{FS: files, mode: 0, readAt: bytes.NewReader([]byte(data)[:limit]).ReadAt}
 }
 
 // A read that stops early, or a tail check that fails, leaves the index behind instead of reporting a total.
@@ -531,13 +496,13 @@ func TestTokenIndexShortRead(t *testing.T) {
 	whole := fstest.MapFS{tokenPath: mapFile(first+second, now)}
 	index := newTokenIndex()
 
-	short := shortFS{FS: whole, limit: len(first) + 10}
+	short := cut(whole, first+second, len(first)+10)
 	assert.False(t, index.refresh(short, []string{tokenPath}, true, now))
 	assert.Equal(t, int64(len(first)), index.files[tokenPath].offset)
 	assert.Equal(t, map[string][4]int64{tokenModel: {2, 7, 6, 8}}, tokensOf(t, index, whole, now, tokenPath))
 
 	// A file that can no longer be read back where the index left off is read again from the start.
-	assert.False(t, index.refresh(shortFS{FS: whole, limit: len(first)}, []string{tokenPath}, true, now))
+	assert.False(t, index.refresh(cut(whole, first+second, len(first)), []string{tokenPath}, true, now))
 	assert.Equal(t, int64(len(first)), index.files[tokenPath].offset)
 	assert.Equal(t, map[string][4]int64{tokenModel: {2, 7, 6, 8}}, tokensOf(t, index, whole, now, tokenPath))
 
@@ -558,9 +523,7 @@ func TestTokenListingFailure(t *testing.T) {
 		"projects/p2/s.jsonl": file(tokenLine("b", tokenModelB, now, 5)),
 	}
 	index := newTokenIndex()
-	source := TranscriptSource{
-		files: files, paths: []string{"projects", "gone"}, account: transcriptAccount, index: index,
-	}
+	source := tokenSource(files, index, []string{"projects", "gone"})
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
 
@@ -613,9 +576,7 @@ func TestReadWithholdsTokensUntilCaughtUp(t *testing.T) {
 	}
 	index := newTokenIndex()
 	index.passBytes = int64(len(line)) + 100
-	source := TranscriptSource{
-		files: files, paths: []string{tokenPath, "big"}, account: transcriptAccount, index: index,
-	}
+	source := tokenSource(files, index, []string{tokenPath, "big"})
 
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
