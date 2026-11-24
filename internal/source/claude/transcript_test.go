@@ -497,9 +497,9 @@ func TestTranscriptDirectoryAgeBudget(t *testing.T) {
 	fixtures := fstest.MapFS{}
 
 	for name, age := range map[string]time.Duration{
-		"old.jsonl":      6*time.Hour + time.Nanosecond,
-		"boundary.jsonl": 6 * time.Hour,
-		"recent.ndjson":  6*time.Hour - time.Nanosecond,
+		"old.jsonl":      7*24*time.Hour + time.Nanosecond,
+		"boundary.jsonl": 7 * 24 * time.Hour,
+		"recent.ndjson":  7*24*time.Hour - time.Nanosecond,
 	} {
 		fixtures["dir/"+name] = &fstest.MapFile{
 			Data: []byte(transcriptEventLine), Mode: 0, Sys: nil, ModTime: now.Add(-age),
@@ -521,7 +521,7 @@ func TestTranscriptDirectoryAgeBudget(t *testing.T) {
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, now.Add(-6*time.Hour+time.Nanosecond), got[0].ObservedAt)
+	assert.Equal(t, now.Add(-7*24*time.Hour+time.Nanosecond), got[0].ObservedAt)
 	assert.Equal(t, 2, calls)
 }
 

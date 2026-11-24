@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	transcriptBytes       = 8 * 1024 * 1024
-	transcriptLine        = 64 * 1024
-	transcriptRetainedFor = 6 * time.Hour
+	transcriptBytes = 8 * 1024 * 1024
+	transcriptLine  = 64 * 1024
+	// The longest plan window; capacity.Freshness drops a reading once its reset passes.
+	transcriptRetainedFor = 7 * 24 * time.Hour
 	transcriptClockSkew   = 5 * time.Minute
 )
 
