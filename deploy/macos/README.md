@@ -11,7 +11,7 @@ generated:
     effort: medium
     surface: cli
     session: sha-256-64:1e5db78070fe05b4
-    at: "2026-11-24T06:40:30Z"
+    at: "2026-11-24T07:07:09Z"
 ---
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
@@ -64,7 +64,7 @@ A peer Mac runs its own exporter as a user launch agent instead of the system da
 ./deploy/macos/user/install.sh apply
 ```
 
-The installer keeps every `OTEL_` setting from the live plist, so the collector address stays on the host. Apply saves the old plist next to the binary and rolls itself back if the agent fails to start. Rollback restores the saved plist and its loaded state. After a first install, rollback removes the agent.
+The installer keeps every `OTEL_` setting from the live plist except a key that names headers, so the collector address stays on the host. Apply saves the old plist next to the binary and rolls itself back if `launchctl` fails to load the new one or the run is interrupted. It refuses a symlinked plist and a job that has no plist. Rollback restores the saved plist and its loaded state. After a first install, rollback removes the agent.
 
 ```bash
 ./deploy/macos/user/install.sh rollback

@@ -24,7 +24,8 @@ repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 label=dev.tbhb.agent-capacity-serve
 live_dir=$HOME/Library/LaunchAgents
 live=$live_dir/$label.plist
-backup_dir=$HOME/.local/state/tbhb/agent-capacity-tony/$label.bak
+state_dir=$HOME/.local/state/tbhb/agent-capacity-tony
+backup_dir=$state_dir/$label.bak
 domain=gui/$(id -u)
 pb=/usr/libexec/PlistBuddy # cspell:disable-line
 
@@ -68,20 +69,28 @@ place() {
   return 1
 }
 
-if [[ $action == rollback ]]; then
-  [[ -f $backup_dir/applied ]] || fail "Nothing to roll back in $backup_dir."
+# Restore the state apply saved. Return nonzero, keeping the backup, if the job state cannot be restored.
+do_rollback() {
+  [[ -f $backup_dir/applied ]] || return 1
   if [[ -f $backup_dir/plist ]]; then
-    place "$backup_dir/plist" || fail 'Cannot restore the saved plist.'
+    place "$backup_dir/plist" || return 1
     if [[ -f $backup_dir/was-loaded ]]; then
-      restart || fail "Bootstrap failed for $label."
+      restart || return 1
     else
       launchctl bootout "$domain/$label" 2>/dev/null || true
+      ! loaded || return 1
     fi
   else
     launchctl bootout "$domain/$label" 2>/dev/null || true
+    ! loaded || return 1
     rm -f "$live"
   fi
   rm -rf "$backup_dir"
+}
+
+if [[ $action == rollback ]]; then
+  [[ -f $backup_dir/applied ]] || fail "Nothing to roll back in $backup_dir."
+  do_rollback || fail "Rollback failed; the saved state stays in $backup_dir."
   printf 'Rolled back %s\n' "$label"
   exit 0
 fi
@@ -97,10 +106,18 @@ fi
 printf 'Install %s\n' "$live"
 [[ $action == apply ]] || exit 0
 
-mkdir -p "$live_dir" "$backup_dir.tmp"
-staged=$(mktemp "$backup_dir.tmp/new.XXXXXX")
-printf '%s\n' "$new" >"$staged"
-plutil -lint "$staged" >/dev/null || fail 'The rendered plist is invalid.'
+# Refuse the cases rollback cannot restore.
+[[ ! -L $live ]] || fail "$live is a symlink; change its source file instead."
+if [[ ! -e $live ]] && loaded; then
+  fail "$label is loaded but $live is missing; remove the job first."
+fi
+mkdir -p "$live_dir" "$state_dir"
+[[ -w $live_dir ]] || fail "$live_dir is not writable."
+
+stage=$(mktemp -d "$state_dir/stage.XXXXXX")
+trap 'rm -rf "$stage"' EXIT
+printf '%s\n' "$new" >"$stage/new"
+plutil -lint "$stage/new" >/dev/null || fail 'The rendered plist is invalid.'
 
 # Save the rollback point only after the replacement is staged and valid.
 rm -rf "$backup_dir"
@@ -113,11 +130,13 @@ if loaded; then
 fi
 : >"$backup_dir/applied"
 
-place "$staged" || fail 'Cannot place the new plist.'
-rm -rf "$backup_dir.tmp"
-if ! restart; then
-  printf 'Bootstrap failed for %s; restoring the previous state.\n' "$label" >&2
-  "$0" rollback || true
+# An interrupt after this point restores the saved state.
+trap 'trap - INT TERM; do_rollback || true; exit 1' INT TERM
+if ! place "$stage/new" || ! restart; then
+  trap - INT TERM
+  printf 'Apply failed for %s; restoring the previous state.\n' "$label" >&2
+  do_rollback || fail "Rollback failed; the saved state stays in $backup_dir."
   fail 'Apply failed and was rolled back.'
 fi
+trap - INT TERM
 printf 'Applied %s\n' "$label"
