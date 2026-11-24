@@ -85,10 +85,12 @@ func (r Reading) Validate() error {
 }
 
 // Freshness returns a nonnegative age and fresh, carried or dropped.
-// Readings marked dropped must not produce metric points.
+// Readings marked dropped must not produce metric points. A reading older
+// than the retention period stays carried until its reset time passes, so an
+// account with no running session keeps its last value and its age.
 func Freshness(reading Reading, now time.Time) (time.Duration, string) {
 	age := max(now.Sub(reading.ObservedAt), 0)
-	if age > retainedFor {
+	if age > retainedFor && !reading.ResetAt.After(now) {
 		return age, "dropped"
 	}
 

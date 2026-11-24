@@ -69,6 +69,7 @@ func TestCollector(t *testing.T) {
 	dropped := first
 	dropped.Account = "old"
 	dropped.ObservedAt = now.Add(-6*time.Hour - time.Nanosecond)
+	dropped.ResetAt = now
 	readings := []capacity.Reading{first, dropped, unknownReset}
 	require.NoError(t, collector.Replace(readings))
 	readings[0].Account = "changed"

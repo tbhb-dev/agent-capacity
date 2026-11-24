@@ -37,7 +37,7 @@ Each Antigravity bucket gives a `window` of `5h` or `weekly` (exported as `7d`),
 
 The spool stores one file per vendor and account alias, named `<vendor>-<alias>.json` with vendor `claude`, `agy` or `codex`, such as `claude-work.json` or `agy-work.json`. Each file stores the vendor, the alias, the capture timestamp and a `data` object. For Antigravity, `data` is the `data` object inside the `command` object of the `agy` usage command's JSON output, which `agent-capacity probe` captures. A separate file per account means an invalid snapshot doesn't block other accounts.
 
-Claude status-line readings remain fresh through 10 minutes, and Antigravity readings through 30 minutes. Both then contribute metrics with freshness `carried` through 6 hours. Older readings contribute no metrics.
+Claude status-line readings remain fresh through 10 minutes, and Antigravity readings through 30 minutes. Both then contribute metrics with freshness `carried` through 6 hours, and past 6 hours until the reading's reset time, so an account with no running session keeps its last value with a growing age. Readings with no later reset time contribute no metrics after 6 hours.
 
 ## Capture and serve
 
