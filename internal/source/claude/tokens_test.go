@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -303,6 +304,23 @@ func TestTokensOnlyWindows(t *testing.T) {
 	assert.Equal(t, now, got[0].ObservedAt)
 	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}}, got[0].Tokens)
 	require.NoError(t, got[0].Validate())
+}
+
+func TestTokensOnlyAfterExpiredEvent(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1000000, 0).UTC()
+	// The only rate-limit event reset a day ago, so the 7d window rolls and counts the newer usage.
+	event := strings.ReplaceAll(transcriptEventLine, "200000", strconv.FormatInt(now.Add(-24*time.Hour).Unix(), 10))
+	data := event + "\n" + tokenLine("new", tokenModel, now.Add(-6*time.Hour), 2)
+	files := fstest.MapFS{tokenPath: mapFile(data, now)}
+	source := tokenSource(files, newTokenIndex(), []string{tokenPath})
+	got, err := source.Read(t.Context(), now)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "7d", got[0].Window)
+	assert.True(t, got[0].TokensOnly)
+	assert.Equal(t, map[string][4]int64{tokenModel: {1, 2, 3, 4}}, got[0].Tokens)
 }
 
 // fault wraps files so that the one named operation fails.

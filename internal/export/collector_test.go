@@ -69,6 +69,7 @@ func TestCollector(t *testing.T) {
 	dropped := first
 	dropped.Account = "old"
 	dropped.ObservedAt = now.Add(-6*time.Hour - time.Nanosecond)
+	dropped.ResetAt = now
 	readings := []capacity.Reading{first, dropped, unknownReset}
 	require.NoError(t, collector.Replace(readings))
 	readings[0].Account = "changed"
@@ -188,6 +189,28 @@ func TestRegistrationErrors(t *testing.T) {
 			require.ErrorContains(t, err, "register gauges")
 		}
 	}
+}
+
+func TestCollectorCarriesPastRetention(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(100000, 0)
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	t.Cleanup(func() { require.NoError(t, provider.Shutdown(context.Background())) })
+
+	collector, err := export.New(provider.Meter("carry"), func() time.Time { return now })
+	require.NoError(t, err)
+
+	idle := reading(now)
+	idle.ObservedAt = now.Add(-7 * time.Hour)
+	require.NoError(t, collector.Replace([]capacity.Reading{idle}))
+	assert.Len(t, collect(t, reader), 3)
+
+	now = idle.ResetAt
+
+	assert.Empty(t, collect(t, reader))
 }
 
 func TestCollectorBucket(t *testing.T) {

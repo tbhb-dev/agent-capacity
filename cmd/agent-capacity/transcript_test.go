@@ -122,7 +122,9 @@ func TestTranscriptMetrics(t *testing.T) {
 		{freshLabel, 10 * time.Minute, 3},
 		{carriedLabel, 10*time.Minute + time.Nanosecond, 3},
 		{carriedLabel, 6 * time.Hour, 3},
-		{droppedLabel, 6*time.Hour + time.Nanosecond, 0},
+		{carriedLabel, 6*time.Hour + time.Nanosecond, 3},
+		{carriedLabel, 100000*time.Second - time.Nanosecond, 3},
+		{droppedLabel, 100000 * time.Second, 0},
 	} {
 		reader := sdkmetric.NewManualReader()
 		provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))

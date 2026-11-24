@@ -31,6 +31,28 @@ const (
 	lineBudget        = 64 * 1024
 )
 
+func TestTranscriptSkipsExpiredWindow(t *testing.T) {
+	t.Parallel()
+
+	source := TranscriptSource{files: nil, paths: nil, account: transcriptAccount}
+	reset := time.Unix(200000, 0).UTC()
+
+	for _, test := range []struct {
+		now   time.Time
+		label string
+		kept  bool
+	}{
+		{reset.Add(-time.Nanosecond), "before reset", true},
+		{reset, "at reset", false},
+		{reset.Add(time.Hour), "after reset", false},
+	} {
+		latest := map[string]capacity.Reading{}
+		observed := time.Unix(100000, 0).UTC()
+		source.considerTranscript([]byte(transcriptEventLine), observed, test.now, latest)
+		assert.Equal(t, test.kept, len(latest) == 1, test.label)
+	}
+}
+
 func TestTranscriptParsing(t *testing.T) {
 	t.Parallel()
 
@@ -497,9 +519,9 @@ func TestTranscriptDirectoryAgeBudget(t *testing.T) {
 	fixtures := fstest.MapFS{}
 
 	for name, age := range map[string]time.Duration{
-		"old.jsonl":      6*time.Hour + time.Nanosecond,
-		"boundary.jsonl": 6 * time.Hour,
-		"recent.ndjson":  6*time.Hour - time.Nanosecond,
+		"old.jsonl":      7*24*time.Hour + time.Nanosecond,
+		"boundary.jsonl": 7 * 24 * time.Hour,
+		"recent.ndjson":  7*24*time.Hour - time.Nanosecond,
 	} {
 		fixtures["dir/"+name] = &fstest.MapFile{
 			Data: []byte(transcriptEventLine), Mode: 0, Sys: nil, ModTime: now.Add(-age),
@@ -521,7 +543,7 @@ func TestTranscriptDirectoryAgeBudget(t *testing.T) {
 	got, err := source.Read(t.Context(), now)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
-	assert.Equal(t, now.Add(-6*time.Hour+time.Nanosecond), got[0].ObservedAt)
+	assert.Equal(t, now.Add(-7*24*time.Hour+time.Nanosecond), got[0].ObservedAt)
 	assert.Equal(t, 2, calls)
 }
 

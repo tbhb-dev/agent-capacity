@@ -127,6 +127,20 @@ func TestFreshness(t *testing.T) {
 	}
 }
 
+func TestFreshnessCarriesUntilReset(t *testing.T) {
+	t.Parallel()
+
+	stale := reading()
+	now := stale.ObservedAt.Add(7 * time.Hour)
+	stale.ResetAt = now.Add(time.Nanosecond)
+	_, label := capacity.Freshness(stale, now)
+	assert.Equal(t, carried, label)
+
+	stale.ResetAt = now
+	_, label = capacity.Freshness(stale, now)
+	assert.Equal(t, "dropped", label)
+}
+
 type sourceFunc func(context.Context, time.Time) ([]capacity.Reading, error)
 
 func (f sourceFunc) Read(ctx context.Context, now time.Time) ([]capacity.Reading, error) {

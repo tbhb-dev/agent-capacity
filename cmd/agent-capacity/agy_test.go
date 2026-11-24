@@ -60,7 +60,9 @@ func TestAGYMetrics(t *testing.T) {
 		{freshLabel, 30 * time.Minute},
 		{carriedLabel, 30*time.Minute + time.Nanosecond},
 		{carriedLabel, 6 * time.Hour},
-		{droppedLabel, 6*time.Hour + time.Nanosecond},
+		{carriedLabel, 6*time.Hour + time.Nanosecond},
+		{carriedLabel, 100000*time.Second - time.Nanosecond},
+		{droppedLabel, 100000 * time.Second},
 	} {
 		collector, err := export.New(provider.Meter(testCase.age.String()), func() time.Time {
 			return observed.Add(testCase.age)
