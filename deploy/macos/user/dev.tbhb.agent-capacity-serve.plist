@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright Tony Burns -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.tbhb.agent-capacity-serve</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@HOME@/.local/state/tbhb/agent-capacity-tony/agent-capacity</string>
+		<string>serve</string>
+		<string>--interval=60s</string>
+		<string>--spool-dir=@HOME@/.local/state/tbhb/agent-capacity-tony/spool</string>
+		<string>--codex-home=@HOME@/.codex</string>
+		<string>--claude-account=claude-primary</string>
+		<string>--claude-transcripts=@HOME@/.claude/projects</string>
+		<string>--codex-account=codex-primary</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict/>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>@HOME@/.local/state/tbhb/agent-capacity-tony/serve.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/.local/state/tbhb/agent-capacity-tony/serve.log</string>
+</dict>
+</plist>

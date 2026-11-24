@@ -11,7 +11,7 @@ generated:
     effort: medium
     surface: cli
     session: sha-256-64:1e5db78070fe05b4
-    at: "2026-11-23T13:54:55Z"
+    at: "2026-11-24T06:05:56Z"
 ---
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
@@ -53,4 +53,19 @@ A failed apply restores its own backup on exit. Apply prints the backup path. Ru
 
 ```bash
 sudo ./deploy/macos/install.sh rollback /var/backups/agent-capacity-<stamp>
+```
+
+## Install for one user
+
+A peer Mac runs its own exporter as a user launch agent instead of the system daemons above. The `deploy/macos/user` directory holds that plist and its installer. Put the built binary at `~/.local/state/tbhb/agent-capacity-tony/agent-capacity`, then run these commands as that user.
+
+```bash
+./deploy/macos/user/install.sh check
+./deploy/macos/user/install.sh apply
+```
+
+The installer keeps every `OTEL_` setting from the live plist, so the collector address stays on the host. Apply saves the old plist next to the binary, and rollback restores it.
+
+```bash
+./deploy/macos/user/install.sh rollback
 ```
