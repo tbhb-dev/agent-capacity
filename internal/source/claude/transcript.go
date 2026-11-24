@@ -261,7 +261,8 @@ func (s TranscriptSource) considerTranscript(line []byte, modified, now time.Tim
 		name   string
 	}{{event.Info.Windows.FiveHour, "5h"}, {event.Info.Windows.SevenDay, "7d"}} {
 		reading := transcriptReading(entry.window, entry.name, s.account, observed)
-		if reading == nil {
+		// An expired window is over: skipping it lets the rolling window report current tokens.
+		if reading == nil || !reading.ResetAt.After(now) {
 			continue
 		}
 

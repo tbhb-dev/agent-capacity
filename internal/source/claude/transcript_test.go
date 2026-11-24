@@ -31,6 +31,28 @@ const (
 	lineBudget        = 64 * 1024
 )
 
+func TestTranscriptSkipsExpiredWindow(t *testing.T) {
+	t.Parallel()
+
+	source := TranscriptSource{files: nil, paths: nil, account: transcriptAccount}
+	reset := time.Unix(200000, 0).UTC()
+
+	for _, test := range []struct {
+		now   time.Time
+		label string
+		kept  bool
+	}{
+		{reset.Add(-time.Nanosecond), "before reset", true},
+		{reset, "at reset", false},
+		{reset.Add(time.Hour), "after reset", false},
+	} {
+		latest := map[string]capacity.Reading{}
+		observed := time.Unix(100000, 0).UTC()
+		source.considerTranscript([]byte(transcriptEventLine), observed, test.now, latest)
+		assert.Equal(t, test.kept, len(latest) == 1, test.label)
+	}
+}
+
 func TestTranscriptParsing(t *testing.T) {
 	t.Parallel()
 
