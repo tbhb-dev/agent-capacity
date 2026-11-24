@@ -22,7 +22,7 @@ import (
 const (
 	transcriptBytes = 8 * 1024 * 1024
 	transcriptLine  = 64 * 1024
-	// The longest plan window; capacity.Freshness drops a reading once its reset passes.
+	// The longest plan window; capacity.Freshness drops a reading once its reset has passed and it is over 6 hours old.
 	transcriptRetainedFor = 7 * 24 * time.Hour
 	transcriptClockSkew   = 5 * time.Minute
 )
