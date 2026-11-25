@@ -39,6 +39,7 @@ type Runtime struct {
 	NewProvider func(context.Context) (Provider, error)
 	Registry    func(string) capacity.Registry
 	Usage       func(context.Context) ([]byte, error)
+	ClaudeUsage func(context.Context) ([]byte, error)
 }
 
 func main() {
@@ -71,6 +72,7 @@ func newRuntime(ctx context.Context, logger *slog.Logger) Runtime {
 		},
 		NewProvider: func(ctx context.Context) (Provider, error) { return export.NewProvider(ctx) },
 		Usage:       runUsage,
+		ClaudeUsage: runClaudeUsage,
 	}
 }
 
@@ -190,7 +192,7 @@ func (r Runtime) subcommand(ctx context.Context, args []string, out io.Writer, l
 	case "statusline":
 		return func() int { return statusline(ctx, args[1:], os.Stdin, logger) }
 	case "probe":
-		return func() int { return probe(ctx, args[1:], r.Usage, logger) }
+		return func() int { return r.probe(ctx, args[1:], logger) }
 	default:
 		return nil
 	}

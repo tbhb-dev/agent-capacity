@@ -54,7 +54,9 @@ read -r held
 	dir := t.TempDir()
 	now := time.Unix(100000, 0).UTC()
 	args := []string{"--vendor=codex", "--account=work", "--spool-dir=" + dir}
-	require.NoError(t, probeUsage(t.Context(), args, nil, now))
+
+	var runtime Runtime
+	require.NoError(t, runtime.probeUsage(t.Context(), args, now))
 
 	snapshots, failures, err := spool.Read(dir, "codex")
 	require.NoError(t, err)
@@ -87,7 +89,9 @@ read -r held
 	require.ErrorIs(t, probeCodex(t.Context(), t.TempDir(), "work", time.Now()), capacity.ErrInvalidReading)
 
 	args := []string{"--vendor=unknown", workFlag}
-	require.ErrorIs(t, probeUsage(t.Context(), args, nil, time.Now()), capacity.ErrInvalidReading)
+
+	var runtime Runtime
+	require.ErrorIs(t, runtime.probeUsage(t.Context(), args, time.Now()), capacity.ErrInvalidReading)
 
 	fakeCodex(t, "read -r init\nexec /bin/sleep 10\n")
 

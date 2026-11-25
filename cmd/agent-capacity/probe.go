@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"go.tbhb.dev/agent-capacity/internal/capacity"
@@ -80,8 +82,8 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func probe(ctx context.Context, args []string, usage func(context.Context) ([]byte, error), logger *slog.Logger) int {
-	err := probeUsage(ctx, args, usage, time.Now())
+func (r Runtime) probe(ctx context.Context, args []string, logger *slog.Logger) int {
+	err := r.probeUsage(ctx, args, time.Now())
 	if err == nil {
 		return 0
 	}
@@ -96,18 +98,23 @@ func probe(ctx context.Context, args []string, usage func(context.Context) ([]by
 	return 1
 }
 
-// probeUsage stores only the usage command's data object for one account. It
-// keeps the last good snapshot when the new data doesn't parse.
-func probeUsage(ctx context.Context, args []string, usage func(context.Context) ([]byte, error), now time.Time) error {
+// probeUsage captures the selected vendor's usage for one account.
+func (r Runtime) probeUsage(ctx context.Context, args []string, now time.Time) error {
 	flags := flag.NewFlagSet("probe", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	dir := flags.String("spool-dir", os.Getenv("AGENT_CAPACITY_SPOOL_DIR"), "snapshot directory")
 
 	vendor := flags.String("vendor", "agy", "probe vendor")
 
+	eventsFile := flags.String("events-file", "", "Claude rate limit events file")
+
 	account := flags.String("account", "", "account alias")
-	if flags.Parse(args) != nil || flags.NArg() != 0 || !spool.ValidIdentity(*vendor, *account) || *vendor == "claude" {
+	if flags.Parse(args) != nil || flags.NArg() != 0 || !spool.ValidIdentity(*vendor, *account) {
 		return capacity.ErrInvalidReading
+	}
+
+	if *vendor == "claude" {
+		return r.probeClaude(ctx, *eventsFile)
 	}
 
 	if *dir == "" {
@@ -118,14 +125,14 @@ func probeUsage(ctx context.Context, args []string, usage func(context.Context) 
 		return probeCodex(ctx, *dir, *account, now)
 	}
 
-	if usage == nil {
+	if r.Usage == nil {
 		return capacity.ErrInvalidReading
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	output, err := usage(ctx)
+	output, err := r.Usage(ctx)
 	if err != nil {
 		return err
 	}
@@ -155,4 +162,70 @@ func probeUsage(ctx context.Context, args []string, usage func(context.Context) 
 	}
 
 	return nil
+}
+
+func runClaudeUsage(ctx context.Context) ([]byte, error) {
+	command := exec.CommandContext(
+		ctx, "claude", "-p", "Reply with the single word ok.", "--model", "haiku", "--max-turns", "1",
+		"--output-format", "stream-json", "--verbose",
+	)
+	command.WaitDelay = usageWaitDelay
+
+	return runCommand(ctx, command)
+}
+
+func (r Runtime) probeClaude(ctx context.Context, path string) error {
+	if path == "" || r.ClaudeUsage == nil {
+		return capacity.ErrInvalidReading
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	output, err := r.ClaudeUsage(ctx)
+	if err != nil {
+		return err
+	}
+
+	if len(output) > maxStatusline {
+		return capacity.ErrInvalidReading
+	}
+
+	var events []byte
+
+	for line := range bytes.SplitSeq(output, []byte("\n")) {
+		var event map[string]json.RawMessage
+		if json.Unmarshal(line, &event) != nil {
+			continue
+		}
+
+		var kind string
+		if json.Unmarshal(event["type"], &kind) == nil && kind == "rate_limit_event" {
+			events = append(events, line...)
+			events = append(events, '\n')
+		}
+	}
+
+	if len(events) == 0 {
+		return capacity.ErrInvalidReading
+	}
+
+	return writeClaudeEvents(path, events, os.CreateTemp)
+}
+
+func writeClaudeEvents(path string, events []byte, create func(string, string) (*os.File, error)) error {
+	file, err := create(filepath.Dir(path), ".events-*")
+	if err != nil {
+		return fmt.Errorf("create events file: %w", err)
+	}
+	defer os.Remove(file.Name())
+
+	_, writeErr := file.Write(events)
+
+	err = errors.Join(writeErr, file.Close())
+	if err != nil {
+		return err
+	}
+
+	return errors.Join(os.Rename(file.Name(), path))
 }
