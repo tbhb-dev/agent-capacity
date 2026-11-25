@@ -52,6 +52,8 @@ agent-capacity serve
 The probe runs `agy -p "/usage" --output-format json --print-timeout 100s` from `PATH`, a command that neither starts an agent turn nor spends quota. Run the probe as the account's user, with that account's Antigravity home, because it inherits the environment. It stores only the `data` object inside the output's `command` object and exits 1 when the command fails or reports a status other than `SUCCESS`. Run it on the reading interval, such as every 15 minutes.
 Run `agent-capacity probe --vendor=codex --account=work --spool-dir=/path/to/spool` as the Codex account’s user. The probe runs `codex app-server` on standard input and output, reads `account/rateLimits/read` with a 30-second timeout, and stores only the rate limits in `codex-work.json`. The probe reads no authentication files and prints no server output. `serve --spool-dir` exports each snapshot with its account alias, window `7d` for 10080 minutes and `5h` otherwise. The vendor defaults to `agy` for existing calls.
 
+Run `agent-capacity probe --vendor=claude --account=work --events-file=/path/to/events.jsonl` with the Claude account selected by `CLAUDE_CONFIG_DIR` or `HOME`. The probe runs a one-turn Haiku prompt with a two-minute timeout. It stores only `rate_limit_event` lines and keeps the previous file if the command fails or returns no events. Give the file to `agent-capacity serve --claude-transcripts=/path/to/events.jsonl --claude-account=work`.
+
 The gauges `agent.capacity.window.utilization`, `agent.capacity.window.reset_time`, and `agent.capacity.snapshot.age` include the vendor, source, and account alias labels. Antigravity readings add `agent.plan.bucket`.
 
 ## Claude transcripts

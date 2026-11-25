@@ -443,6 +443,7 @@ func TestRun(t *testing.T) {
 		runtime := Runtime{
 			NewRegistry: nil,
 			Usage:       nil,
+			ClaudeUsage: nil,
 			Registry: func(dir string) capacity.Registry {
 				assert.Equal(t, filepath.Join("spool", "test"), dir)
 

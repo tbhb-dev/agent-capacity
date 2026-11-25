@@ -70,6 +70,7 @@ func TestTranscriptRuntime(t *testing.T) {
 		runtime := Runtime{
 			NewRegistry: nil,
 			Usage:       nil,
+			ClaudeUsage: nil,
 			Registry:    func(string) capacity.Registry { return nil },
 			NewProvider: func(context.Context) (Provider, error) { return stub, nil },
 		}

@@ -33,11 +33,11 @@ func TestAGYMetrics(t *testing.T) {
 	payload := `{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[{"buckets":[
 {"id":"gemini-5h","window":"5h","remaining_fraction":0.75,"reset_time":"1970-01-03T07:33:20Z"}]}]}}}`
 
-	require.NoError(t, probeUsage(t.Context(), []string{"--spool-dir=" + dir, "--account=work"},
-		func(context.Context) ([]byte, error) { return []byte(payload), nil }, observed))
-
 	logger := slog.New(slog.DiscardHandler)
 	runtime := newRuntime(t.Context(), logger)
+	runtime.Usage = func(context.Context) ([]byte, error) { return []byte(payload), nil }
+	require.NoError(t, runtime.probeUsage(t.Context(), []string{"--spool-dir=" + dir, "--account=work"}, observed))
+
 	registry := runtime.Registry(dir)
 	require.Len(t, registry, 3)
 	assert.Equal(t, capacity.ClaudeStatusline, registry[0].Name)

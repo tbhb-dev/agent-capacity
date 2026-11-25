@@ -160,7 +160,7 @@ func TestSpoolConfiguration(t *testing.T) {
 
 	var out, logs bytes.Buffer
 
-	runtime := Runtime{Registry: nil, NewRegistry: nil, NewProvider: nil, Usage: nil}
+	runtime := Runtime{Registry: nil, NewRegistry: nil, NewProvider: nil, Usage: nil, ClaudeUsage: nil}
 	assert.Equal(
 		t,
 		1,
@@ -251,7 +251,7 @@ func TestStatusline(t *testing.T) {
 
 	var out, logs bytes.Buffer
 
-	runtime := Runtime{Registry: nil, NewRegistry: nil, NewProvider: nil, Usage: nil}
+	runtime := Runtime{Registry: nil, NewRegistry: nil, NewProvider: nil, Usage: nil, ClaudeUsage: nil}
 	assert.Equal(
 		t,
 		0,
