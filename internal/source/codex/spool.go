@@ -21,7 +21,7 @@ type SpoolSource struct {
 }
 
 // Read isolates failures by account and uses capture timestamps.
-func (s SpoolSource) Read(ctx context.Context, _ time.Time) ([]capacity.Reading, error) {
+func (s SpoolSource) Read(ctx context.Context, now time.Time) ([]capacity.Reading, error) {
 	snapshots, failures, err := spool.Read(s.Dir, "codex")
 	if err != nil {
 		return nil, fmt.Errorf("read Codex snapshots: %w", err)
@@ -30,7 +30,11 @@ func (s SpoolSource) Read(ctx context.Context, _ time.Time) ([]capacity.Reading,
 	var readings []capacity.Reading
 
 	for _, snapshot := range snapshots {
-		batch, parseErr := Parse(snapshot)
+		var seen []int
+
+		batch, parseErr := parse(snapshot, &seen)
+		logWindows(ctx, s.Logger, snapshot.Account, seen, now)
+
 		if parseErr != nil {
 			failures = append(failures, capacity.ErrorClass(parseErr))
 
@@ -53,6 +57,12 @@ func (s SpoolSource) Read(ctx context.Context, _ time.Time) ([]capacity.Reading,
 
 // Parse reads the rateLimits object returned by the app server.
 func Parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
+	var seen []int
+
+	return parse(snapshot, &seen)
+}
+
+func parse(snapshot spool.Snapshot, seen *[]int) ([]capacity.Reading, error) {
 	type quotaWindow struct {
 		UsedPercent        *float64 `json:"usedPercent"`
 		ResetsAt           *int64   `json:"resetsAt"`
@@ -73,6 +83,8 @@ func Parse(snapshot spool.Snapshot) ([]capacity.Reading, error) {
 		if window == nil {
 			continue
 		}
+
+		*seen = append(*seen, window.WindowDurationMins)
 
 		var label string
 

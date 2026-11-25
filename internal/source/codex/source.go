@@ -11,9 +11,11 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"regexp"
 	"slices"
+	"sync"
 	"time"
 
 	"go.tbhb.dev/agent-capacity/internal/capacity"
@@ -26,16 +28,27 @@ const (
 	percentScale = 100
 	shortMinutes = 300
 	weekMinutes  = 10080
+	seenCooldown = time.Hour
 )
 
+type seenEntry struct {
+	loggedAt time.Time
+	windows  []int
+}
+
+//nolint:gochecknoglobals // Value-receiver sources share per-account log deduplication across reads.
 var (
 	errRead      = errors.New("rollout read failed")
 	rolloutPath  = regexp.MustCompile(`^sessions/[0-9]{4}/[0-9]{2}/[0-9]{2}/rollout-[^/]*\.jsonl$`)
 	accountAlias = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+	seenLock     sync.Mutex
+	seenAccounts = map[string]seenEntry{}
 )
 
 // Source reads only usage fields and never retains rollout content.
 type Source struct {
+	//exhaustruct:optional
+	Logger  *slog.Logger
 	files   fs.FS
 	account string
 }
@@ -117,6 +130,8 @@ func (s Source) Read(ctx context.Context, now time.Time) ([]capacity.Reading, er
 	}
 
 	readings, err := latest.readings(s.account)
+	logWindows(ctx, s.Logger, s.account, latest.seen, now)
+
 	if err != nil {
 		return nil, err
 	}
@@ -242,6 +257,7 @@ type event struct {
 type snapshot struct {
 	observed time.Time
 	limits   *limits
+	seen     []int
 }
 
 func (s *snapshot) consider(line []byte) {
@@ -279,6 +295,8 @@ func (s *snapshot) readings(account string) ([]capacity.Reading, error) {
 			continue
 		}
 
+		s.seen = append(s.seen, window.WindowMinutes)
+
 		var label string
 
 		switch window.WindowMinutes {
@@ -311,4 +329,24 @@ func (s *snapshot) readings(account string) ([]capacity.Reading, error) {
 	}
 
 	return readings, nil
+}
+
+func logWindows(ctx context.Context, logger *slog.Logger, account string, seen []int, now time.Time) {
+	if logger == nil || seen == nil {
+		return
+	}
+
+	slices.Sort(seen)
+	seen = slices.Compact(seen)
+
+	seenLock.Lock()
+	defer seenLock.Unlock()
+
+	previous := seenAccounts[account]
+	if slices.Equal(previous.windows, seen) && now.Before(previous.loggedAt.Add(seenCooldown)) {
+		return
+	}
+
+	seenAccounts[account] = seenEntry{loggedAt: now, windows: seen}
+	logger.InfoContext(ctx, "codex windows", "account", account, "windows_seen", seen)
 }

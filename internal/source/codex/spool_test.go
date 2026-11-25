@@ -99,7 +99,8 @@ func TestSpoolSource(t *testing.T) {
 	assert.Equal(t, time.Unix(100000, 0).UTC(), got[0].ObservedAt)
 	assert.NotContains(t, logs.String(), source.Dir)
 	assert.Contains(t, logs.String(), `"class":"invalid"`)
-	assert.Equal(t, 2, bytes.Count(logs.Bytes(), []byte("\n")))
+	assert.Contains(t, logs.String(), `"windows_seen":[300,10080]`)
+	assert.Equal(t, 4, bytes.Count(logs.Bytes(), []byte("\n")))
 
 	source.Dir = ""
 	_, err = source.Read(t.Context(), time.Now())

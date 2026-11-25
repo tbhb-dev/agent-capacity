@@ -4,10 +4,13 @@
 package codex //nolint:testpackage // Fault injection checks file errors and tail bounds.
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,6 +128,85 @@ func TestWindows(t *testing.T) {
 			// Full equality also checks that readings omit unrelated input.
 			assert.Equal(t, testCase.want, got)
 		})
+	}
+}
+
+func TestWindowsSeen(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+
+	var logs bytes.Buffer
+
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+
+	for _, testCase := range []struct {
+		name   string
+		limits string
+		want   []int
+		offset time.Duration
+	}{
+		{
+			name: "set logged",
+			limits: `{"primary":{"used_percent":100,"window_minutes":10080},` +
+				`"secondary":{"used_percent":0,"window_minutes":300}}`,
+			want:   []int{300, 10080},
+			offset: 0,
+		},
+		{
+			name: "same set suppressed within the hour",
+			limits: `{"primary":{"used_percent":20,"window_minutes":300},` +
+				`"secondary":{"used_percent":50,"window_minutes":10080}}`,
+			want:   nil,
+			offset: 30 * time.Minute,
+		},
+		{
+			name: "logged again after the hour",
+			limits: `{"primary":{"used_percent":20,"window_minutes":300},` +
+				`"secondary":{"used_percent":50,"window_minutes":10080}}`,
+			want:   []int{300, 10080},
+			offset: time.Hour,
+		},
+		{
+			name: "changed set logged at once",
+			limits: `{"primary":{"used_percent":25,"window_minutes":10080},` +
+				`"secondary":{"used_percent":50,"window_minutes":10080}}`,
+			want:   []int{10080},
+			offset: 70 * time.Minute,
+		},
+		{
+			name:   "unknown values included",
+			limits: `{"primary":{"used_percent":99,"window_minutes":60},"secondary":{"window_minutes":0}}`,
+			want:   []int{0, 60},
+			offset: 80 * time.Minute,
+		},
+	} {
+		logs.Reset()
+
+		home := t.TempDir()
+		writeRollout(t, home, rollout, eventLine(observed, testCase.limits))
+
+		source := Source{Logger: logger, files: os.DirFS(home), account: "seen"}
+		_, err := source.Read(t.Context(), base.Add(testCase.offset))
+		require.NoError(t, err, testCase.name)
+
+		if testCase.want == nil {
+			assert.Empty(t, logs.String(), testCase.name)
+
+			continue
+		}
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(logs.Bytes(), &raw), testCase.name)
+		assert.Len(t, raw, 5, testCase.name)
+		assert.Equal(t, "seen", raw["account"], testCase.name)
+		assert.NotContains(t, logs.String(), privateMarker, testCase.name)
+
+		var entry struct {
+			Windows []int `json:"windows_seen"` //nolint:tagliatelle // Matches the logged attribute key.
+		}
+		require.NoError(t, json.Unmarshal(logs.Bytes(), &entry), testCase.name)
+		assert.Equal(t, testCase.want, entry.Windows, testCase.name)
 	}
 }
 
