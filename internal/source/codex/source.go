@@ -11,9 +11,11 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"regexp"
 	"slices"
+	"sync"
 	"time"
 
 	"go.tbhb.dev/agent-capacity/internal/capacity"
@@ -26,22 +28,33 @@ const (
 	percentScale = 100
 	shortMinutes = 300
 	weekMinutes  = 10080
+	seenCooldown = time.Hour
 )
 
+type seenEntry struct {
+	loggedAt time.Time
+	windows  []int
+}
+
+//nolint:gochecknoglobals // Value-receiver sources share per-account log deduplication across reads.
 var (
 	errRead      = errors.New("rollout read failed")
 	rolloutPath  = regexp.MustCompile(`^sessions/[0-9]{4}/[0-9]{2}/[0-9]{2}/rollout-[^/]*\.jsonl$`)
 	accountAlias = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+	seenLock     sync.Mutex
+	seenAccounts = map[string]seenEntry{}
 )
 
 // Source reads only usage fields and never retains rollout content.
 type Source struct {
+	//exhaustruct:optional
+	Logger  *slog.Logger
 	files   fs.FS
 	account string
 }
 
 // Register returns no source without an explicitly configured home.
-func Register(home, account string) (capacity.Registry, error) {
+func Register(home, account string, logger *slog.Logger) (capacity.Registry, error) {
 	if !accountAlias.MatchString(account) {
 		return nil, capacity.ErrInvalidReading
 	}
@@ -51,7 +64,7 @@ func Register(home, account string) (capacity.Registry, error) {
 	}
 
 	return capacity.Registry{
-		{Name: capacity.CodexRollout, Source: Source{files: os.DirFS(home), account: account}},
+		{Name: capacity.CodexRollout, Source: Source{Logger: logger, files: os.DirFS(home), account: account}},
 	}, nil
 }
 
@@ -116,7 +129,10 @@ func (s Source) Read(ctx context.Context, now time.Time) ([]capacity.Reading, er
 		}
 	}
 
-	readings, err := latest.readings(s.account)
+	windows, seen := latest.windows()
+	logWindows(ctx, s.Logger, s.account, seen, now)
+
+	readings, err := latest.readings(s.account, windows)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +235,7 @@ func scanTail(ctx context.Context, reader io.ReaderAt, size int64, latest *snaps
 type window struct {
 	UsedPercent   *float64 `json:"used_percent"`
 	ResetsAt      *int64   `json:"resets_at"`
-	WindowMinutes int      `json:"window_minutes"`
+	WindowMinutes *int     `json:"window_minutes"`
 }
 
 //nolint:tagliatelle // Rollout fields follow the existing JSON schema.
@@ -267,21 +283,34 @@ func (s *snapshot) consider(line []byte) {
 	}
 }
 
-func (s *snapshot) readings(account string) ([]capacity.Reading, error) {
+func (s *snapshot) windows() ([]*window, []int) {
 	if s.limits == nil {
 		return nil, nil
 	}
 
-	var readings []capacity.Reading
+	var windows []*window
+
+	var seen []int
 
 	for _, window := range []*window{s.limits.Primary, s.limits.Secondary} {
-		if window == nil {
+		if window == nil || window.WindowMinutes == nil {
 			continue
 		}
 
+		windows = append(windows, window)
+		seen = append(seen, *window.WindowMinutes)
+	}
+
+	return windows, seen
+}
+
+func (s *snapshot) readings(account string, windows []*window) ([]capacity.Reading, error) {
+	var readings []capacity.Reading
+
+	for _, window := range windows {
 		var label string
 
-		switch window.WindowMinutes {
+		switch *window.WindowMinutes {
 		case shortMinutes:
 			label = "5h"
 		case weekMinutes:
@@ -311,4 +340,24 @@ func (s *snapshot) readings(account string) ([]capacity.Reading, error) {
 	}
 
 	return readings, nil
+}
+
+func logWindows(ctx context.Context, logger *slog.Logger, account string, seen []int, now time.Time) {
+	if logger == nil || seen == nil {
+		return
+	}
+
+	slices.Sort(seen)
+	seen = slices.Compact(seen)
+
+	seenLock.Lock()
+	defer seenLock.Unlock()
+
+	previous := seenAccounts[account]
+	if slices.Equal(previous.windows, seen) && now.Before(previous.loggedAt.Add(seenCooldown)) {
+		return
+	}
+
+	seenAccounts[account] = seenEntry{loggedAt: now, windows: seen}
+	logger.InfoContext(ctx, "codex windows", "account", account, "windows_seen", seen)
 }

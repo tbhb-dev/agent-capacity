@@ -36,7 +36,7 @@ func TestAGYMetrics(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	runtime := newRuntime(t.Context(), logger)
 	runtime.Usage = func(context.Context) ([]byte, error) { return []byte(payload), nil }
-	require.NoError(t, runtime.probeUsage(t.Context(), []string{"--spool-dir=" + dir, "--account=work"}, observed))
+	require.NoError(t, runtime.probeUsage(t.Context(), []string{"--spool-dir=" + dir, "--account=work"}, observed, nil))
 
 	registry := runtime.Registry(dir)
 	require.Len(t, registry, 3)

@@ -62,7 +62,9 @@ func newRuntime(ctx context.Context, logger *slog.Logger) Runtime {
 	}))
 
 	return Runtime{
-		NewRegistry: codex.Register,
+		NewRegistry: func(home, account string) (capacity.Registry, error) {
+			return codex.Register(home, account, logger)
+		},
 		Registry: func(dir string) capacity.Registry {
 			return capacity.Registry{
 				{Name: capacity.ClaudeStatusline, Source: claude.Source{Dir: dir, Logger: logger}},

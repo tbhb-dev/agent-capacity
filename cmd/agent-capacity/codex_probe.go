@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os/exec"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 
 const codexProbeTimeout = 30 * time.Second
 
-func probeCodex(ctx context.Context, dir, account string, now time.Time) error {
+func probeCodex(ctx context.Context, dir, account string, now time.Time, logger *slog.Logger) error {
 	data, err := runCodexUsage(ctx)
 	if err != nil {
 		return err
@@ -28,7 +29,7 @@ func probeCodex(ctx context.Context, dir, account string, now time.Time) error {
 
 	snapshot := spool.Snapshot{Vendor: "codex", Account: account, ObservedAt: now, Data: data}
 
-	_, err = codex.Parse(snapshot)
+	_, err = codex.Parse(ctx, logger, snapshot, now)
 	if err != nil {
 		return fmt.Errorf("check Codex data: %w", err)
 	}

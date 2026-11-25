@@ -83,7 +83,7 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 }
 
 func (r Runtime) probe(ctx context.Context, args []string, logger *slog.Logger) int {
-	err := r.probeUsage(ctx, args, time.Now())
+	err := r.probeUsage(ctx, args, time.Now(), logger)
 	if err == nil {
 		return 0
 	}
@@ -99,7 +99,7 @@ func (r Runtime) probe(ctx context.Context, args []string, logger *slog.Logger) 
 }
 
 // probeUsage captures the selected vendor's usage for one account.
-func (r Runtime) probeUsage(ctx context.Context, args []string, now time.Time) error {
+func (r Runtime) probeUsage(ctx context.Context, args []string, now time.Time, logger *slog.Logger) error {
 	flags := flag.NewFlagSet("probe", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	dir := flags.String("spool-dir", os.Getenv("AGENT_CAPACITY_SPOOL_DIR"), "snapshot directory")
@@ -122,7 +122,7 @@ func (r Runtime) probeUsage(ctx context.Context, args []string, now time.Time) e
 	}
 
 	if *vendor == "codex" {
-		return probeCodex(ctx, *dir, *account, now)
+		return probeCodex(ctx, *dir, *account, now, logger)
 	}
 
 	if r.Usage == nil {
