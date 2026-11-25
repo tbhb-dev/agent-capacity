@@ -54,7 +54,7 @@ type Source struct {
 }
 
 // Register returns no source without an explicitly configured home.
-func Register(home, account string) (capacity.Registry, error) {
+func Register(home, account string, logger *slog.Logger) (capacity.Registry, error) {
 	if !accountAlias.MatchString(account) {
 		return nil, capacity.ErrInvalidReading
 	}
@@ -64,7 +64,7 @@ func Register(home, account string) (capacity.Registry, error) {
 	}
 
 	return capacity.Registry{
-		{Name: capacity.CodexRollout, Source: Source{files: os.DirFS(home), account: account}},
+		{Name: capacity.CodexRollout, Source: Source{Logger: logger, files: os.DirFS(home), account: account}},
 	}, nil
 }
 
@@ -129,9 +129,10 @@ func (s Source) Read(ctx context.Context, now time.Time) ([]capacity.Reading, er
 		}
 	}
 
-	readings, err := latest.readings(s.account)
-	logWindows(ctx, s.Logger, s.account, latest.seen, now)
+	windows, seen := latest.windows()
+	logWindows(ctx, s.Logger, s.account, seen, now)
 
+	readings, err := latest.readings(s.account, windows)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +235,7 @@ func scanTail(ctx context.Context, reader io.ReaderAt, size int64, latest *snaps
 type window struct {
 	UsedPercent   *float64 `json:"used_percent"`
 	ResetsAt      *int64   `json:"resets_at"`
-	WindowMinutes int      `json:"window_minutes"`
+	WindowMinutes *int     `json:"window_minutes"`
 }
 
 //nolint:tagliatelle // Rollout fields follow the existing JSON schema.
@@ -257,7 +258,6 @@ type event struct {
 type snapshot struct {
 	observed time.Time
 	limits   *limits
-	seen     []int
 }
 
 func (s *snapshot) consider(line []byte) {
@@ -283,23 +283,34 @@ func (s *snapshot) consider(line []byte) {
 	}
 }
 
-func (s *snapshot) readings(account string) ([]capacity.Reading, error) {
+func (s *snapshot) windows() ([]*window, []int) {
 	if s.limits == nil {
 		return nil, nil
 	}
 
-	var readings []capacity.Reading
+	var windows []*window
+
+	var seen []int
 
 	for _, window := range []*window{s.limits.Primary, s.limits.Secondary} {
-		if window == nil {
+		if window == nil || window.WindowMinutes == nil {
 			continue
 		}
 
-		s.seen = append(s.seen, window.WindowMinutes)
+		windows = append(windows, window)
+		seen = append(seen, *window.WindowMinutes)
+	}
 
+	return windows, seen
+}
+
+func (s *snapshot) readings(account string, windows []*window) ([]capacity.Reading, error) {
+	var readings []capacity.Reading
+
+	for _, window := range windows {
 		var label string
 
-		switch window.WindowMinutes {
+		switch *window.WindowMinutes {
 		case shortMinutes:
 			label = "5h"
 		case weekMinutes:

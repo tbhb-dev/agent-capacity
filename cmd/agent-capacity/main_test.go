@@ -199,7 +199,8 @@ func TestCodexRuntime(t *testing.T) {
 			[]byte(
 				`{"timestamp":"2026-01-02T03:04:05Z","type":"event_msg",`+
 					`"payload":{"type":"token_count","rate_limits":`+
-					`{"primary":{"used_percent":25,"window_minutes":10080}}}}`,
+					`{"primary":{"used_percent":10,"window_minutes":60},`+
+					`"secondary":{"used_percent":25,"window_minutes":10080}}}}`,
 			),
 			0o600,
 		),
@@ -252,6 +253,7 @@ func TestCodexRuntime(t *testing.T) {
 				),
 			)
 			assert.Contains(t, logs.String(), `"source":"codex_rollout","class":"canceled"`)
+			assert.Contains(t, logs.String(), `"msg":"codex windows","account":"work_2-a","windows_seen":[60,10080]`)
 		} else {
 			assert.Equal(
 				t,

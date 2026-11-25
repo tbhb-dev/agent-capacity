@@ -56,7 +56,7 @@ read -r held
 	args := []string{"--vendor=codex", "--account=work", "--spool-dir=" + dir}
 
 	var runtime Runtime
-	require.NoError(t, runtime.probeUsage(t.Context(), args, now))
+	require.NoError(t, runtime.probeUsage(t.Context(), args, now, nil))
 
 	snapshots, failures, err := spool.Read(dir, "codex")
 	require.NoError(t, err)
@@ -74,7 +74,47 @@ read -r held
 	assert.Equal(t, "work", readings[0].Account)
 	blocked := filepath.Join(t.TempDir(), "file")
 	require.NoError(t, os.WriteFile(blocked, nil, 0o600))
-	require.Error(t, probeCodex(t.Context(), blocked, "work", now))
+	require.Error(t, probeCodex(t.Context(), blocked, "work", now, nil))
+}
+
+//nolint:paralleltest // fakeCodex changes PATH.
+func TestCodexProbeUnknownDuration(t *testing.T) {
+	const answer = `{"primary":{"usedPercent":25,"windowDurationMins":60,"resetsAt":200000}}`
+
+	fakeCodex(t, `read -r init
+printf '%s\n' '{"id":1,"result":{}}'
+read -r ready
+read -r request
+printf '%s\n' '{"id":2,"result":{"rateLimits":`+answer+`}}'
+read -r held
+`)
+
+	dir := t.TempDir()
+
+	var runtime Runtime
+
+	var logs, out bytes.Buffer
+
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+
+	for _, account := range []string{"probe-short", "probe-short", "probe-other"} {
+		args := []string{probeCommand, "--vendor=codex", "--account=" + account, "--spool-dir=" + dir}
+		require.Zero(t, runtime.Run(t.Context(), args, &out, logger))
+	}
+
+	assert.Empty(t, out.String())
+	assert.Len(t, strings.Split(strings.TrimSpace(logs.String()), "\n"), 2)
+	assert.Contains(t, logs.String(), `"msg":"codex windows","account":"probe-short","windows_seen":[60]`)
+	assert.Contains(t, logs.String(), `"msg":"codex windows","account":"probe-other","windows_seen":[60]`)
+
+	snapshots, failures, err := spool.Read(dir, "codex")
+	require.NoError(t, err)
+	assert.Empty(t, failures)
+	require.Len(t, snapshots, 2)
+
+	for _, snapshot := range snapshots {
+		assert.JSONEq(t, answer, string(snapshot.Data))
+	}
 }
 
 func TestCodexProbeErrors(t *testing.T) {
@@ -86,12 +126,12 @@ printf '%s\n' '{"id":2,"result":{"rateLimits":{}}}'
 read -r held
 `)
 
-	require.ErrorIs(t, probeCodex(t.Context(), t.TempDir(), "work", time.Now()), capacity.ErrInvalidReading)
+	require.ErrorIs(t, probeCodex(t.Context(), t.TempDir(), "work", time.Now(), nil), capacity.ErrInvalidReading)
 
 	args := []string{"--vendor=unknown", workFlag}
 
 	var runtime Runtime
-	require.ErrorIs(t, runtime.probeUsage(t.Context(), args, time.Now()), capacity.ErrInvalidReading)
+	require.ErrorIs(t, runtime.probeUsage(t.Context(), args, time.Now(), nil), capacity.ErrInvalidReading)
 
 	fakeCodex(t, "read -r init\nexec /bin/sleep 10\n")
 
@@ -101,7 +141,7 @@ read -r held
 	_, err := runCodexUsage(ctx)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	fakeCodex(t, "read -r init\nexit 3\n")
-	require.ErrorIs(t, probeCodex(t.Context(), t.TempDir(), "work", time.Now()), io.EOF)
+	require.ErrorIs(t, probeCodex(t.Context(), t.TempDir(), "work", time.Now(), nil), io.EOF)
 	fakeCodex(t, "read -r init\nprintf '{\"id\":1,\"result\":%1048576s}\\n' ''\n")
 	_, err = runCodexUsage(t.Context())
 	require.ErrorIs(t, err, io.ErrUnexpectedEOF)

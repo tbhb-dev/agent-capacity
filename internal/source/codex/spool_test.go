@@ -19,7 +19,10 @@ import (
 	"go.tbhb.dev/agent-capacity/internal/spool"
 )
 
-const spoolAccount = "work"
+const (
+	spoolAccount = "work"
+	spoolVendor  = "codex"
+)
 
 //nolint:lll // Keep the complete server response readable.
 const quotaData = `{"primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":200000},"secondary":{"usedPercent":50,"windowDurationMins":10080,"resetsAt":300000}}`
@@ -28,12 +31,12 @@ func TestSpoolParse(t *testing.T) {
 	t.Parallel()
 
 	snapshot := spool.Snapshot{
-		Vendor:     "codex",
+		Vendor:     spoolVendor,
 		Account:    spoolAccount,
 		ObservedAt: time.Unix(100000, 0).UTC(),
 		Data:       json.RawMessage(quotaData),
 	}
-	got, err := Parse(snapshot)
+	got, err := Parse(t.Context(), nil, snapshot, snapshot.ObservedAt)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 
@@ -49,21 +52,59 @@ func TestSpoolParse(t *testing.T) {
 
 	for _, data := range []string{
 		`{`, `{}`, `{"primary":{},"secondary":[]}`, `{"primary":{}}`,
-		`{"primary":{"usedPercent":25,"windowDurationMins":1,"resetsAt":200000}}`,
+		`{"primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":200000},"secondary":[]}`,
 		`{"primary":{"windowDurationMins":300,"resetsAt":200000}}`,
 		`{"primary":{"usedPercent":25,"windowDurationMins":300}}`,
 		`{"primary":{"usedPercent":101,"windowDurationMins":300,"resetsAt":200000}}`,
 	} {
 		snapshot.Data = json.RawMessage(data)
-		_, err = Parse(snapshot)
+		_, err = Parse(t.Context(), nil, snapshot, snapshot.ObservedAt)
 		require.ErrorIs(t, err, capacity.ErrInvalidReading)
 	}
 
 	snapshot.Data = json.RawMessage(`{"secondary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":200000}}`)
-	got, err = Parse(snapshot)
+	got, err = Parse(t.Context(), nil, snapshot, snapshot.ObservedAt)
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, "5h", got[0].Window)
+}
+
+func TestSpoolWindowsSeen(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+
+	source := SpoolSource{Dir: t.TempDir(), Logger: slog.New(slog.NewJSONHandler(&logs, nil))}
+	snapshot := spool.Snapshot{
+		Vendor: spoolVendor, Account: "spool-seen", ObservedAt: time.Unix(100000, 0).UTC(), Data: nil,
+	}
+
+	for _, testCase := range []struct {
+		err     error
+		primary string
+		logged  string
+		window  string
+	}{
+		{nil, `{"usedPercent":25,"windowDurationMins":60,"resetsAt":200000}`, "[60,10080]", "7d"},
+		{nil, `{"usedPercent":25,"resetsAt":200000}`, "[10080]", "7d"},
+		{capacity.ErrInvalidReading, `{"windowDurationMins":300}`, "[300,10080]", ""},
+	} {
+		snapshot.Data = json.RawMessage(`{"primary":` + testCase.primary +
+			`,"secondary":{"usedPercent":50,"windowDurationMins":10080,"resetsAt":300000}}`)
+		require.NoError(t, spool.Write(source.Dir, snapshot))
+		logs.Reset()
+
+		readings, err := source.Read(t.Context(), snapshot.ObservedAt)
+		require.ErrorIs(t, err, testCase.err)
+		assert.Contains(t, logs.String(), `"windows_seen":`+testCase.logged)
+
+		if testCase.window == "" {
+			assert.Empty(t, readings)
+		} else {
+			require.Len(t, readings, 1)
+			assert.Equal(t, testCase.window, readings[0].Window)
+		}
+	}
 }
 
 func TestSpoolSource(t *testing.T) {
@@ -83,7 +124,7 @@ func TestSpoolSource(t *testing.T) {
 		{"bad-data", `{}`}, {spoolAccount, quotaData}, {"personal", quotaData},
 	} {
 		snapshot := spool.Snapshot{
-			Vendor: "codex", Account: fixture.account, ObservedAt: time.Unix(100000, 0).UTC(),
+			Vendor: spoolVendor, Account: fixture.account, ObservedAt: time.Unix(100000, 0).UTC(),
 			Data: json.RawMessage(fixture.data),
 		}
 		require.NoError(t, spool.Write(source.Dir, snapshot))

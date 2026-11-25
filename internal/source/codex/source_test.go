@@ -73,7 +73,7 @@ func TestRegister(t *testing.T) {
 	t.Parallel()
 
 	for _, home := range []string{"", t.TempDir()} {
-		registry, err := Register(home, primaryAccount)
+		registry, err := Register(home, primaryAccount, nil)
 		require.NoError(t, err)
 
 		if home == "" {
@@ -88,7 +88,7 @@ func TestRegister(t *testing.T) {
 	}
 
 	for _, account := range []string{"", "UPPER", "synthetic@invalid", strings.Repeat("a", 33)} {
-		registry, err := Register("", account)
+		registry, err := Register("", account, nil)
 		require.ErrorIs(t, err, capacity.ErrInvalidReading)
 		assert.Nil(t, registry)
 	}
@@ -179,6 +179,19 @@ func TestWindowsSeen(t *testing.T) {
 			limits: `{"primary":{"used_percent":99,"window_minutes":60},"secondary":{"window_minutes":0}}`,
 			want:   []int{0, 60},
 			offset: 80 * time.Minute,
+		},
+		{
+			name: "omitted duration excluded",
+			limits: `{"primary":{"used_percent":99},` +
+				`"secondary":{"used_percent":25,"window_minutes":10080}}`,
+			want:   []int{10080},
+			offset: 90 * time.Minute,
+		},
+		{
+			name:   "no durations to report",
+			limits: `{"primary":{"used_percent":99}}`,
+			want:   nil,
+			offset: 100 * time.Minute,
 		},
 	} {
 		logs.Reset()
@@ -405,7 +418,8 @@ func TestTailBounds(t *testing.T) {
 
 	reader := strings.NewReader("x\n" + line + strings.Repeat(" ", testByteLimit-len(line)-1))
 	require.NoError(t, scanTail(&budgetContext{remaining: 1000}, reader, testByteLimit+1, &latest))
-	got, err := latest.readings("work_2-a")
+	windows, _ := latest.windows()
+	got, err := latest.readings("work_2-a", windows)
 	require.NoError(t, err)
 	assert.Equal(t, []capacity.Reading{wantReading("5h", 0.75, time.Time{})}, got)
 }

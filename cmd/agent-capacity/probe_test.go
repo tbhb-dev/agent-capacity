@@ -28,6 +28,7 @@ import (
 
 const (
 	usageFixture = "testdata/agy-usage.json"
+	probeCommand = "probe"
 	// The probe gives the usage command two minutes. Spelled out here so a changed constant fails the tests.
 	usageDeadline = 2 * time.Minute
 )
@@ -52,7 +53,7 @@ func TestProbeUsage(t *testing.T) {
 	dir := t.TempDir()
 	observed := time.Unix(100000, 0).UTC()
 	runtime := Runtime{Registry: nil, NewRegistry: nil, NewProvider: nil, Usage: fixed(output, nil), ClaudeUsage: nil}
-	require.NoError(t, runtime.probeUsage(t.Context(), []string{"--spool-dir=" + dir, workFlag}, observed))
+	require.NoError(t, runtime.probeUsage(t.Context(), []string{"--spool-dir=" + dir, workFlag}, observed, nil))
 
 	stored, err := os.ReadFile(filepath.Join(dir, "agy-work.json"))
 	require.NoError(t, err)
@@ -76,7 +77,7 @@ func TestProbeUsage(t *testing.T) {
 
 	padded := append(bytes.Clone(output), bytes.Repeat([]byte(" "), inputLimit-len(output))...)
 	runtime.Usage = fixed(padded, nil)
-	require.NoError(t, runtime.probeUsage(t.Context(), []string{"--spool-dir=" + dir, workFlag}, observed))
+	require.NoError(t, runtime.probeUsage(t.Context(), []string{"--spool-dir=" + dir, workFlag}, observed, nil))
 }
 
 func TestProbeUsageErrors(t *testing.T) {
@@ -119,7 +120,7 @@ func TestProbeUsageErrors(t *testing.T) {
 
 		runtime.Usage = testCase.usage
 
-		got := runtime.probeUsage(t.Context(), args, time.Now())
+		got := runtime.probeUsage(t.Context(), args, time.Now(), nil)
 
 		if errors.Is(testCase.want, os.ErrExist) {
 			var pathErr *fs.PathError
@@ -142,14 +143,14 @@ func TestProbeUsageKeepsSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	args := []string{"--spool-dir=" + dir, workFlag}
 	runtime := Runtime{Registry: nil, NewRegistry: nil, NewProvider: nil, Usage: fixed(valid, nil), ClaudeUsage: nil}
-	require.NoError(t, runtime.probeUsage(t.Context(), args, time.Now()))
+	require.NoError(t, runtime.probeUsage(t.Context(), args, time.Now(), nil))
 
 	before, err := os.ReadFile(filepath.Join(dir, "agy-work.json"))
 	require.NoError(t, err)
 
 	empty := []byte(`{"status":"SUCCESS","command":{"name":"usage","data":null}}`)
 	runtime.Usage = fixed(empty, nil)
-	require.ErrorIs(t, runtime.probeUsage(t.Context(), args, time.Now()), capacity.ErrInvalidReading)
+	require.ErrorIs(t, runtime.probeUsage(t.Context(), args, time.Now(), nil), capacity.ErrInvalidReading)
 
 	after, err := os.ReadFile(filepath.Join(dir, "agy-work.json"))
 	require.NoError(t, err)
@@ -190,7 +191,8 @@ func TestProbe(t *testing.T) {
 
 	dir := t.TempDir()
 	assert.Equal(t, 0, runtime.Run(
-		t.Context(), []string{"probe", workFlag, "--spool-dir=" + dir}, &out, slog.New(slog.NewJSONHandler(&logs, nil)),
+		t.Context(), []string{probeCommand, workFlag, "--spool-dir=" + dir}, &out,
+		slog.New(slog.NewJSONHandler(&logs, nil)),
 	))
 	assert.Empty(t, out.String())
 	assert.FileExists(t, filepath.Join(dir, "agy-work.json"))
@@ -222,7 +224,7 @@ func TestProbeClaude(t *testing.T) {
 	var out, logs bytes.Buffer
 
 	assert.Equal(t, 0, runtime.Run(
-		t.Context(), []string{"probe", claudeProbeVendor, workFlag, eventsFileFlag + path},
+		t.Context(), []string{probeCommand, claudeProbeVendor, workFlag, eventsFileFlag + path},
 		&out, slog.New(slog.NewJSONHandler(&logs, nil)),
 	))
 	assert.Empty(t, out.String())
@@ -309,12 +311,12 @@ func TestProbeClaudeArguments(t *testing.T) {
 		{claudeProbeVendor, eventsFileFlag + path},
 		{claudeProbeVendor, "--account=bad/alias", eventsFileFlag + path},
 	} {
-		require.ErrorIs(t, runtime.probeUsage(t.Context(), args, time.Now()), capacity.ErrInvalidReading)
+		require.ErrorIs(t, runtime.probeUsage(t.Context(), args, time.Now(), nil), capacity.ErrInvalidReading)
 	}
 
 	runtime.ClaudeUsage = nil
 	args := []string{claudeProbeVendor, workFlag, eventsFileFlag + path}
-	require.ErrorIs(t, runtime.probeUsage(t.Context(), args, time.Now()), capacity.ErrInvalidReading)
+	require.ErrorIs(t, runtime.probeUsage(t.Context(), args, time.Now(), nil), capacity.ErrInvalidReading)
 }
 
 func TestWriteClaudeEventsFailure(t *testing.T) {
@@ -468,7 +470,7 @@ func TestProbeProcess(t *testing.T) {
 	executable, err := os.Executable()
 	require.NoError(t, err)
 
-	command := exec.CommandContext(t.Context(), executable, "probe", unknownFlag)
+	command := exec.CommandContext(t.Context(), executable, probeCommand, unknownFlag)
 
 	command.Env = append(os.Environ(), processTest+"=1")
 

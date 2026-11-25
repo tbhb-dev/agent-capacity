@@ -121,7 +121,7 @@ func TestWindowTokens(t *testing.T) {
 
 			home := t.TempDir()
 			writeRollout(t, home, rollout, testCase.data)
-			registry, err := Register(home, primaryAccount)
+			registry, err := Register(home, primaryAccount, nil)
 			require.NoError(t, err)
 			readings, failures := registry.Read(t.Context(), now)
 			require.Empty(t, failures)
