@@ -4,7 +4,7 @@
       "command": "go",
       "args": [
         "run",
-        "go.tbhb.dev/awrel/cmd/awrel@v0.7.1",
+        "go.tbhb.dev/awrel/cmd/awrel@v0.8.0",
         "mcp"
       ],
       "env": {
