@@ -100,7 +100,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Bazel for CI
-        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@5f0153d29237c5f36c1b2b98e7c3e7e2dd3abc52  # main
+        uses: tbhb-dev/rules/.github/actions/setup-bazel-ci@aa2f970279ca268aea6e6fc7fc3851a5b3d2fc5e  # main
         with:
           disk-cache: ${{ github.workflow }}-${{ matrix.os }}
           cache-save: false
